@@ -4,3 +4,6 @@
 .DS_Store
 *.log
 
+
+# Python capture tooling
+__pycache__/

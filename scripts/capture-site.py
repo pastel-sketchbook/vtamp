@@ -85,6 +85,7 @@ def publish(staged, output):
                 temporary = Path(file.name)
                 file.write((staged / name).read_bytes())
             try:
+                temporary.chmod(0o644)
                 os.replace(temporary, output / name)
                 changed.append(name)
             finally:
@@ -134,18 +135,27 @@ def capture(output):
         config = work / "tmux.conf"
         config.write_text("set -g default-terminal tmux-256color\nset -g status off\n"
                           "set -as terminal-features ',xterm-ghostty:RGB'\n")
+        bootstrap = work / "start.py"
+        bootstrap.write_text("import os, sys, time, termios, fcntl, struct\n"
+                             "while not os.path.exists(sys.argv[1]): time.sleep(0.05)\n"
+                             "fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', int(sys.argv[2]), int(sys.argv[3]), 0, 0))\n"
+                             "termios.tcflush(0, termios.TCIFLUSH)\n"
+                             "os.execv(sys.argv[4], sys.argv[4:])\n")
         tmux = [shutil.which("tmux"), "-S", socket, "-f", config]
         ghostty_pid = None
         server_started = False
         try:
-            run([binary, "server", "start"], env=environment)
             server_started = True
+            run([binary, "server", "start"], env=environment)
             for name, columns, rows, queue in PRESETS:
                 print(f"Capturing {name}: {columns} × {rows}…", flush=True)
                 # A distinct socket avoids racing the previous server's shutdown.
                 tmux = [shutil.which("tmux"), "-S", work / f"{name}.sock", "-f", config]
+                ready_file = work / f"{name}.ready"
+                start = shlex.join([sys.executable, str(bootstrap), str(ready_file),
+                                    str(rows), str(columns), str(binary), "--theme", "catppuccin-mocha"])
                 run([*tmux, "new-session", "-d", "-s", "capture", "-x", columns,
-                     "-y", rows, "-c", ROOT, "/bin/sh"], env=environment)
+                     "-y", rows, "-c", ROOT, start], env=environment)
                 run([*tmux, "set-option", "-g", "status", "off"], env=environment)
                 run([*tmux, "set-option", "-g", "default-terminal", "tmux-256color"], env=environment)
                 terminal_log = work / f"{name}.terminal"
@@ -168,6 +178,8 @@ def capture(output):
                     return windows[0] if len(windows) == 1 and clients else None
 
                 window = wait_for(window_ready, "the dedicated Ghostty window")
+                if original_pid:
+                    bridge("activate", original_pid)
                 # Ghostty/macOS can round the requested window width up by a cell.
                 # Give the TUI the exact preset even when the outer window is larger.
                 client_size = run([*tmux, "list-clients", "-F", "#{client_width} #{client_height}"], env=environment)
@@ -182,11 +194,7 @@ def capture(output):
                 if actual != f"{columns} {rows}":
                     raise RuntimeError(f"Ghostty opened at {actual}, expected {columns} {rows}. "
                                        "Use a larger display or reduce Ghostty's configured font size.")
-                launch_tui = shlex.join(["env", "-u", "NO_COLOR", f"VTAMP_HOME={home}", str(binary),
-                                         "--theme", "catppuccin-mocha"])
-                bridge("activate", ghostty_pid)
-                run([*tmux, "send-keys", "-t", "capture:0.0", "-l", launch_tui], env=environment)
-                run([*tmux, "send-keys", "-t", "capture:0.0", "Enter"], env=environment)
+                ready_file.touch()
 
                 def artwork_ready():
                     data = terminal_log.read_bytes() if terminal_log.exists() else b""
@@ -208,10 +216,24 @@ def capture(output):
                     raise
                 if queue:
                     run([*tmux, "send-keys", "-t", "capture:0.0", "Tab"], env=environment)
-                bridge("activate", ghostty_pid)
+                client_tty = run([*tmux, "list-clients", "-F", "#{client_tty}"], env=environment)
+                run([*tmux, "refresh-client", "-t", client_tty, "-f", "read-only"], env=environment)
                 time.sleep(1.2)  # Let Ghostty present the completed image upload.
                 target = staged / (name + ".png")
-                run(["screencapture", "-x", "-o", "-l", window["id"], target])
+                for attempt in range(3):
+                    if attempt:
+                        # Read-only client prevents keystrokes from changing the
+                        # staged view while Ghostty briefly comes to the front.
+                        bridge("activate", ghostty_pid)
+                        run([*tmux, "send-keys", "-t", "capture:0.0", "t"], env=environment)
+                        time.sleep(0.2)
+                        run([*tmux, "send-keys", "-t", "capture:0.0", "Escape"], env=environment)
+                        time.sleep(0.8)
+                    run(["screencapture", "-x", "-o", "-l", window["id"], target])
+                    if bridge("verify", target, name)["coverVisible"]:
+                        break
+                else:
+                    raise RuntimeError(f"Album art was not visible in {name}; no screenshots replaced.")
                 width, height = png_size(target)
                 if width < columns * 6 or height < rows * 10:
                     raise RuntimeError("Capture is too small; check macOS Screen Recording permission.")
