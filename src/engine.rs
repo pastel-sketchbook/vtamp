@@ -35,6 +35,28 @@ impl<B: PlaybackBackend> Engine<B> {
         self.state.queue.extend(items);
         Ok(first)
     }
+    pub fn play_track(&mut self, track: Track) -> Result<()> {
+        let existing = self
+            .state
+            .current()
+            .filter(|item| item.track.id == track.id)
+            .or_else(|| {
+                self.state
+                    .queue
+                    .iter()
+                    .find(|item| item.track.id == track.id)
+            })
+            .map(|item| item.id.clone());
+        let id = match existing {
+            Some(id) => Some(id),
+            None => self.add(vec![track])?,
+        };
+        self.apply(&Command::Play {
+            paths: vec![],
+            track: None,
+            queue_item: id,
+        })
+    }
     pub fn apply(&mut self, command: &Command) -> Result<()> {
         match command {
             Command::Play {
@@ -401,6 +423,51 @@ mod tests {
         assert_eq!(seen.len(), 3);
         assert_eq!(e.state.status, PlaybackStatus::Stopped);
     }
+    #[test]
+    fn library_play_reuses_current_duplicate_then_first_match() {
+        let mut e = engine();
+        let first = e.state.queue[0].id.clone();
+        let duplicate = e.add(vec![track("a")]).unwrap().unwrap();
+        e.apply(&Command::Play {
+            paths: vec![],
+            track: None,
+            queue_item: Some(duplicate.clone()),
+        })
+        .unwrap();
+        let queue = e.state.queue.clone();
+
+        e.play_track(track("a")).unwrap();
+        assert_eq!(e.state.current_id.as_ref(), Some(&duplicate));
+        assert_eq!(e.state.status, PlaybackStatus::Playing);
+        assert_eq!(e.state.queue, queue);
+
+        e.play_track(track("b")).unwrap();
+        e.play_track(track("a")).unwrap();
+        assert_eq!(e.state.current_id.as_ref(), Some(&first));
+        assert_eq!(e.state.queue, queue);
+    }
+
+    #[test]
+    fn library_play_appends_missing_track_once_and_explicit_add_allows_duplicates() {
+        let mut e = engine();
+        e.play_track(track("new")).unwrap();
+        let added = e.state.current_id.clone();
+        assert_eq!(e.state.queue.len(), 4);
+        assert_eq!(e.state.queue[3].id, added.clone().unwrap());
+        assert_eq!(e.state.current().unwrap().track.id, "new");
+
+        for _ in 0..3 {
+            e.play_track(track("new")).unwrap();
+        }
+        assert_eq!(e.state.queue.len(), 4);
+        assert_eq!(e.state.current_id, added);
+
+        e.add(vec![track("new")]).unwrap();
+        assert_eq!(e.state.queue.len(), 5);
+        assert_ne!(e.state.queue[3].id, e.state.queue[4].id);
+        assert_eq!(e.state.current_id, added);
+    }
+
     #[test]
     fn duplicate_tracks_have_independent_queue_identity() {
         let mut e = engine();

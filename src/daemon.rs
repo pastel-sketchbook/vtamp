@@ -311,13 +311,10 @@ fn worker(
                 } => {
                     let result = (|| -> Result<()> {
                         let track = store.track(id)?.context("Library track not found")?;
-                        let id = engine.add(vec![track])?;
                         if matches!(command, Command::Play { .. }) {
-                            engine.apply(&Command::Play {
-                                paths: vec![],
-                                track: None,
-                                queue_item: id,
-                            })?;
+                            engine.play_track(track)?;
+                        } else {
+                            engine.add(vec![track])?;
                         }
                         Ok(())
                     })();

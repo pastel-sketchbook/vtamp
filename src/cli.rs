@@ -49,11 +49,12 @@ pub enum Switch {
 pub enum Action {
     /// Attach the TUI, starting the server if needed.
     Attach,
-    /// Resume playback, or append inputs and play the first new entry.
+    /// Resume playback, play a library track, or append paths and play the first new entry.
     Play {
         #[arg(conflicts_with_all = ["track", "queue_item"])]
         paths: Vec<PathBuf>,
         #[arg(long, conflicts_with = "queue_item")]
+        /// Reuse the current or first matching queue entry; append only if absent.
         track: Option<String>,
         #[arg(long)]
         queue_item: Option<String>,

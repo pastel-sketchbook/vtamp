@@ -111,11 +111,13 @@ Read-only commands (`status`, `watch`, volume without a value, queue listing, li
 | `a` | Add a music folder |
 | `r` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |
-| `Enter` | Append and play a library track, or play a selected queue entry |
-| `e` | Append a library track without interrupting playback |
+| `Enter` | Play a library track, reusing a queue entry if present; or play the selected queue entry |
+| `e` | Append a library track without interrupting playback; duplicates allowed |
 | `x` / `d` | Remove the selected queue entry |
 | `J` / `K` | Move the selected queue entry down / up |
 | `?` | Show key reference |
+
+When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
 Wide panes show the library and queue side by side. Narrow panes show the focused list; `Tab` switches between them. Cover art is shown when there is room. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
 
@@ -155,7 +157,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | Command | Behavior |
 | --- | --- |
 | `play [PATH...]` | Resume, or append paths and play the first new entry |
-| `play --track ID` | Append and play a library track |
+| `play --track ID` | Play a library track, reusing a queue entry if present; append only if absent |
 | `play --queue-item ID` | Play an existing queue entry |
 | `pause`, `resume`, `toggle` | Playback state controls; pause/resume are idempotent |
 | `stop` | Stop and reset position, keeping the queue |
