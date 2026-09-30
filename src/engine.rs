@@ -36,12 +36,23 @@ impl<B: PlaybackBackend> Engine<B> {
         engine
     }
     pub fn add(&mut self, tracks: Vec<Track>) -> Result<Option<String>> {
+        self.add_with_rng(tracks, &mut rand::rng())
+    }
+    fn add_with_rng(
+        &mut self,
+        tracks: Vec<Track>,
+        rng: &mut impl rand::Rng,
+    ) -> Result<Option<String>> {
         if self.state.queue.len() + tracks.len() > 10_000 {
             bail!("Queue limit is 10,000 entries");
         }
         let items: Vec<_> = tracks.into_iter().map(QueueItem::new).collect();
         let first = items.first().map(|q| q.id.clone());
         self.upcoming.extend(items.iter().map(|q| q.id.clone()));
+        if self.state.shuffle && !items.is_empty() {
+            // Mix additions into the unplayed pool, without revisiting played entries.
+            self.upcoming.make_contiguous().shuffle(rng);
+        }
         self.state.queue.extend(items);
         Ok(first)
     }
@@ -645,6 +656,77 @@ mod tests {
         }
         assert_eq!(seen.len(), 3);
         assert_eq!(e.state.status, PlaybackStatus::Stopped);
+    }
+    #[test]
+    fn shuffle_randomizes_tracks_added_after_enabling_it() {
+        use rand::{SeedableRng, rngs::StdRng};
+
+        for natural in [false, true] {
+            let mut e = Engine::new(State::default(), Fake::default());
+            e.apply(&Command::Shuffle { enabled: true }).unwrap();
+            let tracks: Vec<_> = (0..16).map(|i| track(&format!("song-{i}"))).collect();
+            e.add_with_rng(tracks, &mut StdRng::seed_from_u64(42))
+                .unwrap();
+            let queue = e.state.queue.clone();
+            e.apply(&Command::Resume).unwrap();
+            let mut played = vec![];
+            while e.state.status == PlaybackStatus::Playing {
+                assert!(
+                    played.len() < queue.len(),
+                    "shuffle must finish a traversal"
+                );
+                played.push(e.state.current_id.clone().unwrap());
+                if natural {
+                    e.backend.ended.store(true, Ordering::SeqCst);
+                    assert!(e.tick());
+                } else {
+                    e.apply(&Command::Next).unwrap();
+                }
+            }
+            let ordered: Vec<_> = queue.iter().map(|q| q.id.clone()).collect();
+            assert_ne!(
+                played, ordered,
+                "new entries must not play in insertion order"
+            );
+            played.sort();
+            let mut expected = ordered;
+            expected.sort();
+            assert_eq!(played, expected, "each entry must play exactly once");
+            assert_eq!(
+                e.state.queue, queue,
+                "shuffle must not reorder the visible queue"
+            );
+        }
+    }
+
+    #[test]
+    fn adding_during_shuffle_mixes_only_unplayed_entries() {
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::Shuffle { enabled: true }).unwrap();
+        e.apply(&Command::Next).unwrap();
+        let current = e.state.current_id.clone();
+        let history = e.history.clone();
+        let remaining: Vec<_> = e.upcoming.iter().cloned().collect();
+        e.add_with_rng(
+            (0..16).map(|i| track(&format!("added-{i}"))).collect(),
+            &mut StdRng::seed_from_u64(42),
+        )
+        .unwrap();
+        let mut insertion_order = remaining;
+        insertion_order.extend(e.state.queue[3..].iter().map(|q| q.id.clone()));
+        let mut upcoming: Vec<_> = e.upcoming.iter().cloned().collect();
+        assert_ne!(upcoming, insertion_order);
+        upcoming.sort();
+        insertion_order.sort();
+        assert_eq!(
+            upcoming, insertion_order,
+            "do not replay already visited entries"
+        );
+        assert_eq!(e.state.current_id, current);
+        assert_eq!(e.history, history);
     }
     #[test]
     fn library_play_reuses_current_duplicate_then_first_match() {
