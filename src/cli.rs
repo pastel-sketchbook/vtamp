@@ -52,6 +52,11 @@ pub enum Switch {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Read a compact now-playing segment for the tmux status bar.
+    Tmux {
+        #[command(subcommand)]
+        command: TmuxAction,
+    },
     /// List or save client color themes without starting the playback server.
     Theme {
         #[command(subcommand)]
@@ -132,6 +137,19 @@ pub enum ThemeAction {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum TmuxAction {
+    /// Print one tmux-safe line; hide stopped or unavailable players.
+    Status {
+        /// Maximum display width, including the playback indicator and times.
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(20..=200))]
+        max_width: u16,
+        /// Include the artist after the track title.
+        #[arg(long)]
+        show_artist: bool,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct Seek {
     pub milliseconds: i64,
@@ -208,6 +226,20 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Tmux {
+            command:
+                TmuxAction::Status {
+                    max_width,
+                    show_artist,
+                },
+        } => {
+            let text = crate::tmux::status(&client, max_width.into(), show_artist).await;
+            if args.json {
+                return output(Reply::success(json!({"text": text})), true);
+            }
+            writeln!(io::stdout().lock(), "{text}")?;
+            return Ok(());
+        }
         Action::Theme { command } => {
             let path = paths.ui_settings();
             let data = match command {
