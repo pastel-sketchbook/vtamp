@@ -429,6 +429,13 @@ excludes `symphonia-codec-aac`; that crate remains in the lockfile for the exist
 untested non-macOS configuration. Using the OS codec is not a legal guarantee
 about patent obligations in every distribution scenario.
 
+To verify the decoder during AAC playback, sample the playback server process
+with macOS's `sample <server-pid> 3 1 -file /tmp/vtamp-sample.txt` (use the server
+PID, not the TUI client's). Live verification captured
+`ExtAudioFileRead → AudioConverterFillComplexBuffer` in `AudioToolboxCore`, followed
+by `AACDecoder::DecodeFrame` in Apple's `AudioCodecs`. This confirms actual native
+decoding, rather than just a loaded framework; a short sample can miss these calls.
+
 The synthesized AAC, ALAC, and WAV fixtures cover decoder selection, stereo
 samples, EOF, and AAC seeking without opening an output device. Native AAC tests
 need access to macOS codec services: an execution sandbox can block those services
