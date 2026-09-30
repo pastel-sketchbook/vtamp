@@ -30,7 +30,7 @@ Folder-based local library, search, queue editing, album art, machine-readable C
 
 ## Brand Commitments
 
-Classic Winamp inspiration is approved for both TUI and website: dense charcoal panels, green playback displays, compact controls, legible type. Name: vtamp. Voice: direct, practical, slightly nostalgic.
+Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and labels its simulation as Classic. Name: vtamp. Voice: direct, practical, slightly nostalgic.
 
 ## Evidence on Hand
 

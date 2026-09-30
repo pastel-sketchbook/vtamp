@@ -27,6 +27,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 - Folder-based library, title/artist/album search, and an editable shared queue.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
+- Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
 - JSON commands and an event stream for scripts and AI agents.
@@ -116,11 +117,32 @@ Read-only commands (`status`, `watch`, volume without a value, queue listing, li
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `x` / `d` | Remove the selected queue entry |
 | `J` / `K` | Move the selected queue entry down / up |
+| `t` | Preview and choose a color theme |
 | `?` | Show key reference |
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
 Wide panes show the library and queue side by side. Narrow panes show the focused list; `Tab` switches between them. Cover art is shown when there is room. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
+
+## Make it yours
+
+vtamp opens in **Catppuccin Mocha**, with a peach accent and quiet, dark panels. Press **`t`** to preview all nine themes: Catppuccin Mocha, Catppuccin Latte (light), Rosé Pine, Gruvbox, Tokyo Night, Nord, Dracula, Kanagawa, and the original green Classic.
+
+Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. Album art keeps its original colors; its padding and the no-cover illustration follow the theme.
+
+```sh
+vtamp theme list                       # Names and stable CLI identifiers.
+vtamp theme current --json             # Read the saved default.
+vtamp theme set rose-pine               # Save a default without starting the server.
+vtamp --theme catppuccin-latte           # Override just this attachment.
+vtamp attach --theme gruvbox
+```
+
+The picker applies the saved choice to its own TUI immediately. Other open TUIs keep their current appearance; new attachments use the saved default. `--theme` overrides the saved preference for one attachment and does not write settings. Choosing a theme with the picker and pressing `Enter` explicitly saves it, including when launched with `--theme`.
+
+Preferences live in `ui.json` beside `state.db` (or `$VTAMP_HOME/ui.json`). No server restart is needed. Missing preferences use Mocha. Invalid or unreadable preferences show a TUI warning and fall back to Mocha (or the explicit `--theme` override); they are not overwritten until you explicitly save. `theme current` reports a settings error instead of guessing, and `theme set NAME` can repair invalid contents. All theme commands support `--json` and run without connecting to the playback server.
+
+See [theme variants and palette credits](docs/themes.md). Custom palettes and automatic OS light/dark switching are not part of this release.
 
 ## Covers, terminals, and tmux
 
@@ -181,6 +203,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `watch` | Initial state, state changes, progress heartbeats, and library events |
 | `server start\|status\|stop` | Explicit server lifecycle |
 | `doctor` | Paths, connectivity, terminal environment, and default output device |
+| `theme list\|current\|set NAME` | List themes, read the saved default, or save it for future attachments |
 
 The queue is capped at 10,000 entries. Queue entry IDs are distinct from library track IDs: adding a song twice produces two independently editable entries. Library IDs survive rescans of the same canonical path. A file moved to a different path is a new library entry.
 
@@ -227,7 +250,7 @@ Exit status is **0** for success, **1** for a connection or operation failure, a
 
 On macOS, persistent data lives under `~/Library/Application Support/vtamp/`; cover thumbnails are under `~/Library/Caches/vtamp/covers/`. The control socket is `/tmp/vtamp-<uid>/control.sock`. Directories are private to the current user. A held advisory lock ensures one server, and a later launch recovers stale sockets left by crashes.
 
-`state.db` holds the library and session. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
+`ui.json` holds client theme preferences, saved independently of the playback server. `state.db` holds the library and session. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
 
 For isolated development or independent test instances, set an absolute, short `VTAMP_HOME`:
 
