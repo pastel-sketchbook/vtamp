@@ -47,6 +47,19 @@ enum Focus {
     Library,
     Queue,
 }
+#[derive(Clone, Copy, PartialEq)]
+enum ListEdge {
+    First,
+    Last,
+}
+impl ListEdge {
+    fn index(self, len: usize) -> Option<usize> {
+        len.checked_sub(1).map(|last| match self {
+            Self::First => 0,
+            Self::Last => last,
+        })
+    }
+}
 enum Input {
     Search(String),
     Folder(String),
@@ -72,6 +85,8 @@ struct App {
     library_selection: ListState,
     queue_selection: ListState,
     focus: Focus,
+    pending_g: bool,
+    library_jump: Option<ListEdge>,
     input: Option<Input>,
     help: bool,
     connected: bool,
@@ -150,6 +165,8 @@ pub async fn run(
         library_selection: ListState::default().with_selected(Some(0)),
         queue_selection: ListState::default().with_selected(Some(0)),
         focus: Focus::Library,
+        pending_g: false,
+        library_jump: None,
         input: None,
         help: false,
         connected: false,
@@ -461,14 +478,26 @@ impl App {
             }
             Message::Event(Event::LibraryChanged) => self.refresh(commands),
             Message::Reply(command, result) => match result {
-                Err(error) => self.notice(error),
+                Err(error) => {
+                    if matches!(command, Command::LibraryList { ref query, offset, .. }
+                        if *query == self.query && offset == self.offset)
+                    {
+                        self.library_jump = None;
+                    }
+                    self.notice(error);
+                }
                 Ok(value) => {
                     if let Command::LibraryList { query, offset, .. } = command {
                         if query == self.query && offset == self.offset {
                             self.tracks =
                                 serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
                             self.total = value["total"].as_u64().unwrap_or(0) as usize;
-                            clamp_selection(&mut self.library_selection, self.tracks.len());
+                            if let Some(edge) = self.library_jump.take() {
+                                // A scan may have changed the last page while it was loading.
+                                self.jump_library(edge, commands);
+                            } else {
+                                clamp_selection(&mut self.library_selection, self.tracks.len());
+                            }
                         }
                     } else if value.get("status").is_some() {
                         if let Ok(state) = serde_json::from_value::<State>(value)
@@ -492,6 +521,8 @@ impl App {
         }
     }
     fn key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
+        // Any intervening key (including Tab or opening a prompt) cancels gg.
+        let previous_g = std::mem::take(&mut self.pending_g);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
@@ -517,6 +548,7 @@ impl App {
                     Input::Search(query) => {
                         self.query = query;
                         self.offset = 0;
+                        self.library_jump = None;
                         self.library_selection.select(Some(0));
                         self.refresh(commands);
                     }
@@ -533,6 +565,16 @@ impl App {
             return Ok(false);
         }
         match key.code {
+            KeyCode::Char('g') if key.modifiers.is_empty() => {
+                if previous_g {
+                    self.jump_selection(ListEdge::First, commands);
+                } else {
+                    self.pending_g = true;
+                }
+            }
+            KeyCode::Char('G') if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                self.jump_selection(ListEdge::Last, commands);
+            }
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('t') => self.open_theme_picker(),
@@ -608,11 +650,13 @@ impl App {
                 if self.focus == Focus::Library && self.offset + PAGE_SIZE < self.total =>
             {
                 self.offset += PAGE_SIZE;
+                self.library_jump = None;
                 self.library_selection.select(Some(0));
                 self.refresh(commands);
             }
             KeyCode::Char('[') if self.focus == Focus::Library => {
                 self.offset = self.offset.saturating_sub(PAGE_SIZE);
+                self.library_jump = None;
                 self.library_selection.select(Some(0));
                 self.refresh(commands);
             }
@@ -690,6 +734,46 @@ impl App {
             _ => (),
         }
         Ok(false)
+    }
+    fn jump_selection(&mut self, edge: ListEdge, commands: &mpsc::Sender<Command>) {
+        if self.focus == Focus::Queue {
+            self.queue_selection
+                .select(edge.index(self.state.queue.len()));
+            return;
+        }
+        self.jump_library(edge, commands);
+    }
+    fn jump_library(&mut self, edge: ListEdge, commands: &mpsc::Sender<Command>) {
+        let offset = match edge {
+            ListEdge::First => 0,
+            ListEdge::Last => self.total.saturating_sub(1) / PAGE_SIZE * PAGE_SIZE,
+        };
+        if offset != self.offset {
+            if !self.connected {
+                self.notice("Disconnected. Commands are not queued for replay.");
+                return;
+            }
+            if commands
+                .try_send(Command::LibraryList {
+                    query: self.query.clone(),
+                    offset,
+                    limit: PAGE_SIZE,
+                })
+                .is_err()
+            {
+                self.notice("Too many pending commands; try again shortly.");
+                return;
+            }
+            self.offset = offset;
+            self.library_jump = Some(edge);
+            // Never let Enter play an old page's row while the destination loads.
+            self.tracks.clear();
+            self.library_selection.select(None);
+        } else if self.library_jump.is_some() {
+            self.library_jump = Some(edge);
+        } else {
+            self.library_selection.select(edge.index(self.tracks.len()));
+        }
     }
     fn move_selection(&mut self, delta: isize) {
         let (state, len) = if self.focus == Focus::Library {
@@ -857,7 +941,7 @@ impl App {
         if self.help {
             let popup = centered(area, 78, 24);
             frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\nCtrl-F / Ctrl-B           Page down / up (10 entries)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
+            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
             frame.render_widget(
                 Paragraph::new(text)
                     .block(block(p, " vtamp / key reference ", true))
@@ -997,7 +1081,7 @@ impl App {
         );
         let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change or clear the search." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change or clear the search." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
@@ -1160,6 +1244,206 @@ fn placeholder(p: Palette) -> image::DynamicImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn navigation_app(count: usize) -> App {
+        let mut app = app();
+        app.tracks = (0..count)
+            .map(|i| Track {
+                id: i.to_string(),
+                path: format!("/{i}.m4a").into(),
+                title: format!("Track {i}"),
+                artist: "Artist".into(),
+                album: "Album".into(),
+                track_number: i as u32,
+                duration_ms: 180_000,
+                cover: None,
+            })
+            .collect();
+        app.total = count;
+        app.state.queue = app.tracks.iter().cloned().map(QueueItem::new).collect();
+        app.library_selection.select(Some(0));
+        app.queue_selection.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn gg_and_uppercase_g_jump_only_the_focused_list_without_playing() {
+        let mut app = navigation_app(25);
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        for focus in [Focus::Library, Focus::Queue] {
+            app.focus = focus;
+            app.library_selection.select(Some(7));
+            app.queue_selection.select(Some(7));
+            app.key(key('g'), &commands).unwrap();
+            assert_eq!(app.library_selection.selected(), Some(7));
+            assert_eq!(app.queue_selection.selected(), Some(7));
+            app.key(key('g'), &commands).unwrap();
+            let selected = if focus == Focus::Library {
+                app.library_selection.selected()
+            } else {
+                app.queue_selection.selected()
+            };
+            assert_eq!(selected, Some(0));
+            app.key(
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+                &commands,
+            )
+            .unwrap();
+            let (active, inactive) = if focus == Focus::Library {
+                (&app.library_selection, &app.queue_selection)
+            } else {
+                (&app.queue_selection, &app.library_selection)
+            };
+            assert_eq!(active.selected(), Some(24));
+            assert_eq!(inactive.selected(), Some(7));
+        }
+        assert!(requests.try_recv().is_err());
+
+        app = navigation_app(0);
+        for focus in [Focus::Library, Focus::Queue] {
+            app.focus = focus;
+            for c in ['G', 'g', 'g'] {
+                app.key(key(c), &commands).unwrap();
+            }
+        }
+        assert_eq!(app.library_selection.selected(), None);
+        assert_eq!(app.queue_selection.selected(), None);
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn gg_prefix_cancels_on_other_keys_and_does_not_consume_prompt_text() {
+        let mut app = navigation_app(25);
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        app.key(key('G'), &commands).unwrap();
+        for c in ['g', 'k', 'g'] {
+            app.key(key(c), &commands).unwrap();
+        }
+        assert_eq!(app.library_selection.selected(), Some(23));
+        app.queue_selection.select(Some(12));
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+            .unwrap();
+        app.key(key('g'), &commands).unwrap();
+        assert_eq!(app.queue_selection.selected(), Some(12));
+        app.key(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            &commands,
+        )
+        .unwrap();
+        app.key(key('g'), &commands).unwrap();
+        assert_eq!(app.queue_selection.selected(), Some(12));
+        app.key(key('?'), &commands).unwrap();
+        app.key(key('g'), &commands).unwrap(); // Close help, without starting gg.
+        app.key(key('g'), &commands).unwrap();
+        assert_eq!(app.queue_selection.selected(), Some(12));
+
+        for input in [Input::Search(String::new()), Input::Folder(String::new())] {
+            app.input = Some(input);
+            for c in ['g', 'g', 'G'] {
+                app.key(key(c), &commands).unwrap();
+            }
+            assert!(
+                matches!(app.input, Some(Input::Search(ref text) | Input::Folder(ref text)) if text == "ggG")
+            );
+        }
+        assert_eq!(app.queue_selection.selected(), Some(12));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn library_edge_jumps_load_the_destination_and_ignore_stale_pages() {
+        let mut app = navigation_app(PAGE_SIZE);
+        app.total = 450;
+        app.queue_selection.select(Some(7));
+        let rows = app.tracks.clone();
+        let query = app.query.clone();
+        let (commands, mut requests) = mpsc::channel(8);
+        let (messages, _) = mpsc::unbounded_channel();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        app.key(key('G'), &commands).unwrap();
+        let request = requests.try_recv().unwrap();
+        assert!(
+            matches!(&request, Command::LibraryList { query: q, offset: 400, limit: PAGE_SIZE } if q == &query)
+        );
+        assert!(app.tracks.is_empty());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(
+            requests.try_recv().is_err(),
+            "Loading must not play a stale row"
+        );
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+            .unwrap();
+        app.message(
+            Message::Reply(
+                Command::LibraryList {
+                    query: query.clone(),
+                    offset: 0,
+                    limit: PAGE_SIZE,
+                },
+                Ok(serde_json::json!({"tracks": rows, "total": 450})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert!(app.tracks.is_empty());
+        app.message(
+            Message::Reply(
+                request,
+                Ok(serde_json::json!({"tracks": &rows[..50], "total": 450})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.library_selection.selected(), Some(49));
+        assert_eq!(
+            app.queue_selection.selected(),
+            Some(7),
+            "A reply must not move the newly focused queue"
+        );
+
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+            .unwrap();
+        for c in ['g', 'g'] {
+            app.key(key(c), &commands).unwrap();
+        }
+        let request = requests.try_recv().unwrap();
+        assert!(
+            matches!(&request, Command::LibraryList { query: q, offset: 0, .. } if q == &query)
+        );
+        app.message(
+            Message::Reply(
+                request,
+                Ok(serde_json::json!({"tracks": rows, "total": 450})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.library_selection.selected(), Some(0));
+
+        // Removing tracks during a request can move the last page backwards.
+        app.key(key('G'), &commands).unwrap();
+        let request = requests.try_recv().unwrap();
+        app.message(
+            Message::Reply(request, Ok(serde_json::json!({"tracks": [], "total": 350}))),
+            &messages,
+            &commands,
+        );
+        let request = requests.try_recv().unwrap();
+        assert!(matches!(&request, Command::LibraryList { offset: 200, .. }));
+        app.message(
+            Message::Reply(
+                request,
+                Ok(serde_json::json!({"tracks": &rows[..150], "total": 350})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.library_selection.selected(), Some(149));
+        assert!(requests.try_recv().is_err());
+    }
 
     #[test]
     fn control_f_and_b_page_lists_without_sending_previous_track() {
@@ -1526,6 +1810,8 @@ mod tests {
             library_selection: ListState::default(),
             queue_selection: ListState::default(),
             focus: Focus::Library,
+            pending_g: false,
+            library_jump: None,
             input: None,
             help: false,
             connected: true,
