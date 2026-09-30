@@ -122,7 +122,7 @@ Read-only commands (`status`, `watch`, volume without a value, queue listing, li
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
-Wide panes show the library and queue side by side. Narrow panes show the focused list; `Tab` switches between them. Cover art is shown when there is room. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
+Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
 
 ## Make it yours
 

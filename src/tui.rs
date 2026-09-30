@@ -727,21 +727,34 @@ impl App {
             );
             return;
         }
-        let now_height = if area.height >= 28 {
-            11
-        } else if area.height >= 14 {
-            6
-        } else {
-            4
-        };
-        let [header, now, content, status, hints] = Layout::vertical([
+        let [header, body, status, hints] = Layout::vertical([
             Constraint::Length(1),
-            Constraint::Length(now_height),
-            Constraint::Min(3),
+            Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(area);
+        let side_by_side = area.height < 28 && area.width >= 72;
+        let (now, content) = if side_by_side {
+            // Give the browser most of the width; the player stacks its cover
+            // above metadata instead of spending a full-width horizontal strip.
+            let player_width = (u32::from(area.width) * 2 / 5).clamp(30, 44) as u16;
+            let [now, content] =
+                Layout::horizontal([Constraint::Length(player_width), Constraint::Min(1)])
+                    .areas(body);
+            (now, content)
+        } else {
+            let now_height = if area.height >= 28 {
+                11
+            } else if area.height >= 14 {
+                6
+            } else {
+                4
+            };
+            let [now, content] =
+                Layout::vertical([Constraint::Length(now_height), Constraint::Min(3)]).areas(body);
+            (now, content)
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -764,7 +777,7 @@ impl App {
             header,
         );
         self.now_playing(frame, now);
-        if area.width >= 100 {
+        if !side_by_side && area.width >= 100 {
             let [library, queue] =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
                     .areas(content);
@@ -856,17 +869,10 @@ impl App {
         let panel = block(p, " NOW PLAYING ", false);
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
-        let show_cover = self.show_art && inner.height >= 7 && inner.width >= 64;
-        let info = if show_cover {
-            let [cover, gap, info] = Layout::horizontal([
-                Constraint::Length(inner.height * 2),
-                Constraint::Length(2),
-                Constraint::Min(0),
-            ])
-            .areas(inner);
-            let _ = gap;
-            // A graphics payload cannot be clipped around a text popup. Keep
-            // its space reserved and restore the image after the popup closes.
+        let (cover, info) = now_playing_regions(inner, self.show_art);
+        if let Some(cover) = cover {
+            // Pixel payloads cannot be clipped around dialogs. Preserve their
+            // space, hide while an overlay is open, and redraw when it closes.
             if !self.overlay() {
                 frame.render_stateful_widget(
                     StatefulImage::new().resize(Resize::Fit(None)),
@@ -874,10 +880,7 @@ impl App {
                     &mut self.cover,
                 );
             }
-            info
-        } else {
-            inner
-        };
+        }
         let item = self.state.current();
         let title = item.map_or("Your music, your terminal.", |q| q.track.title.as_str());
         if inner.height < 4 {
@@ -913,10 +916,11 @@ impl App {
         };
         let duration = item.map_or(0, |q| q.track.duration_ms);
         let pos = self.position();
+        let compact_controls = info.width < 52;
         let [names, progress, controls] = Layout::vertical([
-            Constraint::Min(2),
+            Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(if compact_controls { 2 } else { 1 }),
         ])
         .areas(info);
         let mut lines = vec![
@@ -929,7 +933,7 @@ impl App {
         if names.height > 2 {
             lines.push(Line::styled(album, Style::default().fg(p.muted)));
         }
-        if names.height > 4 {
+        if names.height > 4 && !compact_controls {
             lines.push(Line::from(""));
             lines.push(Line::styled(label, Style::default().fg(p.accent)));
         }
@@ -950,23 +954,35 @@ impl App {
                 )),
             progress,
         );
+        let shuffle = if self.state.shuffle { "ON" } else { "OFF" };
+        let repeat = match self.state.repeat {
+            Repeat::Off => "OFF",
+            Repeat::All => "ALL",
+            Repeat::One => "ONE",
+        };
+        let control_text = if compact_controls {
+            format!(
+                "{label}  VOL {}%\nSHUF {shuffle}  REPEAT {repeat}",
+                self.state.volume
+            )
+        } else {
+            format!(
+                "{label}  VOL {:3}%  SHUF {shuffle}  REPEAT {repeat}",
+                self.state.volume
+            )
+        };
         frame.render_widget(
-            Paragraph::new(format!(
-                "{}  VOL {:3}%  SHUF {}  REPEAT {:?}",
-                label,
-                self.state.volume,
-                if self.state.shuffle { "ON" } else { "OFF" },
-                self.state.repeat
-            ))
-            .style(Style::default().fg(p.muted)),
+            Paragraph::new(control_text).style(Style::default().fg(p.muted)),
             controls,
         );
     }
+
     fn library(&mut self, frame: &mut Frame, area: Rect) {
         let p = self.theme.palette();
         let title = format!(
-            " LIBRARY · {} tracks{} · Tab / queue ",
+            " LIBRARY · {}{}{} · Tab / queue ",
             self.total,
+            if area.width >= 50 { " tracks" } else { "" },
             if self.query.is_empty() {
                 String::new()
             } else {
@@ -1008,8 +1024,9 @@ impl App {
     fn queue(&mut self, frame: &mut Frame, area: Rect) {
         let p = self.theme.palette();
         let title = format!(
-            " QUEUE · {} entries · Tab / library ",
-            self.state.queue.len()
+            " QUEUE · {}{} · Tab / library ",
+            self.state.queue.len(),
+            if area.width >= 50 { " entries" } else { "" },
         );
         let panel = block(p, &title, self.focus == Focus::Queue);
         if self.state.queue.is_empty() {
@@ -1060,6 +1077,38 @@ impl App {
     }
 }
 
+/// Retain artwork in a narrow, tall player by stacking it above the text.
+/// Reserve room for title, progress, volume, shuffle, and repeat even at 12 rows.
+fn now_playing_regions(inner: Rect, show_art: bool) -> (Option<Rect>, Rect) {
+    if !show_art || inner.height < 7 || inner.width < 18 {
+        return (None, inner);
+    }
+    if inner.width >= 64 {
+        let [cover, _, info] = Layout::horizontal([
+            Constraint::Length(inner.height.min(9) * 2),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .areas(inner);
+        return (Some(cover), info);
+    }
+    let cover_height = inner.height.saturating_sub(7).max(2).min(inner.width / 2);
+    let [slot, _, info] = Layout::vertical([
+        Constraint::Length(cover_height),
+        Constraint::Length(1),
+        Constraint::Min(4),
+    ])
+    .areas(inner);
+    let cover_width = slot.height * 2;
+    let cover = Rect::new(
+        slot.x + (slot.width - cover_width) / 2,
+        slot.y,
+        cover_width,
+        slot.height,
+    );
+    (Some(cover), info)
+}
+
 fn block(p: Palette, title: &str, active: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -1105,6 +1154,121 @@ fn placeholder(p: Palette) -> image::DynamicImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_panes_keep_pixel_art_beside_the_active_browser_through_resizes() {
+        use ratatui_image::{FontSize, picker::ProtocolType};
+        let mut app = app();
+        app.show_art = true;
+        app.artwork = Artwork::Native {
+            protocol: ProtocolType::Sixel,
+            font_size: FontSize::new(10, 20),
+            tmux: true,
+        };
+        let (tx, rx) = sync_mpsc::channel();
+        app.cover = ThreadProtocol::new(tx, None);
+        app.rebuild_cover();
+        let (commands, mut requests) = mpsc::channel(8);
+        // Cross each breakpoint in both directions while keeping the same
+        // image protocol and input state, as a real tmux resize would.
+        for (width, height, columns, art) in [
+            (99, 28, false, true),
+            (99, 27, true, true),
+            (99, 24, true, true),
+            (99, 20, true, true),
+            (99, 14, true, true),
+            (99, 12, true, true),
+            (72, 24, true, true),
+            (71, 24, false, false),
+            (40, 12, false, false),
+            (120, 20, true, true),
+            (120, 28, false, true),
+            (99, 24, true, true),
+        ] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            for _ in 0..2 {
+                terminal.draw(|f| app.draw(f)).unwrap();
+                while let Ok(request) = rx.try_recv() {
+                    assert!(
+                        app.cover
+                            .update_resized_protocol(request.resize_encode().unwrap())
+                    );
+                }
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let row = (0..width)
+                    .map(|x| buffer[(x, 1)].symbol())
+                    .collect::<String>();
+                assert!(row.contains("NOW PLAYING"));
+                let label = if app.focus == Focus::Library {
+                    "LIBRARY"
+                } else {
+                    "QUEUE"
+                };
+                assert_eq!(row.contains(label), columns, "{width}x{height}: {row}");
+                assert_eq!(
+                    buffer
+                        .content()
+                        .iter()
+                        .any(|cell| cell.symbol().contains("\x1bP")),
+                    art,
+                    "cover at {width}x{height}"
+                );
+                if columns {
+                    let text = buffer
+                        .content()
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>();
+                    for required in ["VOL", "SHUF", "REPEAT", "0:00 / 0:00"] {
+                        assert!(
+                            text.contains(required),
+                            "missing {required} at {width}x{height}"
+                        );
+                    }
+                }
+                app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+                    .unwrap();
+            }
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "layout switching must not mutate playback"
+        );
+        app.open_theme_picker();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(99, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            !terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains("\x1bP"))
+        );
+        app.theme_key(KeyCode::Esc);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains("\x1bP"))
+        );
+        app.show_art = false;
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            !terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains("\x1bP"))
+        );
+    }
 
     #[test]
     fn theme_preview_cancel_save_and_input_isolation() {

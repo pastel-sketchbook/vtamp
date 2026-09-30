@@ -41,7 +41,7 @@ TUI typography follows the user's terminal font. Bold weight and text markers es
 
 ## Layout
 
-The TUI is an Operate surface: queue, library, current track, timing, and key hints have priority. At 100 columns and above, Library and Queue sit side by side; narrower panes show the focused list. Minimum usable size is 40 × 12 cells, with a compact now-playing summary at 12–13 rows. Cover art gives context without dominating the queue.
+The TUI is an Operate surface: queue, library, current track, timing, and key hints have priority. At 12–27 rows and at least 72 columns, the player and focused browser share one row. The player takes 40% of the width, bounded to 30–44 columns; Library or Queue takes the rest and switches with Tab. The player stacks a centered cover above metadata, progress, and two rows of controls. Cover size follows available height while reserving readable controls. At 28 or more rows, now playing sits above the lists; from 100 columns, both lists are visible below it. Panes narrower than 72 columns keep the stacked layout and use a compact now-playing summary at 12–13 rows. Minimum usable size is 40 × 12 cells. Cover art gives context without dominating the queue.
 
 The website is a Persuade surface. Lead with “Music stays. Your terminal moves on.” and a working, explicitly simulated detach demonstration. Follow with the detachable lifecycle, executable CLI examples, and source installation instructions. A broad typographic headline is balanced by a dense, mechanically precise player.
 
