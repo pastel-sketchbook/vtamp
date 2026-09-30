@@ -132,6 +132,15 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
 }
 
 pub fn read_track(path: &Path, id: String, cache: &Path) -> Result<Track> {
+    // Lofty's extended-size atom skipping rejects some otherwise valid m4a files.
+    // A dedicated MP4 reader handles that layout without rewriting the source.
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "m4a" | "mp4"))
+    {
+        return read_mp4(path, id, cache);
+    }
     let tagged = lofty::read_from_path(path)
         .with_context(|| format!("Cannot read audio metadata for {}", path.display()))?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
@@ -189,6 +198,56 @@ pub fn read_track(path: &Path, id: String, cache: &Path) -> Result<Track> {
         album,
         track_number,
         duration_ms: tagged.properties().duration().as_millis() as u64,
+        cover,
+    })
+}
+
+fn read_mp4(path: &Path, id: String, cache: &Path) -> Result<Track> {
+    let tag = mp4ameta::Tag::read_from_path(path).context("Cannot read MP4 metadata")?;
+    let mut cover = None;
+    if let Some(art) = tag.artwork()
+        && let Ok(image) = decode_image(art.data)
+    {
+        fs::create_dir_all(cache)?;
+        let destination = cache.join(format!("{id}.png"));
+        if image.thumbnail(512, 512).save(&destination).is_ok() {
+            cover = Some(destination);
+        }
+    }
+    if cover.is_none()
+        && let Some(parent) = path.parent()
+    {
+        cover = [
+            "cover.jpg",
+            "cover.png",
+            "cover.jpeg",
+            "folder.jpg",
+            "folder.png",
+            "Folder.jpg",
+            "Cover.jpg",
+        ]
+        .iter()
+        .map(|name| parent.join(name))
+        .find(|p| p.is_file());
+    }
+    Ok(Track {
+        id,
+        path: path.into(),
+        title: tag
+            .title()
+            .map(clean)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| clean(&path.file_stem().unwrap_or_default().to_string_lossy())),
+        artist: tag
+            .artist()
+            .map(clean)
+            .unwrap_or_else(|| "Unknown artist".into()),
+        album: tag
+            .album()
+            .map(clean)
+            .unwrap_or_else(|| "Unknown album".into()),
+        track_number: tag.track_number().unwrap_or(0).into(),
+        duration_ms: tag.duration().as_millis() as u64,
         cover,
     })
 }
