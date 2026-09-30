@@ -2,6 +2,8 @@ use crate::{
     client::Client,
     model::*,
     platform::{self, Paths},
+    settings::Settings,
+    theme::Theme,
     wire,
 };
 use anyhow::{Result, bail};
@@ -25,6 +27,9 @@ pub struct Args {
     /// Cover rendering; auto detects Sixel or Kitty graphics, with a halfblock fallback.
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub art: Art,
+    /// Theme for this attachment only; otherwise use the saved preference.
+    #[arg(long, global = true, value_enum)]
+    pub theme: Option<Theme>,
     #[command(subcommand)]
     pub command: Option<Action>,
 }
@@ -47,6 +52,11 @@ pub enum Switch {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// List or save client color themes without starting the playback server.
+    Theme {
+        #[command(subcommand)]
+        command: ThemeAction,
+    },
     /// Attach the TUI, starting the server if needed.
     Attach,
     /// Resume playback, play a library track, or append paths and play the first new entry.
@@ -108,6 +118,18 @@ pub enum Action {
     },
     /// Inspect runtime paths, server health, and the default audio device.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ThemeAction {
+    List,
+    /// Show the saved default (not the theme of another attached TUI).
+    Current,
+    /// Save the default for future attachments; open TUIs keep their theme.
+    Set {
+        #[arg(value_enum)]
+        name: Theme,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +208,22 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Theme { command } => {
+            let path = paths.ui_settings();
+            let data = match command {
+                ThemeAction::List => {
+                    json!({"themes": Theme::ALL.map(|theme| json!({"id": theme.id(), "name": theme.name(), "mode": theme.mode()}))})
+                }
+                ThemeAction::Current => {
+                    json!({"theme": Settings::load(&path)?.theme, "path": path})
+                }
+                ThemeAction::Set { name } => {
+                    Settings { theme: name }.save(&path)?;
+                    json!({"theme": name, "path": path, "applies_to": "future_attachments"})
+                }
+            };
+            return output(Reply::success(data), args.json);
+        }
         Action::Attach => {
             if args.json {
                 bail!("Use vtamp status --json or vtamp watch --json for machine-readable output");
@@ -194,7 +232,7 @@ pub async fn run(args: Args) -> Result<()> {
                 bail!("The TUI needs an interactive terminal. Try vtamp status --json");
             }
             client.ensure().await?;
-            crate::tui::run(client, args.art).await?;
+            crate::tui::run(client, args.art, args.theme, paths.ui_settings()).await?;
             return Ok(());
         }
         Action::Server {
@@ -389,6 +427,28 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     let data = reply.data.unwrap_or(Value::Null);
+    if let Some(themes) = data.get("themes").and_then(Value::as_array) {
+        for theme in themes {
+            writeln!(
+                out,
+                "{:<20} {:<6} {}",
+                theme["id"].as_str().unwrap_or(""),
+                theme["mode"].as_str().unwrap_or(""),
+                theme["name"].as_str().unwrap_or("")
+            )?;
+        }
+        return Ok(());
+    }
+    if let Some(theme) = data.get("theme").and_then(Value::as_str) {
+        writeln!(out, "{theme}")?;
+        if data.get("applies_to").is_some() {
+            writeln!(
+                out,
+                "Saved for future attachments. Open TUIs keep their current theme."
+            )?;
+        }
+        return Ok(());
+    }
     if let Ok(state) = serde_json::from_value::<State>(data.clone())
         && data.get("status").is_some()
     {

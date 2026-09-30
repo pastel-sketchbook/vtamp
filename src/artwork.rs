@@ -20,7 +20,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BACKGROUND: Option<Rgba<u8>> = Some(Rgba([32, 37, 33, 255]));
 const FALLBACK_FONT: FontSize = FontSize::new(10, 20);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -77,7 +76,6 @@ impl Artwork {
         if matches!(art, Art::Kitty) {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
-        picker.set_background_color(BACKGROUND);
         (Self::Detected(picker), None)
     }
 
@@ -96,9 +94,17 @@ impl Artwork {
         }
     }
 
-    pub fn new_resize_protocol(&self, image: DynamicImage) -> StatefulProtocol {
+    pub fn new_resize_protocol(
+        &self,
+        image: DynamicImage,
+        background: Rgba<u8>,
+    ) -> StatefulProtocol {
         match self {
-            Self::Detected(picker) => picker.new_resize_protocol(image),
+            Self::Detected(picker) => {
+                let mut picker = picker.clone();
+                picker.set_background_color(Some(background));
+                picker.new_resize_protocol(image)
+            }
             Self::Native {
                 protocol,
                 font_size,
@@ -114,7 +120,7 @@ impl Artwork {
                     )),
                     _ => StatefulProtocolType::Halfblocks(Halfblocks::default()),
                 };
-                StatefulProtocol::new(image, *font_size, BACKGROUND, protocol)
+                StatefulProtocol::new(image, *font_size, Some(background), protocol)
             }
         }
     }
@@ -367,7 +373,7 @@ mod tests {
             512,
             image::Rgb([180, 246, 118]),
         ));
-        let mut protocol = renderer.new_resize_protocol(image);
+        let mut protocol = renderer.new_resize_protocol(image, Rgba([0, 0, 0, 255]));
         for area in [Rect::new(0, 0, 18, 9), Rect::new(0, 0, 12, 6)] {
             protocol.resize_encode(&Resize::Fit(None), area.as_size());
             protocol.last_encoding_result().unwrap().unwrap();
@@ -396,7 +402,7 @@ mod tests {
             let renderer = Artwork::native(Art::Auto, true, capabilities(reply));
             assert!(matches!(
                 renderer
-                    .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                    .new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
                     .protocol_type(),
                 StatefulProtocolType::Halfblocks(_)
             ));
@@ -407,7 +413,8 @@ mod tests {
     fn kitty_reply_selects_pixel_graphics_through_tmux() {
         let caps = capabilities("\x1b_Gi=31;OK\x1b\\\x1b[6;34;17t\x1b[0n");
         let renderer = Artwork::native(Art::Auto, true, caps);
-        let mut protocol = renderer.new_resize_protocol(DynamicImage::new_rgb8(512, 512));
+        let mut protocol =
+            renderer.new_resize_protocol(DynamicImage::new_rgb8(512, 512), Rgba([0, 0, 0, 255]));
         let area = Rect::new(0, 0, 18, 9);
         protocol.resize_encode(&Resize::Fit(None), area.as_size());
         protocol.last_encoding_result().unwrap().unwrap();
@@ -432,7 +439,7 @@ mod tests {
             let renderer = Artwork::native(Art::Auto, true, capabilities(reply));
             assert!(matches!(
                 renderer
-                    .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                    .new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
                     .protocol_type(),
                 StatefulProtocolType::Halfblocks(_)
             ));
@@ -441,7 +448,7 @@ mod tests {
         let renderer = Artwork::native(Art::Auto, true, caps);
         assert!(matches!(
             renderer
-                .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                .new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
                 .protocol_type(),
             StatefulProtocolType::Sixel(_)
         ));
@@ -466,7 +473,7 @@ mod tests {
             assert_eq!(
                 matches!(
                     renderer
-                        .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                        .new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
                         .protocol_type(),
                     StatefulProtocolType::Sixel(_)
                 ),
@@ -483,7 +490,8 @@ mod tests {
     fn explicit_modes_override_terminal_capabilities() {
         for art in [Art::Halfblocks, Art::None, Art::Sixel, Art::Kitty] {
             let renderer = Artwork::native(art, true, Capabilities::default());
-            let protocol = renderer.new_resize_protocol(DynamicImage::new_rgb8(64, 64));
+            let protocol =
+                renderer.new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]));
             assert!(matches!(
                 (art, protocol.protocol_type()),
                 (

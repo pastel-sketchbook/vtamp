@@ -7,6 +7,8 @@ pub mod engine;
 pub mod library;
 pub mod model;
 pub mod platform;
+pub mod settings;
 pub mod store;
+pub mod theme;
 pub mod tui;
 pub mod wire;

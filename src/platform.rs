@@ -42,6 +42,9 @@ impl Paths {
     pub fn database(&self) -> PathBuf {
         self.data.join("state.db")
     }
+    pub fn ui_settings(&self) -> PathBuf {
+        self.data.join("ui.json")
+    }
     pub fn log(&self) -> PathBuf {
         self.data.join("server.log")
     }
@@ -56,7 +59,7 @@ impl Paths {
     }
 }
 
-fn private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn private_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("Cannot create {}", dir.display()))?;
     let metadata = fs::symlink_metadata(dir)?;
     if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {

@@ -1,5 +1,13 @@
 use crate::{
-    artwork::Artwork, cli::Art, client::Client, library::decode_image, model::*, platform, wire,
+    artwork::Artwork,
+    cli::Art,
+    client::Client,
+    library::decode_image,
+    model::*,
+    platform,
+    settings::Settings,
+    theme::{Palette, Theme, channels},
+    wire,
 };
 use anyhow::Result;
 use crossterm::event::{
@@ -8,7 +16,7 @@ use crossterm::event::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -24,13 +32,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-const GREEN: Color = Color::Rgb(180, 246, 118);
-const TEXT: Color = Color::Rgb(238, 234, 224);
-const MUTED: Color = Color::Rgb(164, 177, 155);
-const BG: Color = Color::Rgb(24, 28, 25);
-const PANEL: Color = Color::Rgb(32, 37, 33);
-const BORDER: Color = Color::Rgb(77, 88, 72);
-const AMBER: Color = Color::Rgb(239, 188, 114);
 const PAGE_SIZE: usize = 200;
 
 enum Message {
@@ -38,7 +39,7 @@ enum Message {
     Disconnected(String),
     Event(Event),
     Reply(Command, Result<Value, String>),
-    Cover(Option<PathBuf>, image::DynamicImage),
+    Cover(Option<PathBuf>, Option<image::DynamicImage>),
     Resized(ResizeResponse),
 }
 #[derive(Clone, Copy, PartialEq)]
@@ -51,7 +52,18 @@ enum Input {
     Folder(String),
 }
 
+struct ThemePicker {
+    original: Theme,
+    selection: ListState,
+    error: Option<String>,
+}
+
 struct App {
+    theme: Theme,
+    theme_picker: Option<ThemePicker>,
+    settings_path: PathBuf,
+    settings_warning: Option<String>,
+    cover_image: Option<image::DynamicImage>,
     state: State,
     tracks: Vec<Track>,
     total: usize,
@@ -79,7 +91,28 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub async fn run(client: Client, art: Art) -> Result<()> {
+fn attachment_theme(
+    path: &std::path::Path,
+    override_theme: Option<Theme>,
+) -> (Theme, Option<String>) {
+    let (saved, settings_warning) = match Settings::load(path) {
+        Ok(settings) => (settings.theme, None),
+        Err(error) => (
+            Theme::default(),
+            Some(format!("{error:#}; press t to choose and save a theme.")),
+        ),
+    };
+    let theme = override_theme.unwrap_or(saved);
+    (theme, settings_warning)
+}
+
+pub async fn run(
+    client: Client,
+    art: Art,
+    override_theme: Option<Theme>,
+    settings_path: PathBuf,
+) -> Result<()> {
+    let (theme, settings_warning) = attachment_theme(&settings_path, override_theme);
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
     let (artwork, _passthrough) = Artwork::detect(art);
@@ -96,8 +129,19 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
             }
         }
     });
-    let cover = ThreadProtocol::new(resize_tx, Some(artwork.new_resize_protocol(placeholder())));
+    let cover = ThreadProtocol::new(
+        resize_tx,
+        Some(artwork.new_resize_protocol(
+            placeholder(theme.palette()),
+            cover_background(theme.palette()),
+        )),
+    );
     let mut app = App {
+        theme,
+        theme_picker: None,
+        settings_path,
+        settings_warning,
+        cover_image: None,
         state: State::default(),
         tracks: vec![],
         total: 0,
@@ -194,11 +238,12 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
             while event::poll(Duration::ZERO)? {
                 match event::read()? {
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
-                        let overlay = app.help || app.input.is_some();
+                        let overlay = app.overlay();
+                        let theme = app.theme;
                         if app.key(key, &commands)? {
                             return Ok::<_, anyhow::Error>(());
                         }
-                        if overlay != (app.help || app.input.is_some()) {
+                        if overlay != app.overlay() || theme != app.theme {
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
                             terminal.clear()?;
@@ -218,6 +263,129 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
 }
 
 impl App {
+    fn overlay(&self) -> bool {
+        self.help || self.input.is_some() || self.theme_picker.is_some()
+    }
+    fn rebuild_cover(&mut self) {
+        let palette = self.theme.palette();
+        let image = self
+            .cover_image
+            .clone()
+            .unwrap_or_else(|| placeholder(palette));
+        self.cover.replace_protocol(
+            self.artwork
+                .new_resize_protocol(image, cover_background(palette)),
+        );
+    }
+    fn apply_theme(&mut self, theme: Theme) {
+        if self.theme != theme {
+            self.theme = theme;
+            self.rebuild_cover();
+        }
+    }
+    fn open_theme_picker(&mut self) {
+        self.theme_picker = Some(ThemePicker {
+            original: self.theme,
+            selection: ListState::default()
+                .with_selected(Theme::ALL.iter().position(|t| *t == self.theme)),
+            error: None,
+        });
+    }
+    fn theme_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                let original = self.theme_picker.take().unwrap().original;
+                self.apply_theme(original);
+            }
+            KeyCode::Enter => match (Settings { theme: self.theme }).save(&self.settings_path) {
+                Ok(()) => {
+                    self.theme_picker = None;
+                    self.settings_warning = None;
+                    self.notice(format!(
+                        "{} saved for future attachments.",
+                        self.theme.name()
+                    ));
+                }
+                Err(error) => {
+                    self.theme_picker.as_mut().unwrap().error = Some(format!(
+                        "Save failed: {error:#}. Enter retries; Esc cancels."
+                    ))
+                }
+            },
+            KeyCode::Down
+            | KeyCode::Char('j')
+            | KeyCode::Up
+            | KeyCode::Char('k')
+            | KeyCode::Home
+            | KeyCode::End => {
+                let picker = self.theme_picker.as_mut().unwrap();
+                let selected = picker.selection.selected().unwrap_or(0);
+                let index = match key {
+                    KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
+                    KeyCode::Home => 0,
+                    KeyCode::End => Theme::ALL.len() - 1,
+                    _ => (selected + 1).min(Theme::ALL.len() - 1),
+                };
+                picker.selection.select(Some(index));
+                self.apply_theme(Theme::ALL[index]);
+            }
+            _ => (),
+        }
+    }
+
+    fn draw_theme_picker(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
+        let picker = self.theme_picker.as_mut().unwrap();
+        let error_height = if picker.error.is_some() { 3 } else { 0 };
+        let popup = centered(area, 52, 15 + error_height);
+        frame.render_widget(Clear, popup);
+        let panel = block(p, " COLOR THEME · preview ", true)
+            .style(Style::default().fg(p.text).bg(p.panel));
+        let inner = panel.inner(popup);
+        frame.render_widget(panel, popup);
+        let [list, error, hint] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(error_height),
+            Constraint::Length(2),
+        ])
+        .areas(inner);
+        let items = Theme::ALL
+            .iter()
+            .map(|theme| {
+                let palette = theme.palette();
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{:<19} {:<5} ", theme.name(), theme.mode())),
+                    Span::styled("██", Style::default().fg(palette.accent)),
+                    Span::styled("██", Style::default().fg(palette.text)),
+                    Span::styled("██", Style::default().fg(palette.bg)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        frame.render_stateful_widget(
+            List::new(items).highlight_symbol("› ").highlight_style(
+                Style::default()
+                    .fg(p.text)
+                    .bg(p.selection)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            list,
+            &mut picker.selection,
+        );
+        if let Some(message) = &picker.error {
+            frame.render_widget(
+                Paragraph::new(message.as_str())
+                    .style(Style::default().fg(p.error))
+                    .wrap(Wrap { trim: false }),
+                error,
+            );
+        }
+        frame.render_widget(
+            Paragraph::new("↑/↓ j/k preview · Enter save\nEsc/q cancel · saved for next attach")
+                .style(Style::default().fg(p.muted)),
+            hint,
+        );
+    }
+
     fn notice(&mut self, text: impl Into<String>) {
         self.notice = text.into();
         self.notice_at = Instant::now();
@@ -245,20 +413,17 @@ impl App {
         let cover_key = state.current().and_then(|q| q.track.cover.clone());
         if self.cover_key != cover_key {
             self.cover_key = cover_key.clone();
-            self.cover
-                .replace_protocol(self.artwork.new_resize_protocol(placeholder()));
+            self.cover_image = None;
+            self.rebuild_cover();
             if self.show_art {
                 let sender = messages.clone();
                 tokio::task::spawn_blocking(move || {
-                    let image = cover_key
-                        .as_ref()
-                        .and_then(|p| {
-                            if p.metadata().ok()?.len() > 16 * 1024 * 1024 {
-                                return None;
-                            }
-                            decode_image(&std::fs::read(p).ok()?).ok()
-                        })
-                        .unwrap_or_else(placeholder);
+                    let image = cover_key.as_ref().and_then(|p| {
+                        if p.metadata().ok()?.len() > 16 * 1024 * 1024 {
+                            return None;
+                        }
+                        decode_image(&std::fs::read(p).ok()?).ok()
+                    });
                     let _ = sender.send(Message::Cover(cover_key, image));
                 });
             }
@@ -316,9 +481,10 @@ impl App {
                     }
                 }
             },
-            Message::Cover(key, image) if key == self.cover_key => self
-                .cover
-                .replace_protocol(self.artwork.new_resize_protocol(image)),
+            Message::Cover(key, image) if key == self.cover_key => {
+                self.cover_image = image;
+                self.rebuild_cover();
+            }
             Message::Resized(response) => {
                 self.cover.update_resized_protocol(response);
             }
@@ -328,6 +494,10 @@ impl App {
     fn key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
+        }
+        if self.theme_picker.is_some() {
+            self.theme_key(key.code);
+            return Ok(false);
         }
         if self.help {
             self.help = false;
@@ -365,6 +535,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('t') => self.open_theme_picker(),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = if self.focus == Focus::Library {
                     Focus::Queue
@@ -540,9 +711,10 @@ impl App {
         (self.state.position_ms + elapsed).min(duration)
     }
     fn draw(&mut self, frame: &mut Frame) {
+        let p = self.theme.palette();
         let area = frame.area();
         frame.render_widget(
-            Block::default().style(Style::default().bg(BG).fg(TEXT)),
+            Block::default().style(Style::default().bg(p.bg).fg(p.text)),
             area,
         );
         if area.width < 40 || area.height < 12 {
@@ -555,7 +727,13 @@ impl App {
             );
             return;
         }
-        let now_height = if area.height >= 28 { 11 } else { 6 };
+        let now_height = if area.height >= 28 {
+            11
+        } else if area.height >= 14 {
+            6
+        } else {
+            4
+        };
         let [header, now, content, status, hints] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(now_height),
@@ -568,9 +746,20 @@ impl App {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     " vtamp ",
-                    Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" / virtual terminal amplifier", Style::default().fg(MUTED)),
+                Span::styled(
+                    " / virtual terminal amplifier",
+                    Style::default().fg(p.muted),
+                ),
+                Span::styled(
+                    if area.width >= 65 {
+                        format!(" · {}", self.theme.name())
+                    } else {
+                        String::new()
+                    },
+                    Style::default().fg(p.muted),
+                ),
             ])),
             header,
         );
@@ -588,6 +777,8 @@ impl App {
         }
         let message = if !self.connected {
             self.notice.clone()
+        } else if let Some(warning) = &self.settings_warning {
+            warning.clone()
         } else if self.state.scanning {
             "Scanning folders… playback stays available.".into()
         } else if self.notice_at.elapsed() < Duration::from_secs(6) {
@@ -599,20 +790,27 @@ impl App {
                 .unwrap_or_else(|| "Music stays. Your terminal moves on.".into())
         };
         frame.render_widget(
-            Paragraph::new(message).style(Style::default().fg(if self.connected {
-                MUTED
-            } else {
-                AMBER
-            })),
+            Paragraph::new(message).style(Style::default().fg(
+                if self.connected
+                    && self.settings_warning.is_none()
+                    && self.state.last_error.is_none()
+                {
+                    p.muted
+                } else {
+                    p.warning
+                },
+            )),
             status,
         );
-        let keys = if area.width >= 85 {
-            " Space play/pause  n/b skip  ←/→ seek  +/- vol  Tab switch  / search  a folder  ? help  q detach"
+        let keys = if area.width >= 100 {
+            " Space play/pause  n/b skip  ←/→ seek  +/- vol  Tab switch  / search  t theme  ? help  q detach"
+        } else if area.width >= 52 {
+            " Space play  Tab switch  t theme  ? help  q detach"
         } else {
-            " Space play  Tab switch  / search  ? help  q detach"
+            " Space play  t theme  ? help  q detach"
         };
         frame.render_widget(
-            Paragraph::new(keys).style(Style::default().bg(PANEL).fg(GREEN)),
+            Paragraph::new(keys).style(Style::default().bg(p.panel).fg(p.muted)),
             hints,
         );
         if let Some(input) = &self.input {
@@ -632,26 +830,30 @@ impl App {
             frame.render_widget(Clear, popup);
             frame.render_widget(
                 Paragraph::new(format!("{text}█"))
-                    .block(block(label, true))
-                    .style(Style::default().fg(TEXT).bg(PANEL)),
+                    .block(block(p, label, true))
+                    .style(Style::default().fg(p.text).bg(p.panel)),
                 popup,
             );
         }
         if self.help {
-            let popup = centered(area, 78, 22);
+            let popup = centered(area, 78, 23);
             frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
+            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
             frame.render_widget(
                 Paragraph::new(text)
-                    .block(block(" vtamp / key reference ", true))
-                    .style(Style::default().fg(TEXT).bg(PANEL))
+                    .block(block(p, " vtamp / key reference ", true))
+                    .style(Style::default().fg(p.text).bg(p.panel))
                     .wrap(Wrap { trim: false }),
                 popup,
             );
         }
+        if self.theme_picker.is_some() {
+            self.draw_theme_picker(frame, area);
+        }
     }
     fn now_playing(&mut self, frame: &mut Frame, area: Rect) {
-        let panel = block(" NOW PLAYING ", false);
+        let p = self.theme.palette();
+        let panel = block(p, " NOW PLAYING ", false);
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
         let show_cover = self.show_art && inner.height >= 7 && inner.width >= 64;
@@ -665,7 +867,7 @@ impl App {
             let _ = gap;
             // A graphics payload cannot be clipped around a text popup. Keep
             // its space reserved and restore the image after the popup closes.
-            if !self.help && self.input.is_none() {
+            if !self.overlay() {
                 frame.render_stateful_widget(
                     StatefulImage::new().resize(Resize::Fit(None)),
                     cover,
@@ -678,6 +880,22 @@ impl App {
         };
         let item = self.state.current();
         let title = item.map_or("Your music, your terminal.", |q| q.track.title.as_str());
+        if inner.height < 4 {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(
+                        title,
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Line::styled(
+                        format!("{:?} · VOL {}%", self.state.status, self.state.volume),
+                        Style::default().fg(p.muted),
+                    ),
+                ]),
+                info,
+            );
+            return;
+        }
         let artist = item.map_or("Press a to add a music folder, then Enter to play.", |q| {
             q.track.artist.as_str()
         });
@@ -704,16 +922,16 @@ impl App {
         let mut lines = vec![
             Line::styled(
                 title,
-                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
             ),
-            Line::styled(artist, Style::default().fg(TEXT)),
+            Line::styled(artist, Style::default().fg(p.text)),
         ];
         if names.height > 2 {
-            lines.push(Line::styled(album, Style::default().fg(MUTED)));
+            lines.push(Line::styled(album, Style::default().fg(p.muted)));
         }
         if names.height > 4 {
             lines.push(Line::from(""));
-            lines.push(Line::styled(label, Style::default().fg(GREEN)));
+            lines.push(Line::styled(label, Style::default().fg(p.accent)));
         }
         frame.render_widget(Paragraph::new(lines), names);
         let ratio = if duration == 0 {
@@ -724,7 +942,7 @@ impl App {
         frame.render_widget(
             Gauge::default()
                 .ratio(ratio)
-                .gauge_style(Style::default().fg(GREEN).bg(PANEL))
+                .gauge_style(Style::default().fg(p.accent).bg(p.panel))
                 .label(format!(
                     "{} / {}",
                     display_time(pos),
@@ -740,11 +958,12 @@ impl App {
                 if self.state.shuffle { "ON" } else { "OFF" },
                 self.state.repeat
             ))
-            .style(Style::default().fg(MUTED)),
+            .style(Style::default().fg(p.muted)),
             controls,
         );
     }
     fn library(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
         let title = format!(
             " LIBRARY · {} tracks{} · Tab / queue ",
             self.total,
@@ -754,9 +973,9 @@ impl App {
                 format!(" · {}", self.query)
             }
         );
-        let panel = block(&title, self.focus == Focus::Library);
+        let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change or clear the search." }).block(panel).style(Style::default().fg(MUTED)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change or clear the search." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
@@ -766,7 +985,7 @@ impl App {
                         Line::from(t.title.clone()),
                         Line::styled(
                             format!("{} · {}", t.artist, t.album),
-                            Style::default().fg(MUTED),
+                            Style::default().fg(p.muted),
                         ),
                     ])
                 })
@@ -776,8 +995,8 @@ impl App {
                     .block(panel)
                     .highlight_style(
                         Style::default()
-                            .fg(GREEN)
-                            .bg(PANEL)
+                            .fg(p.text)
+                            .bg(p.selection)
                             .add_modifier(Modifier::BOLD),
                     )
                     .highlight_symbol("› "),
@@ -787,13 +1006,14 @@ impl App {
         }
     }
     fn queue(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
         let title = format!(
             " QUEUE · {} entries · Tab / library ",
             self.state.queue.len()
         );
-        let panel = block(&title, self.focus == Focus::Queue);
+        let panel = block(p, &title, self.focus == Focus::Queue);
         if self.state.queue.is_empty() {
-            frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(MUTED)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .state
@@ -810,7 +1030,7 @@ impl App {
                                 i + 1,
                                 q.track.title
                             ),
-                            Style::default().fg(if current { GREEN } else { TEXT }),
+                            Style::default().fg(if current { p.accent } else { p.text }),
                         ),
                         Line::styled(
                             format!(
@@ -818,7 +1038,7 @@ impl App {
                                 q.track.artist,
                                 display_time(q.track.duration_ms)
                             ),
-                            Style::default().fg(MUTED),
+                            Style::default().fg(p.muted),
                         ),
                     ])
                 })
@@ -826,7 +1046,12 @@ impl App {
             frame.render_stateful_widget(
                 List::new(items)
                     .block(panel)
-                    .highlight_style(Style::default().bg(PANEL).add_modifier(Modifier::BOLD))
+                    .highlight_style(
+                        Style::default()
+                            .fg(p.text)
+                            .bg(p.selection)
+                            .add_modifier(Modifier::BOLD),
+                    )
                     .highlight_symbol("› "),
                 area,
                 &mut self.queue_selection,
@@ -835,11 +1060,14 @@ impl App {
     }
 }
 
-fn block(title: &str, active: bool) -> Block<'static> {
+fn block(p: Palette, title: &str, active: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .title(title.to_owned())
-        .border_style(Style::default().fg(if active { GREEN } else { BORDER }))
+        .title(Line::styled(
+            title.to_owned(),
+            Style::default().fg(if active { p.accent } else { p.muted }),
+        ))
+        .border_style(Style::default().fg(if active { p.accent } else { p.border }))
 }
 fn clamp_selection(state: &mut ListState, len: usize) {
     state.select(if len == 0 {
@@ -858,14 +1086,18 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         height,
     )
 }
-fn placeholder() -> image::DynamicImage {
+fn cover_background(p: Palette) -> image::Rgba<u8> {
+    let [r, g, b] = channels(p.bg);
+    image::Rgba([r, g, b, 255])
+}
+fn placeholder(p: Palette) -> image::DynamicImage {
     image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(64, 64, |x, y| {
         let stripe = (x + y) / 9 % 4;
         image::Rgb(match stripe {
-            0 => [180, 246, 118],
-            1 => [88, 130, 72],
-            2 => [45, 66, 43],
-            _ => [27, 38, 27],
+            0 => channels(p.accent),
+            1 => channels(p.border),
+            2 => channels(p.selection),
+            _ => channels(p.bg),
         })
     }))
 }
@@ -874,9 +1106,192 @@ fn placeholder() -> image::DynamicImage {
 mod tests {
     use super::*;
 
+    #[test]
+    fn theme_preview_cancel_save_and_input_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.settings_path = dir.path().join("ui.json");
+        let (tx, mut rx) = mpsc::channel(16);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(key(KeyCode::Char('t')), &tx).unwrap();
+        app.key(key(KeyCode::Down), &tx).unwrap();
+        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        for code in [
+            KeyCode::Char('x'),
+            KeyCode::Char(' '),
+            KeyCode::Char('n'),
+            KeyCode::Tab,
+        ] {
+            app.key(key(code), &tx).unwrap();
+        }
+        assert!(rx.try_recv().is_err());
+        assert!(!app.settings_path.exists());
+        assert!(!app.key(key(KeyCode::Esc), &tx).unwrap());
+        assert_eq!(app.theme, Theme::CatppuccinMocha);
+        assert!(app.theme_picker.is_none());
+        assert!(!app.settings_path.exists());
+        app.key(key(KeyCode::Char('t')), &tx).unwrap();
+        app.key(key(KeyCode::Down), &tx).unwrap();
+        app.key(key(KeyCode::Enter), &tx).unwrap();
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().theme,
+            Theme::CatppuccinLatte
+        );
+        assert!(app.theme_picker.is_none());
+        app.open_theme_picker();
+        app.theme_key(KeyCode::End);
+        assert_eq!(app.theme, Theme::Classic);
+        assert!(!app.key(key(KeyCode::Char('q')), &tx).unwrap());
+        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        app.open_theme_picker();
+        app.theme_key(KeyCode::End);
+        assert!(
+            app.key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &tx
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().theme,
+            Theme::CatppuccinLatte
+        );
+    }
+
+    #[test]
+    fn attachment_override_and_broken_settings_are_non_destructive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui.json");
+        assert_eq!(
+            attachment_theme(&path, None),
+            (Theme::CatppuccinMocha, None)
+        );
+        Settings { theme: Theme::Nord }.save(&path).unwrap();
+        assert_eq!(
+            attachment_theme(&path, Some(Theme::Dracula)),
+            (Theme::Dracula, None)
+        );
+        assert_eq!(attachment_theme(&path, None), (Theme::Nord, None));
+        std::fs::write(&path, "broken").unwrap();
+        let (theme, warning) = attachment_theme(&path, None);
+        assert_eq!(theme, Theme::CatppuccinMocha);
+        assert!(warning.unwrap().contains("Invalid UI settings"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
+    }
+
+    #[test]
+    fn failed_theme_save_keeps_preview_open_and_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.settings_path = dir.path().join("ui.json");
+        std::fs::create_dir(&app.settings_path).unwrap();
+        app.open_theme_picker();
+        app.theme_key(KeyCode::Down);
+        app.theme_key(KeyCode::Enter);
+        assert!(app.theme_picker.as_ref().unwrap().error.is_some());
+        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        app.theme_key(KeyCode::Esc);
+        assert_eq!(app.theme, Theme::CatppuccinMocha);
+        assert!(app.settings_path.is_dir());
+    }
+
+    #[test]
+    fn themes_render_lists_and_scrolling_picker_at_supported_sizes() {
+        let mut app = app();
+        let track = Track {
+            id: "track".into(),
+            path: "/example.m4a".into(),
+            title: "음악 · After Hours".into(),
+            artist: "The Night Shift".into(),
+            album: "Terminal Sessions".into(),
+            track_number: 1,
+            duration_ms: 180_000,
+            cover: None,
+        };
+        app.tracks = vec![track.clone()];
+        app.total = 1;
+        app.state.queue.push(QueueItem::new(track));
+        app.state.current_id = Some(app.state.queue[0].id.clone());
+        app.library_selection.select(Some(0));
+        app.queue_selection.select(Some(0));
+        for theme in Theme::ALL {
+            app.apply_theme(theme);
+            for (width, height) in [(40, 12), (80, 24), (120, 36)] {
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                        .unwrap();
+                for focus in [Focus::Library, Focus::Queue] {
+                    app.focus = focus;
+                    terminal.draw(|f| app.draw(f)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    assert_eq!(buffer[(0, 0)].bg, theme.palette().bg);
+                    assert!(
+                        buffer
+                            .content()
+                            .iter()
+                            .any(|cell| cell.bg == theme.palette().selection)
+                    );
+                }
+                app.open_theme_picker();
+                app.theme_key(KeyCode::End);
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert!(
+                    text.contains("Classic"),
+                    "last option must scroll into view at {width}x{height}"
+                );
+                app.theme_key(KeyCode::Esc);
+                app.help = true;
+                terminal.draw(|f| app.draw(f)).unwrap();
+                app.help = false;
+                app.input = Some(Input::Search("음악".into()));
+                terminal.draw(|f| app.draw(f)).unwrap();
+                app.input = None;
+            }
+        }
+    }
+
+    #[test]
+    fn cover_theme_change_rejects_stale_encoding_and_preserves_source_pixels() {
+        use ratatui_image::ResizeEncodeRender;
+        let mut app = app();
+        let source = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            10,
+            20,
+            image::Rgb([200, 30, 80]),
+        ));
+        app.cover_image = Some(source.clone());
+        let (tx, rx) = sync_mpsc::channel();
+        app.cover = ThreadProtocol::new(tx, None);
+        app.rebuild_cover();
+        app.cover.resize_encode(&Resize::Fit(None), (8, 8).into());
+        let old_encoding = rx.recv().unwrap().resize_encode().unwrap();
+        app.apply_theme(Theme::CatppuccinLatte);
+        assert!(!app.cover.update_resized_protocol(old_encoding));
+        assert_eq!(
+            app.cover.background_color(),
+            Some(cover_background(app.theme.palette()))
+        );
+        assert_eq!(
+            app.cover_image.as_ref().unwrap().as_bytes(),
+            source.as_bytes()
+        );
+    }
+
     fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
         App {
+            theme: Theme::default(),
+            theme_picker: None,
+            settings_path: PathBuf::new(),
+            settings_warning: None,
+            cover_image: None,
             state: State::default(),
             tracks: vec![],
             total: 0,
@@ -922,9 +1337,10 @@ mod tests {
             font_size: FontSize::new(10, 20),
             tmux: true,
         };
-        let mut protocol = app
-            .artwork
-            .new_resize_protocol(image::DynamicImage::new_rgb8(512, 512));
+        let mut protocol = app.artwork.new_resize_protocol(
+            image::DynamicImage::new_rgb8(512, 512),
+            cover_background(app.theme.palette()),
+        );
         protocol.resize_encode(&Resize::Fit(None), (18, 9).into());
         protocol.last_encoding_result().unwrap().unwrap();
         app.cover.replace_protocol(protocol);
@@ -947,5 +1363,19 @@ mod tests {
                 visible
             );
         }
+        app.open_theme_picker();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(
+            !terminal.backend().buffer()[(1, 2)]
+                .symbol()
+                .contains("\x1bP")
+        );
+        app.theme_key(KeyCode::Esc);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(
+            terminal.backend().buffer()[(1, 2)]
+                .symbol()
+                .contains("\x1bP")
+        );
     }
 }
