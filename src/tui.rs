@@ -1,4 +1,6 @@
-use crate::{cli::Art, client::Client, library::decode_image, model::*, platform, wire};
+use crate::{
+    artwork::Artwork, cli::Art, client::Client, library::decode_image, model::*, platform, wire,
+};
 use anyhow::Result;
 use crossterm::event::{
     self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -12,7 +14,6 @@ use ratatui::{
 };
 use ratatui_image::{
     Resize, StatefulImage,
-    picker::{Picker, ProtocolType},
     thread::{ResizeRequest, ResizeResponse, ThreadProtocol},
 };
 use serde_json::Value;
@@ -65,7 +66,7 @@ struct App {
     notice: String,
     notice_at: Instant,
     last_progress: Instant,
-    picker: Picker,
+    artwork: Artwork,
     cover: ThreadProtocol,
     cover_key: Option<PathBuf>,
     show_art: bool,
@@ -81,21 +82,7 @@ impl Drop for TerminalGuard {
 pub async fn run(client: Client, art: Art) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
-    let mut picker = match art {
-        Art::None | Art::Halfblocks => Picker::halfblocks(),
-        Art::Auto
-            if std::env::var_os("TMUX").is_some()
-                || std::env::var("TERM")
-                    .is_ok_and(|s| s.starts_with("tmux") || s.starts_with("screen")) =>
-        {
-            Picker::halfblocks()
-        }
-        _ => Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks()),
-    };
-    if matches!(art, Art::Kitty) {
-        picker.set_protocol_type(ProtocolType::Kitty);
-    }
-    picker.set_background_color(Some(image::Rgba([32, 37, 33, 255])));
+    let artwork = Artwork::detect(art);
     let (messages, mut incoming) = mpsc::unbounded_channel();
     let (commands, mut requests) = mpsc::channel::<Command>(64);
     let (resize_tx, resize_rx) = sync_mpsc::channel::<ResizeRequest>();
@@ -109,7 +96,7 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
             }
         }
     });
-    let cover = ThreadProtocol::new(resize_tx, Some(picker.new_resize_protocol(placeholder())));
+    let cover = ThreadProtocol::new(resize_tx, Some(artwork.new_resize_protocol(placeholder())));
     let mut app = App {
         state: State::default(),
         tracks: vec![],
@@ -125,7 +112,7 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
         notice: "Connecting…".into(),
         notice_at: Instant::now(),
         last_progress: Instant::now(),
-        picker,
+        artwork,
         cover,
         cover_key: None,
         show_art: !matches!(art, Art::None),
@@ -207,8 +194,14 @@ pub async fn run(client: Client, art: Art) -> Result<()> {
             while event::poll(Duration::ZERO)? {
                 match event::read()? {
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
+                        let overlay = app.help || app.input.is_some();
                         if app.key(key, &commands)? {
                             return Ok::<_, anyhow::Error>(());
+                        }
+                        if overlay != (app.help || app.input.is_some()) {
+                            // Sixel pixels aren't represented by individual text
+                            // cells. Clear them when opening or closing a dialog.
+                            terminal.clear()?;
                         }
                     }
                     TerminalEvent::Resize(_, _) => terminal.clear()?,
@@ -253,7 +246,7 @@ impl App {
         if self.cover_key != cover_key {
             self.cover_key = cover_key.clone();
             self.cover
-                .replace_protocol(self.picker.new_resize_protocol(placeholder()));
+                .replace_protocol(self.artwork.new_resize_protocol(placeholder()));
             if self.show_art {
                 let sender = messages.clone();
                 tokio::task::spawn_blocking(move || {
@@ -325,7 +318,7 @@ impl App {
             },
             Message::Cover(key, image) if key == self.cover_key => self
                 .cover
-                .replace_protocol(self.picker.new_resize_protocol(image)),
+                .replace_protocol(self.artwork.new_resize_protocol(image)),
             Message::Resized(response) => {
                 self.cover.update_resized_protocol(response);
             }
@@ -670,11 +663,15 @@ impl App {
             ])
             .areas(inner);
             let _ = gap;
-            frame.render_stateful_widget(
-                StatefulImage::new().resize(Resize::Fit(None)),
-                cover,
-                &mut self.cover,
-            );
+            // A graphics payload cannot be clipped around a text popup. Keep
+            // its space reserved and restore the image after the popup closes.
+            if !self.help && self.input.is_none() {
+                frame.render_stateful_widget(
+                    StatefulImage::new().resize(Resize::Fit(None)),
+                    cover,
+                    &mut self.cover,
+                );
+            }
             info
         } else {
             inner
@@ -876,10 +873,10 @@ fn placeholder() -> image::DynamicImage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn unicode_empty_and_tiny_layouts_render_without_overflow() {
+
+    fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
-        let mut app = App {
+        App {
             state: State::default(),
             tracks: vec![],
             total: 0,
@@ -894,11 +891,16 @@ mod tests {
             notice: String::new(),
             notice_at: Instant::now(),
             last_progress: Instant::now(),
-            picker: Picker::halfblocks(),
+            artwork: Artwork::detect(Art::Halfblocks),
             cover: ThreadProtocol::new(tx, None),
             cover_key: None,
             show_art: false,
-        };
+        }
+    }
+
+    #[test]
+    fn unicode_empty_and_tiny_layouts_render_without_overflow() {
+        let mut app = app();
         for (width, height) in [(1, 1), (30, 8), (40, 12), (80, 24), (120, 36)] {
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
@@ -906,6 +908,44 @@ mod tests {
             app.help = true;
             terminal.draw(|f| app.draw(f)).unwrap();
             app.help = false;
+        }
+    }
+
+    #[test]
+    fn pixel_cover_is_hidden_under_dialogs_and_restored_afterward() {
+        use ratatui_image::{FontSize, ResizeEncodeRender, picker::ProtocolType};
+
+        let mut app = app();
+        app.show_art = true;
+        app.artwork = Artwork::Native {
+            protocol: ProtocolType::Sixel,
+            font_size: FontSize::new(10, 20),
+            tmux: true,
+        };
+        let mut protocol = app
+            .artwork
+            .new_resize_protocol(image::DynamicImage::new_rgb8(512, 512));
+        protocol.resize_encode(&Resize::Fit(None), (18, 9).into());
+        protocol.last_encoding_result().unwrap().unwrap();
+        app.cover.replace_protocol(protocol);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+        for (help, input, visible) in [
+            (false, None, true),
+            (true, None, false),
+            (false, None, true),
+            (false, Some(Input::Search(String::new())), false),
+            (false, None, true),
+        ] {
+            app.help = help;
+            app.input = input;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(1, 2)]
+                    .symbol()
+                    .contains("\x1bP"),
+                visible
+            );
         }
     }
 }

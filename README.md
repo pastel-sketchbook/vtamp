@@ -121,29 +121,34 @@ Wide panes show the library and queue side by side. Narrow panes show the focuse
 
 ## Covers, terminals, and tmux
 
-The default is designed to be dependable inside tmux:
+vtamp detects graphics support when you attach. Inside tmux, a pane that advertises native **Sixel** support gets a pixel-rendered cover using the terminal's reported cell dimensions. Other panes fall back to color halfblocks.
 
 | Option | Rendering |
 | --- | --- |
-| `--art auto` | Color halfblocks in tmux; detected graphics protocol elsewhere, falling back to halfblocks |
+| `--art auto` | Native Sixel in supporting tmux panes; detected graphics protocol elsewhere; halfblocks as fallback |
 | `--art halfblocks` | Unicode upper/lower blocks with foreground and background colors |
+| `--art sixel` | Force native Sixel graphics when support is known but automatic detection fails |
 | `--art kitty` | Explicit Kitty graphics protocol; requires terminal/multiplexer support |
 | `--art none` | Hide album art |
 
 ```sh
+vtamp                     # Automatically use native Sixel when supported in tmux.
+vtamp --art sixel
 vtamp --art halfblocks
 vtamp --art kitty
 ```
 
-Halfblocks work without terminal graphics passthrough. For true color, configure your terminal and tmux for RGB color if necessary. On tmux versions and terminals that support Kitty graphics, passthrough may require:
+Sixel is sent directly to the current terminal or tmux pane, without passthrough wrapping, so a Sixel-enabled tmux can manage the image across pane redraws and window switches. This requires native Sixel support in both tmux and its client terminal. The probe waits at most 250 ms; automatic mode falls back to halfblocks if Sixel or usable pixel dimensions cannot be detected. Explicit `--art sixel` still queries cell dimensions, with a 10×20-pixel estimate if the terminal supplies none.
+
+Halfblocks work without terminal graphics passthrough. For true color, configure your terminal and tmux for RGB color if necessary. The separate explicit Kitty mode may require passthrough:
 
 ```tmux
 set -g allow-passthrough on
 ```
 
-vtamp does **not** change your tmux configuration. Kitty graphics through multiplexers can vary with terminal and tmux versions, especially when switching windows. Halfblocks are the tested tmux baseline. Use them if images linger, disappear, or render incorrectly. The explicit Kitty mode is opt-in, not a compatibility guarantee for every Ghostty/kitty/tmux combination.
+vtamp does **not** change your tmux configuration. Kitty graphics through multiplexers can vary with terminal and tmux versions, especially when switching windows. Use halfblocks if images linger, disappear, or render incorrectly. The explicit Kitty mode is opt-in, not a compatibility guarantee for every Ghostty/kitty/tmux combination.
 
-Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Embedded art is cached as a thumbnail. Missing or undecodable art uses a built-in image. Image decoding and resizing run outside the UI input loop.
+Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Embedded art is cached at up to 512×512 pixels; graphics modes fit those pixels to the cover area while preserving aspect ratio. Missing or undecodable art uses a built-in image. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
 
 ## Commands
 
