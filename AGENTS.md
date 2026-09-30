@@ -25,7 +25,7 @@ playing when a TUI exits or a tmux client detaches.
 | --- | --- |
 | `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
 | `src/engine.rs` | Playback state machine, queue edits, shuffle/history, repeat, output recovery |
-| `src/audio.rs` | `PlaybackBackend` boundary, rodio adapter, default-device and stream monitoring |
+| `src/audio.rs`, `src/audio/macos.rs` | Shared decoder entry point, macOS AudioToolbox AAC source, rodio adapter, default-device and stream monitoring |
 | `src/media_controls.rs`, `src/media_controls/macos.rs`, `src/media_controls/app_bundle.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, private signed app bundle and embedded identity |
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
@@ -73,6 +73,10 @@ than describing them as successful live validation.
   persistence, subscriptions, malformed requests, and stale sockets.
 - `tests/media.rs` includes a small synthesized AAC fixture with an extended-size
   MP4 `mdat` atom. Preserve this regression; ordinary MP4 files do not cover it.
+  All media tests use `audio::decode_file`, the same entry point as playback.
+  Native AAC tests also cover stereo, codec selection, EOF, and seeking; they
+  need macOS codec-service access but do not open an output device. If a sandbox
+  blocks AudioToolbox (including PCM format setup), rerun outside the sandbox.
 - `tests/themes.rs` and `tests/tmux.rs` cover CLI behavior and instance isolation.
 - Tests requiring personal media or an audio device are ignored by default.
   Passing the default suite does not prove actual playback or terminal graphics.
@@ -159,6 +163,11 @@ missing-art cases, but their presence is not a portable test prerequisite.
   endings; manual next must still advance.
 - Output-device recovery must retain track, position, volume, pause state, queue,
   and shuffle/history. An unavailable output is not an unreadable track to skip.
+- On macOS, only AAC uses AudioToolbox; inspect the actual codec rather than the
+  extension so ALAC/m4a remains on Symphonia. Do not add an AAC software fallback.
+  Keep `symphonia-codec-aac` out of the macOS target dependency graph (it may remain
+  in Cargo.lock for non-macOS). Native handles have exclusive ownership and are
+  disposed on every exit; preserve bounded PCM buffering and frame-based seeking.
 - Media controls default on for the ordinary macOS server and off with
   `VTAMP_HOME`; `VTAMP_MEDIA_KEYS=0|1` overrides this at server startup. Only the
   server-lock owner registers handlers. Keep AppKit on the main thread, audio

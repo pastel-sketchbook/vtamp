@@ -5,3 +5,17 @@
 It was generated with FFmpeg's `sine` source and AAC encoder. The adjacent eight-byte `free` atom and normal `mdat` header were replaced with a sixteen-byte, extended-size `mdat` header. File length and audio offsets are unchanged. This reproduces the MP4 layout in the local development samples without redistributing those recordings.
 
 The regression test verifies both metadata extraction and actual AAC sample decoding. FFmpeg is not needed to run the tests or vtamp.
+
+`stereo.wav`, `stereo-alac.m4a`, and `stereo-aac.m4a` contain the same original
+0.3-second stereo signal: 440 Hz at amplitude 0.2 on the left and 880 Hz at
+amplitude 0.1 on the right, sampled at 48 kHz. They are also MIT licensed and
+contain no third-party recordings. WAV and ALAC verify that the shared decoder
+preserves the lossless samples; AAC exercises native stereo decoding and seeking.
+
+They were generated using FFmpeg with this input:
+
+```sh
+ffmpeg -f lavfi -i 'aevalsrc=0.2*sin(2*PI*440*t)|0.1*sin(2*PI*880*t):s=48000:d=0.3' -c:a pcm_s16le stereo.wav
+ffmpeg -f lavfi -i 'aevalsrc=0.2*sin(2*PI*440*t)|0.1*sin(2*PI*880*t):s=48000:d=0.3' -c:a alac stereo-alac.m4a
+ffmpeg -f lavfi -i 'aevalsrc=0.2*sin(2*PI*440*t)|0.1*sin(2*PI*880*t):s=48000:d=0.3' -c:a aac stereo-aac.m4a
+```

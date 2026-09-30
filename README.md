@@ -419,6 +419,22 @@ VTAMP_TEST_AUDIO_FILE=/path/to/track.m4a cargo test --lib audio::tests::real_out
 
 The implementation separates the queue state machine (`engine`), the rodio adapter (`audio`), metadata/catalog work (`library`, `store`), local transport (`wire`, `client`, `daemon`), platform paths (`platform`), and human/CLI interfaces (`tui`, `cli`). The server alone owns authoritative state and SQLite writes. Scans and artwork work run separately from playback control. See [the protocol notes](docs/protocol.md) for low-level integration.
 
+On macOS, AAC decoding uses the installed AudioToolbox framework through
+`audio/macos.rs`. The decoder reads interleaved PCM in bounded chunks and seeks
+by sample frame; rodio still handles playback, volume, and output recovery.
+Selection uses the file's actual codec, so ALAC in an m4a container continues
+through Symphonia, as do MP3, FLAC, WAV, and Vorbis. A native AAC decoding failure
+does not fall back to a bundled AAC implementation. The macOS dependency graph
+excludes `symphonia-codec-aac`; that crate remains in the lockfile for the existing,
+untested non-macOS configuration. Using the OS codec is not a legal guarantee
+about patent obligations in every distribution scenario.
+
+The synthesized AAC, ALAC, and WAV fixtures cover decoder selection, stereo
+samples, EOF, and AAC seeking without opening an output device. Native AAC tests
+need access to macOS codec services: an execution sandbox can block those services
+even though no sound is played. Run the same tests outside that sandbox rather
+than treating such a failure as an unsupported file or silently skipping it.
+
 On macOS, `media_controls` runs a windowless AppKit loop on the server's main
 thread and bridges system commands to the existing bounded player queue. Metadata
 updates are coalesced; artwork is prepared by a separate worker. Ordinary CLI/TUI

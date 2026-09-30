@@ -13,6 +13,28 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+mod macos;
+
+/// Open a streaming decoder without opening an audio output device.
+/// AAC uses the system decoder on macOS; other codecs use rodio/Symphonia.
+pub fn decode_file(path: &Path) -> Result<Box<dyn Source + Send>> {
+    #[cfg(target_os = "macos")]
+    if let Some(source) = macos::AacDecoder::open(path)
+        .with_context(|| format!("AudioToolbox AAC decoder: {}", path.display()))?
+    {
+        return Ok(Box::new(source));
+    }
+    let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
+    let source = rodio::Decoder::try_from(file).with_context(|| {
+        format!(
+            "Symphonia decoder: unsupported or damaged audio: {}",
+            path.display()
+        )
+    })?;
+    Ok(Box::new(source))
+}
+
 pub trait PlaybackBackend: Send {
     fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()>;
     fn pause(&mut self);
@@ -123,8 +145,7 @@ impl RodioBackend {
 
 impl PlaybackBackend for RodioBackend {
     fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()> {
-        let file = File::open(path).with_context(|| format!("Cannot open {}", path.display()))?;
-        let mut source = rodio::Decoder::try_from(file).context("Unsupported or damaged audio")?;
+        let mut source = decode_file(path)?;
         // Seek the decoder directly: Player::try_seek waits for the audio callback,
         // which may never arrive while a Bluetooth output is disappearing.
         if position_ms > 0 {
