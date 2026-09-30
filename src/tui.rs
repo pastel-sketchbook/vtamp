@@ -144,13 +144,7 @@ pub async fn run(
             }
         }
     });
-    let cover = ThreadProtocol::new(
-        resize_tx,
-        Some(artwork.new_resize_protocol(
-            placeholder(theme.palette()),
-            cover_background(theme.palette()),
-        )),
-    );
+    let cover = ThreadProtocol::new(resize_tx, None);
     let mut app = App {
         theme,
         theme_picker: None,
@@ -285,10 +279,10 @@ impl App {
     }
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
-        let image = self
-            .cover_image
-            .clone()
-            .unwrap_or_else(|| placeholder(palette));
+        let Some(image) = self.cover_image.clone() else {
+            self.cover.empty_protocol();
+            return;
+        };
         self.cover.replace_protocol(
             self.artwork
                 .new_resize_protocol(image, cover_background(palette)),
@@ -964,11 +958,27 @@ impl App {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide while an overlay is open, and redraw when it closes.
             if !self.overlay() {
-                frame.render_stateful_widget(
-                    StatefulImage::new().resize(Resize::Fit(None)),
-                    cover,
-                    &mut self.cover,
-                );
+                if self.cover_image.is_some() {
+                    frame.render_stateful_widget(
+                        StatefulImage::new().resize(Resize::Fit(None)),
+                        cover,
+                        &mut self.cover,
+                    );
+                } else {
+                    // A short stacked player can reserve only four columns for
+                    // a square image. Let the label use the full player width.
+                    let (x, width) = if info.y > cover.y {
+                        (inner.x, inner.width)
+                    } else {
+                        (cover.x, cover.width)
+                    };
+                    frame.render_widget(
+                        Paragraph::new("No album art")
+                            .centered()
+                            .style(Style::default().fg(p.muted)),
+                        Rect::new(x, cover.y + cover.height.saturating_sub(1) / 2, width, 1),
+                    );
+                }
             }
         }
         let item = self.state.current();
@@ -1228,17 +1238,6 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn cover_background(p: Palette) -> image::Rgba<u8> {
     let [r, g, b] = channels(p.bg);
     image::Rgba([r, g, b, 255])
-}
-fn placeholder(p: Palette) -> image::DynamicImage {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(64, 64, |x, y| {
-        let stripe = (x + y) / 9 % 4;
-        image::Rgb(match stripe {
-            0 => channels(p.accent),
-            1 => channels(p.border),
-            2 => channels(p.selection),
-            _ => channels(p.bg),
-        })
-    }))
 }
 
 #[cfg(test)]
@@ -1513,6 +1512,7 @@ mod tests {
         };
         let (tx, rx) = sync_mpsc::channel();
         app.cover = ThreadProtocol::new(tx, None);
+        app.cover_image = Some(image::DynamicImage::new_rgb8(64, 64));
         app.rebuild_cover();
         let (commands, mut requests) = mpsc::channel(8);
         // Cross each breakpoint in both directions while keeping the same
@@ -1844,6 +1844,7 @@ mod tests {
 
         let mut app = app();
         app.show_art = true;
+        app.cover_image = Some(image::DynamicImage::new_rgb8(512, 512));
         app.artwork = Artwork::Native {
             protocol: ProtocolType::Sixel,
             font_size: FontSize::new(10, 20),
