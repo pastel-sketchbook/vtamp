@@ -28,6 +28,8 @@ Virtual terminal meets Winamp: a local music player with the lifecycle of a deta
 
 Folder-based local library, search, queue editing, album art, machine-readable CLI, persistent session. A server restart restores the session paused. No streaming, account, login service, or permanent pane required. English-only first release. macOS is the supported platform; isolate platform dependencies for later Linux support.
 
+The macOS server integrates with media keys and Now Playing, including track metadata and artwork in Control Center. Controls remain available after the TUI detaches; macOS chooses the active media player.
+
 ## Brand Commitments
 
 Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.
@@ -42,4 +44,3 @@ Local m4a files in ~/work/tapmusic/out are available for development verificatio
 - Terminal space is working space.
 - Every important action is available without a TUI.
 - Graceful text-based cover art is better than fragile terminal graphics.
-

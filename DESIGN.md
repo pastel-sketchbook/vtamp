@@ -47,6 +47,8 @@ The website is a Persuade surface. Lead with “Music stays. Your terminal moves
 
 The lifecycle section also introduces the optional tmux status-bar plugin with a labeled text example, a copyable status format, and a link to installation instructions. The example places music after the pane title without a clock or date; on narrow screens, the title truncates while playback times remain visible.
 
+A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard reference. These are labeled keys, not clickable playback controls. Match the neighboring tmux feature’s spacing and stack copy above the keys on mobile.
+
 ## Shapes
 
 Compact square corners and fine panel borders. TUI overlays use solid panel backgrounds, not transparency over album art.
