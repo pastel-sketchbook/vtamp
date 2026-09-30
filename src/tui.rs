@@ -477,7 +477,7 @@ impl App {
                     );
                 }
             }
-            KeyCode::Char('d') if self.focus == Focus::Queue => {
+            KeyCode::Char('x' | 'd') if self.focus == Focus::Queue => {
                 if let Some(item) = self
                     .queue_selection
                     .selected()
@@ -640,7 +640,7 @@ impl App {
         if self.help {
             let popup = centered(area, 78, 22);
             frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nd       Remove queue item J / K   Move queue item down / up\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
+            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
             frame.render_widget(
                 Paragraph::new(text)
                     .block(block(" vtamp / key reference ", true))

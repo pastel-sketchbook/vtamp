@@ -113,7 +113,7 @@ Read-only commands (`status`, `watch`, volume without a value, queue listing, li
 | `[` / `]` | Previous / next library page (200 tracks) |
 | `Enter` | Append and play a library track, or play a selected queue entry |
 | `e` | Append a library track without interrupting playback |
-| `d` | Remove the selected queue entry |
+| `x` / `d` | Remove the selected queue entry |
 | `J` / `K` | Move the selected queue entry down / up |
 | `?` | Show key reference |
 
