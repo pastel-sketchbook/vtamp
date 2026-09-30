@@ -27,6 +27,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 - Folder-based library, title/artist/album search, and an editable shared queue.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
+- High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
 - JSON commands and an event stream for scripts and AI agents.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
@@ -123,7 +124,7 @@ Wide panes show the library and queue side by side. Narrow panes show the focuse
 
 ## Covers, terminals, and tmux
 
-vtamp detects graphics support when you attach. Inside tmux, it first checks native Sixel support in **both tmux and the terminals attached to the pane's session**. Otherwise, it queries the outer terminal for Kitty graphics support. Ghostty + tmux uses this Kitty path for high-resolution covers. Color halfblocks are the fallback when neither graphics path is available.
+Album covers render as high-resolution pixel images through Sixel or Kitty graphics when supported. vtamp detects graphics support when you attach. Inside tmux, it first checks native Sixel support in **both tmux and the terminals attached to the pane's session**. Otherwise, it queries the outer terminal for Kitty graphics support. Ghostty + tmux uses this Kitty path for high-resolution covers. Color halfblocks are the fallback when neither graphics path is available.
 
 | Option | Rendering |
 | --- | --- |
