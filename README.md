@@ -38,9 +38,11 @@ macOS is the supported platform for this release. The platform and playback boun
 
 ## Install from source
 
-You need **Rust 1.90 or newer** and the macOS Command Line Tools (`xcode-select --install` if you do not have them). From this source checkout:
+You need **Rust 1.90 or newer** and the macOS Command Line Tools (`xcode-select --install` if you do not have them). Clone the repository and install:
 
 ```sh
+git clone https://github.com/rath/vtamp.git
+cd vtamp
 cargo install --locked --path .
 ```
 

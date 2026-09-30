@@ -81,7 +81,11 @@
 </section>
 <section id="install" class="install wrap" aria-labelledby="install-heading">
 <div><h2 id="install-heading">Press play.<br>Then get on with it.</h2><p>Bring a folder of music and a terminal.<br>vtamp takes care of the rest.</p><p class="requirements">macOS · Rust 1.90+ · local audio files<br>AAC / ALAC m4a, MP3, FLAC, WAV, Ogg Vorbis</p></div>
-<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="cargo install --locked --path ." aria-label="Copy installation command">Copy command</button></div><p>From your vtamp source checkout:</p><pre><code><span class="comment"># Install the player</span>
+<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="Copy installation commands">Copy commands</button></div><p>Clone the repository, then install:</p><pre><code><span class="comment"># Get the source</span>
+git clone https://github.com/rath/vtamp.git
+cd vtamp
+
+<span class="comment"># Install the player</span>
 cargo install --locked --path .
 
 <span class="comment"># Register your music folder</span>
