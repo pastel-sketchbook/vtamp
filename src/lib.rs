@@ -2,6 +2,7 @@ mod artwork;
 pub mod audio;
 pub mod cli;
 pub mod client;
+mod cover;
 pub mod daemon;
 pub mod engine;
 pub mod library;

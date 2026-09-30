@@ -2,6 +2,7 @@ use crate::{
     artwork::Artwork,
     cli::Art,
     client::Client,
+    cover::{Cover, ResizeRequest, ResizeResponse},
     library::decode_image,
     model::*,
     platform,
@@ -13,6 +14,7 @@ use anyhow::Result;
 use crossterm::event::{
     self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
+use futures_util::StreamExt;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -20,10 +22,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
-use ratatui_image::{
-    Resize, StatefulImage,
-    thread::{ResizeRequest, ResizeResponse, ThreadProtocol},
-};
+use ratatui_image::{Resize, StatefulImage};
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -95,7 +94,7 @@ struct App {
     notice_at: Instant,
     last_progress: Instant,
     artwork: Artwork,
-    cover: ThreadProtocol,
+    cover: Cover,
     cover_key: Option<PathBuf>,
     show_art: bool,
 }
@@ -138,14 +137,13 @@ pub async fn run(
     let resize_messages = messages.clone();
     std::thread::spawn(move || {
         while let Ok(request) = resize_rx.recv() {
-            if let Ok(response) = request.resize_encode()
-                && resize_messages.send(Message::Resized(response)).is_err()
-            {
+            let response = request.resize_encode();
+            if resize_messages.send(Message::Resized(response)).is_err() {
                 break;
             }
         }
     });
-    let cover = ThreadProtocol::new(resize_tx, None);
+    let cover = Cover::new(resize_tx, None);
     let mut app = App {
         theme,
         theme_picker: None,
@@ -235,21 +233,31 @@ pub async fn run(
     });
     let result = async {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut terminal_events = event::EventStream::new();
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         loop {
-            tokio::select! {
-                _ = tick.tick() => (),
+            let terminal_event = tokio::select! {
+                _ = tick.tick() => None,
+                Some(message) = incoming.recv() => {
+                    app.message(message, &messages, &commands);
+                    None
+                },
+                event = terminal_events.next() => match event {
+                    Some(event) => Some(event?),
+                    None => return Ok(()),
+                },
                 _ = terminate.recv() => return Ok::<_, anyhow::Error>(()),
                 _ = interrupt.recv() => return Ok::<_, anyhow::Error>(()),
-            }
+            };
             while let Ok(message) = incoming.try_recv() {
                 app.message(message, &messages, &commands);
             }
-            while event::poll(Duration::ZERO)? {
-                match event::read()? {
+            if let Some(event) = terminal_event {
+                match event {
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let overlay = app.overlay();
                         let theme = app.theme;
@@ -282,7 +290,11 @@ impl App {
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
         let Some(image) = self.cover_image.clone() else {
-            self.cover.empty_protocol();
+            if self.cover_loading {
+                self.cover.retain_visible();
+            } else {
+                self.cover.empty_protocol();
+            }
             return;
         };
         self.cover.replace_protocol(
@@ -962,7 +974,7 @@ impl App {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide while an overlay is open, and redraw when it closes.
             if !self.overlay() {
-                if self.cover_image.is_some() {
+                if self.cover.has_image() {
                     frame.render_stateful_widget(
                         StatefulImage::new().resize(Resize::Fit(None)),
                         cover,
@@ -1515,7 +1527,7 @@ mod tests {
             tmux: true,
         };
         let (tx, rx) = sync_mpsc::channel();
-        app.cover = ThreadProtocol::new(tx, None);
+        app.cover = Cover::new(tx, None);
         app.cover_image = Some(image::DynamicImage::new_rgb8(64, 64));
         app.rebuild_cover();
         let (commands, mut requests) = mpsc::channel(8);
@@ -1540,10 +1552,7 @@ mod tests {
             for _ in 0..2 {
                 terminal.draw(|f| app.draw(f)).unwrap();
                 while let Ok(request) = rx.try_recv() {
-                    assert!(
-                        app.cover
-                            .update_resized_protocol(request.resize_encode().unwrap())
-                    );
+                    assert!(app.cover.update_resized_protocol(request.resize_encode()));
                 }
                 terminal.draw(|f| app.draw(f)).unwrap();
                 let buffer = terminal.backend().buffer();
@@ -1782,10 +1791,10 @@ mod tests {
         ));
         app.cover_image = Some(source.clone());
         let (tx, rx) = sync_mpsc::channel();
-        app.cover = ThreadProtocol::new(tx, None);
+        app.cover = Cover::new(tx, None);
         app.rebuild_cover();
         app.cover.resize_encode(&Resize::Fit(None), (8, 8).into());
-        let old_encoding = rx.recv().unwrap().resize_encode().unwrap();
+        let old_encoding = rx.recv().unwrap().resize_encode();
         app.apply_theme(Theme::CatppuccinLatte);
         assert!(!app.cover.update_resized_protocol(old_encoding));
         assert_eq!(
@@ -1808,6 +1817,8 @@ mod tests {
         source.save(&second).unwrap();
         let mut app = navigation_app(4);
         app.show_art = true;
+        let (resize_tx, resize_rx) = sync_mpsc::channel();
+        app.cover = Cover::new(resize_tx, None);
         app.state.queue[0].track.cover = Some(first.clone());
         app.state.queue[1].track.cover = Some(second);
         app.state.queue[3].track.cover = Some(cache.path().join("missing.png"));
@@ -1818,6 +1829,10 @@ mod tests {
                 let mut terminal =
                     ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
                         .unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                while let Ok(request) = resize_rx.try_recv() {
+                    app.cover.update_resized_protocol(request.resize_encode());
+                }
                 terminal.draw(|frame| app.draw(frame)).unwrap();
                 let text: String = terminal
                     .backend()
@@ -1887,7 +1902,7 @@ mod tests {
             notice_at: Instant::now(),
             last_progress: Instant::now(),
             artwork: Artwork::detect(Art::Halfblocks).0,
-            cover: ThreadProtocol::new(tx, None),
+            cover: Cover::new(tx, None),
             cover_key: None,
             show_art: false,
         }
@@ -1918,13 +1933,16 @@ mod tests {
             font_size: FontSize::new(10, 20),
             tmux: true,
         };
-        let mut protocol = app.artwork.new_resize_protocol(
+        let protocol = app.artwork.new_resize_protocol(
             image::DynamicImage::new_rgb8(512, 512),
             cover_background(app.theme.palette()),
         );
-        protocol.resize_encode(&Resize::Fit(None), (18, 9).into());
-        protocol.last_encoding_result().unwrap().unwrap();
+        let (tx, rx) = sync_mpsc::channel();
+        app.cover = Cover::new(tx, None);
         app.cover.replace_protocol(protocol);
+        app.cover.resize_encode(&Resize::Fit(None), (18, 9).into());
+        app.cover
+            .update_resized_protocol(rx.recv().unwrap().resize_encode());
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
         for (help, input, visible) in [

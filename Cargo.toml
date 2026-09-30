@@ -13,7 +13,8 @@ readme = "README.md"
 [dependencies]
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 directories = "6"
 fs2 = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
