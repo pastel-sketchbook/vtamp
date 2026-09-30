@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#171c18">
+<meta name="description" content="vtamp is a detachable terminal music player. Local music, a persistent server, and a CLI for people, scripts, and agents. Built with Rust. macOS first.">
+<title>vtamp — Music stays. Your terminal moves on.</title>
+<link rel="icon" type="image/svg+xml" href="mark.svg"><link rel="preload" href="fonts/SpaceGrotesk.ttf" as="font" type="font/ttf" crossorigin><link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="masthead wrap">
+<a class="brand" href="#main" aria-label="vtamp home"><img src="mark.svg" alt="" width="32" height="32">vtamp<span class="version">v0.1.0</span></a>
+<nav aria-label="Main navigation"><a href="#how-it-works">The idea</a><a href="#commands">The controls</a><a class="nav-install" href="#install">Get started <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12"/></svg></a></nav>
+</header>
+<main id="main">
+<section class="hero wrap" aria-labelledby="headline">
+<div class="hero-copy">
+<h1 id="headline">Music <em>stays.</em><br>Your terminal<br>moves on.</h1>
+<p class="lede">A little Winamp energy.<br>A lot more terminal freedom.</p>
+<p class="intro">Play your local music. Close the interface. Keep the soundtrack. A detachable music player for life inside tmux.</p>
+<a class="button primary" href="#install">Make room for your music <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
+<div class="hero-facts"><span>Built with Rust</span><span>macOS first</span><span>Open source · MIT</span></div>
+</div>
+<div class="demo-area">
+<div class="terminal" aria-label="Interactive simulation of vtamp attach and detach">
+<div class="terminal-chrome"><div class="window-marks" aria-hidden="true"><i></i><i></i><i></i></div><span>~/music — tmux</span><span class="pane-id">pane 01</span></div>
+<div class="terminal-body">
+<div class="shell-line"><span class="prompt">~ ❯</span><span id="shell-command">vtamp</span></div>
+<div class="amp" id="amp">
+<div class="amp-title"><span class="amp-brand"><img src="mark.svg" alt="" width="14" height="14">V T A M P</span><span>VIRTUAL TERMINAL AMPLIFIER</span><span class="indicator" aria-label="Playing"></span></div>
+<div class="amp-main">
+<img class="album-cover" src="cover.svg" width="128" height="128" alt="Original demo cover: green geometric steps on charcoal, Terminal Sessions Vol. 1">
+<div class="track-info"><div class="display-label">NOW PLAYING</div><strong id="track-title">After Hours</strong><span>The Night Shift</span><small>Terminal Sessions, Vol. 1</small><div class="time-display"><span class="play-triangle" aria-hidden="true"></span><span id="elapsed">01:42</span><span class="total">/ 04:36</span></div></div>
+</div>
+<div class="track-progress" aria-hidden="true"><div id="progress"></div></div>
+<div class="amp-controls">
+<button id="demo-prev" aria-label="Previous demo track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M18 5l-10 7 10 7Z"/></svg></button>
+<button id="demo-play" aria-label="Pause demo playback"><svg viewBox="0 0 24 24" aria-hidden="true"><path id="play-icon" d="M8 5v14M16 5v14"/></svg></button>
+<button id="demo-next" aria-label="Next demo track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M6 5l10 7-10 7Z"/></svg></button>
+<span class="volume-label">VOL</span><div class="volume-meter" aria-hidden="true"></div><span>70%</span>
+</div>
+<div class="queue-heading"><span>PLAY QUEUE</span><span>03 TRACKS</span></div>
+<ol class="demo-queue"><li class="is-current"><span>01</span><span>After Hours</span><time>4:36</time></li><li><span>02</span><span>Soft Focus</span><time>3:52</time></li><li><span>03</span><span>One More Commit</span><time>5:08</time></li></ol>
+<div class="amp-hints"><span><b>space</b> pause</span><span><b>n</b> next</span><span><b>q</b> detach</span></div>
+</div>
+<div id="detached" class="detached" hidden><p class="shell-result">Interface detached. Music keeps playing.</p><div class="shell-line"><span class="prompt">~ ❯</span><span>back to what you were doing</span><span class="cursor" aria-hidden="true"></span></div><div class="free-space"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M14 22 26 32 14 42M34 42h16"/></svg><p>Your pane.<br>Yours again.</p></div></div>
+</div>
+<div class="server-strip"><span class="server-light" aria-hidden="true"></span><strong id="server-label">SERVER PLAYING</strong><span id="server-time">01:42</span><span class="server-independent">independent of this pane</span></div>
+</div>
+<div class="demo-caption"><p>Go on. Close the interface.<br><span>The soundtrack doesn’t need a window.</span></p><button id="detach" class="button secondary" aria-controls="amp detached" aria-expanded="true">Detach interface <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v14h4M12 12h8m-4-4 4 4-4 4"/></svg></button></div>
+<p class="demo-note" id="demo-status" role="status">Interactive simulation. No audio plays in your browser.</p>
+</div>
+</section>
+<section id="how-it-works" class="idea wrap" aria-labelledby="idea-heading">
+<div class="idea-title"><h2 id="idea-heading">Your soundtrack.<br>Not another window.</h2><p>We loved the little player that lived on our desktop. These days, we live in a terminal. The music should feel at home here, too.</p></div>
+<div class="lifecycle">
+<div class="lifecycle-step"><code>$ vtamp</code><h3>Drop in.</h3><p>A server starts if you need one. Your library, queue, and album art are right there.</p></div>
+<div class="lifecycle-step"><code>q</code><h3>Step out.</h3><p>The interface closes. The server keeps playing. Get your pane back for the work in front of you.</p></div>
+<div class="lifecycle-step"><code>$ vtamp</code><h3>Pick up.</h3><p>Attach again from another pane. Same music. Same queue. Exactly where it is now.</p></div>
+</div>
+<div class="architecture"><span>TUI</span><span class="connector" aria-hidden="true"></span><strong>PLAYBACK SERVER</strong><span class="connector" aria-hidden="true"></span><span>CLI / AGENTS</span><p>One shared queue. As many interfaces as you need.</p></div>
+</section>
+<section id="commands" class="commands wrap" aria-labelledby="commands-heading">
+<div class="commands-copy"><h2 id="commands-heading">Good with keys.<br>Great with commands.</h2><p>Skip a track without opening the player. Let a script pause the music. Give your agent a straightforward command, with a straightforward JSON reply.</p><p class="aside">Local files. A local socket. No account, API key, or cloud in the middle.</p></div>
+<div class="command-sheet">
+<div class="sheet-heading"><span>THE EVERYDAY CONTROLS</span><span>CLI</span></div>
+<div class="command-row"><code>vtamp next</code><span>Change the mood.</span><button class="copy-icon" data-copy="vtamp next" aria-label="Copy vtamp next"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp pause</code><span>A moment of quiet.</span><button class="copy-icon" data-copy="vtamp pause" aria-label="Copy vtamp pause"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp volume 35</code><span>Room to think.</span><button class="copy-icon" data-copy="vtamp volume 35" aria-label="Copy vtamp volume 35"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="json-example"><code>$ vtamp status --json</code><pre aria-label="Abbreviated example JSON response">{
+  <span>"version"</span>: 1,
+  <span>"ok"</span>: true,
+  <span>"data"</span>: {
+    <span>"status"</span>: <b>"playing"</b>,
+    <span>"position_ms"</span>: 102000,
+    <span>"volume"</span>: 35
+  }
+}</pre><small>Response excerpt · full state includes the queue and current track.</small></div>
+</div>
+</section>
+<section id="install" class="install wrap" aria-labelledby="install-heading">
+<div><h2 id="install-heading">Press play.<br>Then get on with it.</h2><p>Bring a folder of music and a terminal.<br>vtamp takes care of the rest.</p><p class="requirements">macOS · Rust 1.90+ · local audio files<br>AAC / ALAC m4a, MP3, FLAC, WAV, Ogg Vorbis</p></div>
+<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="cargo install --locked --path ." aria-label="Copy installation command">Copy command</button></div><p>From your vtamp source checkout:</p><pre><code><span class="comment"># Install the player</span>
+cargo install --locked --path .
+
+<span class="comment"># Register your music folder</span>
+vtamp library add ~/Music
+
+<span class="comment"># Attach. Pick a track. Press Enter.</span>
+vtamp</code></pre><p class="install-foot">No permanent pane required. <kbd>q</kbd> to detach.</p></div>
+</section>
+</main>
+<footer class="footer wrap"><a class="brand" href="#main"><img src="mark.svg" alt="" width="26" height="26">vtamp</a><p>Virtual terminal. Winamp spirit.</p><span>Independent project · MIT licensed</span></footer>
+<div class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></div>
+</body>
+</html>
