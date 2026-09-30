@@ -330,6 +330,7 @@ fn worker(
             },
             Ok(Work::Catalog(scan)) => {
                 engine.state.scanning = false;
+                engine.state.last_error = None;
                 match store.replace_catalog(&scan.records) {
                     Ok(()) => {
                         let _ = events.send(Event::LibraryChanged);
@@ -382,6 +383,7 @@ fn worker(
             // Heartbeats also let abandoned watch connections be detected while paused.
             let _ = events.send(Event::Progress {
                 position_ms: engine.state.position_ms,
+                revision: engine.state.revision,
             });
             last_progress = Instant::now();
         }

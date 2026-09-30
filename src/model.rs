@@ -217,7 +217,7 @@ impl Reply {
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
     State(State),
-    Progress { position_ms: u64 },
+    Progress { position_ms: u64, revision: u64 },
     LibraryChanged,
     Shutdown,
 }
