@@ -26,7 +26,7 @@ playing when a TUI exits or a tmux client detaches.
 | `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
 | `src/engine.rs` | Playback state machine, queue edits, shuffle/history, repeat, output recovery |
 | `src/audio.rs` | `PlaybackBackend` boundary, rodio adapter, default-device and stream monitoring |
-| `src/media_controls.rs`, `src/media_controls/macos.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, embedded app identity |
+| `src/media_controls.rs`, `src/media_controls/macos.rs`, `src/media_controls/app_bundle.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, private signed app bundle and embedded identity |
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
 | `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
@@ -38,6 +38,7 @@ playing when a TUI exits or a tmux client detaches.
 | `src/theme.rs`, `src/settings.rs` | Semantic palettes and client-local `ui.json` preferences |
 | `src/tmux.rs`, `vtamp.tmux`, `scripts/tmux-status.sh` | Bounded now-playing CLI output and optional tmux plugin |
 | `site/` | Landing page, local font, real terminal screenshots |
+| `assets/icon.png`, `assets/vtamp.icns`, `scripts/build-icons.py` | Approved V-meter icon and reproducible macOS/web size exports |
 | `scripts/capture-site.py`, `scripts/capture-window.swift` | Isolated Ghostty + tmux screenshot capture and atomic publication |
 
 ## Development and checks
@@ -107,6 +108,7 @@ Inspect `status --json` and `doctor --json` before drawing conclusions.
 Default macOS paths are:
 
 - Data, `state.db`, `ui.json`, `server.log`: `~/Library/Application Support/vtamp/`
+- Generated media-server app bundles: `macos/<generation>/vtamp.app` inside that data directory
 - Cover cache: `~/Library/Caches/vtamp/covers/`
 - Socket: `/tmp/vtamp-<uid>/control.sock`
 
@@ -163,6 +165,11 @@ missing-art cases, but their presence is not a portable test prerequisite.
   and transport off it, and command callbacks nonblocking. Publish Now Playing
   only after playback begins; retain it on pause, clear it on stop/shutdown,
   freeze progress during output recovery, and discard obsolete artwork results.
+  Media-enabled server startup prepares and re-execs a private app bundle before
+  AppKit starts. Its ad-hoc signing identifier must match `CFBundleIdentifier`,
+  and Launch Services must register the final bundle path for Now Playing icons.
+  Do not use a personal signing certificate or require an Apple developer account.
+  Preserve immutable bundle generations, concurrent startup and CLI-only fallback.
   Keep the API and dependencies macOS-specific; do not add a global keyboard hook.
 - Library searches are paginated; `gg`/`G` span the current search results, not
   just the loaded page. Reject stale page responses and avoid playing stale rows

@@ -35,6 +35,11 @@ pub(super) fn run(
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| anyhow::anyhow!("macOS event loop needs the main thread"))?;
     let app = NSApplication::sharedApplication(mtm);
+    let icon_data = NSData::with_bytes(include_bytes!("../../assets/vtamp.icns"));
+    if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &icon_data) {
+        // AppKit retains the image; this runs on the main thread before publication.
+        unsafe { app.setApplicationIconImage(Some(&icon)) };
+    }
     app.setActivationPolicy(NSApplicationActivationPolicy::Prohibited);
     // A CLI process can already be Prohibited; AppKit may return false for the
     // redundant policy request even though its event loop works normally.

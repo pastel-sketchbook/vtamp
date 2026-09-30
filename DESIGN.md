@@ -53,7 +53,11 @@ A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard refer
 
 Compact square corners and fine panel borders. TUI overlays use solid panel backgrounds, not transparency over album art.
 
+The approved V-meter app icon has five lime bars forming a V silhouette on a charcoal rounded-square tile. Its rounded shape and illuminated finish belong to the identity asset; they do not change the surrounding interface's shapes or palette.
+
 ## Components
+
+The V-meter source is `assets/icon.png`. Use derived PNGs for the website header/footer mark (`site/mark.png`), favicons (`site/favicon-32.png`, `site/favicon-64.png`), and touch icon (`site/apple-touch-icon.png`); use `assets/vtamp.icns` for macOS app identity. Preserve the approved artwork across these sizes. The brand icon identifies vtamp and never replaces album covers.
 
 The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. During overlays, pixel art is hidden and restored on close so graphics cannot cover dialog text. Selection is client-local; saved preferences apply to future attachments.
 

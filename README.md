@@ -114,6 +114,17 @@ depend on the macOS surface; Control Center does not always show a timeline.
 No separate app installation, Dock icon, keyboard monitoring, or Accessibility
 permission is needed by vtamp.
 
+The V-meter application icon matches the website. On first media-enabled server
+startup, vtamp prepares a private app bundle under its data directory's
+`macos/` folder, registers it with Launch Services, and runs the server from it.
+The bundle is signed locally with `codesign --sign -` (ad-hoc signing): no Apple
+developer account, certificate, keychain identity, or network service is used.
+This supplies macOS with the icon and matching application identity; it is not
+Developer ID signing or notarization for distributing downloaded binaries.
+Unchanged builds reuse their bundle. A new build gets its own generation so an
+existing server is never overwritten. These generated bundles can be removed
+with the server stopped and are recreated on the next start.
+
 macOS chooses which app receives media commands. Starting playback in another
 app can move control there; vtamp does not globally intercept or monopolize the
 keys. Merely starting the server or restoring a paused session does not publish
@@ -413,6 +424,17 @@ thread and bridges system commands to the existing bounded player queue. Metadat
 updates are coalesced; artwork is prepared by a separate worker. Ordinary CLI/TUI
 clients do not initialize this integration. `build.rs` embeds the application
 identity in the executable, including binaries installed with Cargo.
+`media_controls/app_bundle.rs` packages that identity and the embedded ICNS for
+the server, before AppKit starts. If preparation fails, the server logs a warning
+and continues with ordinary playback and the available media controls.
+
+The approved icon source is `assets/icon.png`; its generation prompt is in
+`assets/icon-prompt.txt`. Run `python3 scripts/build-icons.py` on macOS to regenerate
+the web PNG sizes and `assets/vtamp.icns`. These generated assets are committed;
+building or installing vtamp does not require image-generation tools.
+For a visual icon check, use a private `VTAMP_HOME` on the normal filesystem
+(for example a short directory under `target/`): Launch Services may leave
+bundles under `/tmp` with a generic icon even when registration succeeds.
 
 To check real system media-key routing in an interactive macOS desktop session:
 

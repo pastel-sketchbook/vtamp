@@ -6,6 +6,8 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
+mod app_bundle;
+#[cfg(target_os = "macos")]
 mod macos;
 
 fn preference(value: Option<&OsStr>, isolated: bool) -> Result<bool, &'static str> {
@@ -35,6 +37,11 @@ pub fn enabled() -> bool {
 pub fn run(task: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
+        // Do this before AppKit (or any worker thread) starts. A signed bundle
+        // gives Now Playing a resolvable application icon, even for Cargo installs.
+        if let Err(error) = app_bundle::enter() {
+            eprintln!("vtamp: Cannot prepare macOS app icon: {error:#}");
+        }
         macos::run(task)
     }
     #[cfg(not(target_os = "macos"))]

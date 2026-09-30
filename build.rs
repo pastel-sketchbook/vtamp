@@ -3,7 +3,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
-    // Embed identity in the CLI itself: no separate .app installation is needed.
+    // Share identity with the automatically prepared macOS playback-server bundle.
     let plist = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("Info.plist");
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
     std::fs::write(&plist, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -13,6 +13,8 @@ fn main() {
 <key>CFBundleName</key><string>vtamp</string>
 <key>CFBundleDisplayName</key><string>vtamp</string>
 <key>CFBundleExecutable</key><string>vtamp</string>
+<key>CFBundleIconFile</key><string>vtamp.icns</string>
+<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 <key>CFBundleVersion</key><string>{version}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSUIElement</key><true/>

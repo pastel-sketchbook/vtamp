@@ -43,7 +43,7 @@ block2 = "0.6"
 dispatch2 = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSRunningApplication", "NSEvent", "NSGraphicsContext", "NSResponder", "NSImage"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSValue", "NSData", "NSDate", "NSGeometry", "NSObject", "NSThread", "NSError"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSValue", "NSData", "NSDate", "NSGeometry", "NSObject", "NSThread", "NSError", "NSURL"] }
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem", "MPMediaEntity", "objc2-app-kit", "objc2-core-foundation"] }
 
 [dev-dependencies]
