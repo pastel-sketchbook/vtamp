@@ -16,6 +16,7 @@ use ratatui_image::{
 use std::{
     io::{self, IsTerminal, Write},
     os::fd::AsRawFd,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -45,7 +46,13 @@ impl Artwork {
         if multiplexer || matches!(art, Art::Sixel) {
             // Picker constructors enable tmux passthrough as a side effect. Probe
             // the pane directly instead, leaving the user's tmux options alone.
-            return Self::native(art, tmux, probe().unwrap_or_default());
+            let mut caps = probe().unwrap_or_default();
+            if tmux && matches!(art, Art::Auto) {
+                // tmux's DA1 describes its parser, not the attached terminal.
+                // Without end-to-end support tmux draws a '+' placeholder.
+                caps.restrict_to_tmux_clients(&tmux_client_features().unwrap_or_default());
+            }
+            return Self::native(art, tmux, caps);
         }
         let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
         if matches!(art, Art::Kitty) {
@@ -100,6 +107,20 @@ struct Capabilities {
 }
 
 impl Capabilities {
+    fn restrict_to_tmux_clients(&mut self, clients: &str) {
+        let mut clients = clients.lines().peekable();
+        self.sixel &= clients.peek().is_some()
+            && clients.all(|client| {
+                let mut fields = client.split('\t');
+                let features = fields.next().unwrap_or_default();
+                let width = fields.next().and_then(|s| s.parse::<u16>().ok());
+                let height = fields.next().and_then(|s| s.parse::<u16>().ok());
+                features.split(',').any(|feature| feature == "sixel")
+                    && width.is_some_and(|w| w > 0)
+                    && height.is_some_and(|h| h > 0)
+            });
+    }
+
     /// Return true at the final status reply, leaving subsequent keys unread.
     fn accept(&mut self, response: Response) -> bool {
         match response {
@@ -112,6 +133,37 @@ impl Capabilities {
         }
         false
     }
+}
+
+fn tmux_client_features() -> Option<String> {
+    fn query(args: &[&str]) -> Option<String> {
+        let output = Command::new("tmux")
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).ok())?
+    }
+
+    // Scope to this pane's session: a Sixel client on an unrelated session
+    // cannot display our image. All attached clients must be able to render it.
+    let pane = std::env::var("TMUX_PANE").ok()?;
+    let session = query(&["display-message", "-p", "-t", &pane, "#{session_id}"])?;
+    let session = session.trim();
+    if !session.starts_with('$') || session[1..].parse::<u32>().is_err() {
+        return None;
+    }
+    query(&[
+        "list-clients",
+        "-t",
+        session,
+        "-F",
+        "#{client_termfeatures}\t#{client_cell_width}\t#{client_cell_height}",
+    ])
 }
 
 fn probe() -> io::Result<Capabilities> {
@@ -246,6 +298,38 @@ mod tests {
                 StatefulProtocolType::Halfblocks(_)
             ));
         }
+    }
+
+    #[test]
+    fn tmux_parser_support_does_not_imply_client_sixel_support() {
+        for (clients, supported) in [
+            ("RGB,sixel\t17\t34\n", true),
+            ("sixel,RGB\t17\t34\nsixel\t10\t20\n", true),
+            ("RGB,clipboard\t17\t34\n", false),
+            ("RGB,sixel\t17\t34\nRGB,clipboard\t17\t34\n", false),
+            ("RGB,nosixel\t17\t34\n", false),
+            ("RGB,sixel\t0\t0\n", false),
+            ("RGB,sixel\t17\t\n", false),
+            ("", false),
+            ("\n", false),
+        ] {
+            let mut caps = capabilities("\x1b[?1;2;4c\x1b[6;34;17t\x1b[0n");
+            caps.restrict_to_tmux_clients(clients);
+            let renderer = Artwork::native(Art::Auto, true, caps);
+            assert_eq!(
+                matches!(
+                    renderer
+                        .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                        .protocol_type(),
+                    StatefulProtocolType::Sixel(_)
+                ),
+                supported,
+                "client report: {clients:?}"
+            );
+        }
+        let mut caps = capabilities("\x1b[?1;2c\x1b[6;34;17t\x1b[0n");
+        caps.restrict_to_tmux_clients("sixel\t17\t34\n");
+        assert!(!caps.sixel, "the tmux parser must also support Sixel");
     }
 
     #[test]

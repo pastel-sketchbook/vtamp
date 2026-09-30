@@ -121,7 +121,7 @@ Wide panes show the library and queue side by side. Narrow panes show the focuse
 
 ## Covers, terminals, and tmux
 
-vtamp detects graphics support when you attach. Inside tmux, a pane that advertises native **Sixel** support gets a pixel-rendered cover using the terminal's reported cell dimensions. Other panes fall back to color halfblocks.
+vtamp detects graphics support when you attach. Inside tmux, **both tmux and the terminals attached to the pane's session** must support Sixel and report usable pixel dimensions for a pixel-rendered cover. Other panes fall back to color halfblocks. tmux's own Sixel response alone is insufficient: a Sixel-enabled tmux can still be attached from a terminal that cannot display it.
 
 | Option | Rendering |
 | --- | --- |
@@ -139,6 +139,8 @@ vtamp --art kitty
 ```
 
 Sixel is sent directly to the current terminal or tmux pane, without passthrough wrapping, so a Sixel-enabled tmux can manage the image across pane redraws and window switches. This requires native Sixel support in both tmux and its client terminal. The probe waits at most 250 ms; automatic mode falls back to halfblocks if Sixel or usable pixel dimensions cannot be detected. Explicit `--art sixel` still queries cell dimensions, with a 10×20-pixel estimate if the terminal supplies none.
+
+If forced Sixel shows `SIXEL IMAGE` or rows of `+`, tmux is substituting its text placeholder because its client cannot render Sixel. Use `--art auto` to fall back safely. Building tmux with Sixel support does not add that protocol to the outer terminal. Ghostty supports the [Kitty graphics protocol](https://ghostty.org/docs/features); `--art kitty` is the separate graphics option for compatible passthrough setups.
 
 Halfblocks work without terminal graphics passthrough. For true color, configure your terminal and tmux for RGB color if necessary. The separate explicit Kitty mode may require passthrough:
 
