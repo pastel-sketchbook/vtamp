@@ -1,3 +1,9 @@
+pub mod audio;
+pub mod client;
+pub mod daemon;
+pub mod engine;
+pub mod library;
 pub mod model;
 pub mod platform;
+pub mod store;
 pub mod wire;
