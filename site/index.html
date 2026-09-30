@@ -60,6 +60,24 @@
 <div class="lifecycle-step"><code>$ vtamp</code><h3>Pick up.</h3><p>Attach again from another pane. Same music. Same queue. Exactly where it is now.</p></div>
 </div>
 <div class="architecture"><span>TUI</span><span class="connector" aria-hidden="true"></span><strong>PLAYBACK SERVER</strong><span class="connector" aria-hidden="true"></span><span>CLI / AGENTS</span><p>One shared queue. As many interfaces as you need.</p></div>
+<div class="tmux-feature" aria-labelledby="tmux-heading">
+<div>
+<h3 id="tmux-heading">Now playing, in your tmux bar.</h3>
+<p>Close the player and keep the current track in sight. The optional tmux plugin shows the song title and elapsed / total time, right in your status bar.</p>
+<p>Pause and the track stays visible. Stop playback or shut down the server and it disappears. Choose the width, add the artist, and place it wherever you like.</p>
+<a class="tmux-guide" href="https://github.com/rath/vtamp#tmux-status-bar">Set up the tmux plugin</a>
+</div>
+<div class="tmux-example">
+<figure>
+<div class="tmux-status" aria-label="Example: pane title work, playing Training Montage, 56 seconds of 3 minutes 39 seconds"><code class="tmux-pane">&quot;work&quot;</code><code class="tmux-track">▶ Training Montage</code><code class="tmux-time">· 0:56 / 3:39</code></div>
+<figcaption>Example status bar · Your pane title, then your music.</figcaption>
+</figure>
+<p>Put <code>#{vtamp}</code> in your status format before loading the plugin. No clock or date required.</p>
+<pre><code>set -g status-right \
+  '&quot;#{=21:pane_title}&quot; #{vtamp}'</code></pre>
+<div class="tmux-example-foot"><span>TPM or direct loading</span><button type="button" class="copy-text" data-copy="set -g status-right '&quot;#{=21:pane_title}&quot; #{vtamp}'" aria-label="Copy tmux status format">Copy status format</button></div>
+</div>
+</div>
 </section>
 <section id="commands" class="commands wrap" aria-labelledby="commands-heading">
 <div class="commands-copy"><h2 id="commands-heading">Good with keys.<br>Great with commands.</h2><p>Skip a track without opening the player. Let a script pause the music. Give your agent a straightforward command, with a straightforward JSON reply.</p><p class="aside">Local files. A local socket. No account, API key, or cloud in the middle.</p></div>
