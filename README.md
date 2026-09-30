@@ -30,12 +30,13 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
+- macOS media keys and Now Playing metadata, including album art, after detaching.
 - JSON commands and an event stream for scripts and AI agents.
 - An optional tmux status-bar plugin for the current track and playback time.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
 - A small, dependency-free [landing page](site/).
 
-macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Streaming, named playlists, media keys, EQ, crossfade, gapless playback, and login-time startup are not implemented.
+macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Streaming, named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
 ## Install from source
 
@@ -97,6 +98,44 @@ vtamp server start  # Restore the session, paused.
 The server saves queue/configuration changes immediately and checkpoints position every five seconds. A normal server stop saves the latest position. After an unexpected crash, up to five seconds of position may be lost. A server restart always restores the current track **paused**, so merely inspecting or attaching does not unexpectedly start sound. The server is not a login service and does not restart itself after logout or a crash.
 
 Read-only commands (`status`, `watch`, volume without a value, queue listing, library queries, and server status/stop) do not start a server. Playback and library mutation commands do. A disconnected TUI waits for the server to return; it does not replay commands whose outcome might be unknown.
+
+## macOS media keys and Now Playing
+
+Start a track in vtamp, then use the keyboard's **play/pause**, **previous**, and
+**next** media keys (usually on F8, F7, and F9). They keep working after you close
+the TUI or detach tmux. Depending on your keyboard settings, hold `Fn` to send the
+media action instead of an ordinary function key.
+
+The server registers with macOS using `MPRemoteCommandCenter` and supplies the
+title, artist, album, cover, duration, and playback position to Now Playing.
+System play/pause, previous/next, stop, and playback-position commands use the
+same queue and playback behavior as the CLI. The controls and information shown
+depend on the macOS surface; Control Center does not always show a timeline.
+No separate app installation, Dock icon, keyboard monitoring, or Accessibility
+permission is needed by vtamp.
+
+macOS chooses which app receives media commands. Starting playback in another
+app can move control there; vtamp does not globally intercept or monopolize the
+keys. Merely starting the server or restoring a paused session does not publish
+a Now Playing item. Start playback in vtamp to make it eligible. Pausing retains
+the item; stopping, clearing the queue, or shutting down the server removes it.
+
+This integration is on by default for the regular macOS server. Set
+`VTAMP_MEDIA_KEYS=0` **when starting the server** to disable it:
+
+```sh
+vtamp server stop
+VTAMP_MEDIA_KEYS=0 vtamp server start
+```
+
+With `VTAMP_HOME` set, it defaults off to keep test instances from taking media
+commands. Set `VTAMP_MEDIA_KEYS=1` to explicitly enable it for such an instance.
+Only `0` and `1` are accepted; an invalid value disables integration with a
+warning in the server log. Changing the environment or rebuilding requires a
+server restart; reattaching a TUI does not change a running server's integration.
+If keys do not work, check which app macOS is controlling and inspect `server.log`
+for `macOS media controls registered`. Normal CLI playback remains available if
+the desktop integration cannot initialize.
 
 ## Keys
 
@@ -368,6 +407,30 @@ VTAMP_TEST_AUDIO_FILE=/path/to/track.m4a cargo test --lib audio::tests::real_out
 ```
 
 The implementation separates the queue state machine (`engine`), the rodio adapter (`audio`), metadata/catalog work (`library`, `store`), local transport (`wire`, `client`, `daemon`), platform paths (`platform`), and human/CLI interfaces (`tui`, `cli`). The server alone owns authoritative state and SQLite writes. Scans and artwork work run separately from playback control. See [the protocol notes](docs/protocol.md) for low-level integration.
+
+On macOS, `media_controls` runs a windowless AppKit loop on the server's main
+thread and bridges system commands to the existing bounded player queue. Metadata
+updates are coalesced; artwork is prepared by a separate worker. Ordinary CLI/TUI
+clients do not initialize this integration. `build.rs` embeds the application
+identity in the executable, including binaries installed with Cargo.
+
+To check real system media-key routing in an interactive macOS desktop session:
+
+```sh
+cargo build --locked --release
+python3 scripts/check-media-keys.py
+```
+
+This opt-in check generates two silent WAV files, starts a muted private server,
+and posts actual system media-key events. It also checks detach when tmux is
+available, natural track advancement, and paused restoration after restart.
+The test helper needs Accessibility permission for the invoking terminal to
+**post** keys; the player does not need that permission to receive media commands.
+The test temporarily becomes a Now Playing source. Avoid starting playback in
+other apps during the check, since macOS decides where global media keys go.
+It cleans up its own server and tmux socket without editing your library.
+Inspect Control Center separately for visual cover verification; this script
+does not prove that the OS rendered artwork or expose a seek slider on every OS.
 
 To preview the landing page:
 

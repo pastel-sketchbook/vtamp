@@ -54,6 +54,13 @@ pub async fn run(paths: Paths) -> Result<()> {
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     let (sender, receiver) = mpsc::sync_channel(64);
     let (events, _) = broadcast::channel(64);
+    let media_commands = sender.clone();
+    let media = crate::media_controls::Controls::new(move |command| {
+        let (answer, _) = oneshot::channel();
+        media_commands
+            .try_send(Work::Request(command, answer))
+            .is_ok()
+    });
     let shutdown = Arc::new(Notify::new());
     let thread = {
         let events = events.clone();
@@ -69,6 +76,7 @@ pub async fn run(paths: Paths) -> Result<()> {
                     receiver,
                     tx,
                     &events,
+                    media,
                 );
                 if let Err(error) = result {
                     tracing::error!("Player stopped: {error:#}");
@@ -199,6 +207,7 @@ fn worker(
     rx: mpsc::Receiver<Work>,
     tx: mpsc::SyncSender<Work>,
     events: &broadcast::Sender<Event>,
+    mut media: crate::media_controls::Controls,
 ) -> Result<()> {
     let mut last_save = Instant::now();
     let mut last_progress = Instant::now();
@@ -376,6 +385,7 @@ fn worker(
             store.save(&engine.state)?;
             let _ = events.send(Event::State(engine.state.clone()));
         }
+        media.update(&engine.state, engine.output_waiting());
         if last_progress.elapsed() >= Duration::from_secs(1) {
             // Heartbeats also let abandoned watch connections be detected while paused.
             let _ = events.send(Event::Progress {

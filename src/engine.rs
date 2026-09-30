@@ -332,6 +332,9 @@ impl<B: PlaybackBackend> Engine<B> {
     pub fn tick(&mut self) -> bool {
         self.tick_at(Instant::now())
     }
+    pub(crate) fn output_waiting(&self) -> bool {
+        self.output_retry.is_some()
+    }
     fn tick_at(&mut self, now: Instant) -> bool {
         // output_event may discard the old player, so save its position first.
         if self.loaded {

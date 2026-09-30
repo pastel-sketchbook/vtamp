@@ -123,7 +123,7 @@ def capture(output):
         run(["swiftc", ROOT / "scripts/capture-window.swift", "-o", helper], timeout=120)
         bridge = lambda *args: json.loads(run([helper, *args]))
         original_pid = bridge("front")["pid"]
-        environment = dict(os.environ, VTAMP_HOME=str(home))
+        environment = dict(os.environ, VTAMP_HOME=str(home), VTAMP_MEDIA_KEYS="0")
         # Agent/CI shells often disable ANSI colors. Kitty's Unicode placeholders
         # also encode image IDs in foreground colors, so NO_COLOR hides the art.
         environment.pop("NO_COLOR", None)

@@ -3,6 +3,7 @@ use std::process::{Command, Output};
 
 fn run(home: &std::path::Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vtamp"))
+        .env("VTAMP_MEDIA_KEYS", "0")
         .env("VTAMP_HOME", home)
         .args(args)
         .arg("--json")

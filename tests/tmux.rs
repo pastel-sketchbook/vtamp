@@ -8,6 +8,7 @@ use std::{
 
 fn run(home: &std::path::Path, extra: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_vtamp"))
+        .env("VTAMP_MEDIA_KEYS", "0")
         .env("VTAMP_HOME", home)
         .args(["tmux", "status"])
         .args(extra)

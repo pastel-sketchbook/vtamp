@@ -6,6 +6,7 @@ mod cover;
 pub mod daemon;
 pub mod engine;
 pub mod library;
+pub mod media_controls;
 pub mod model;
 pub mod platform;
 pub mod settings;

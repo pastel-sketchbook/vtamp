@@ -19,18 +19,32 @@ fn main() {
         }
     };
     let json = args.json;
+    let result = if matches!(
+        &args.command,
+        Some(Action::Server {
+            command: vtamp::cli::Server::Run
+        })
+    ) && vtamp::media_controls::enabled()
+    {
+        vtamp::media_controls::run(move || run(args))
+    } else {
+        run(args)
+    };
+    if let Err(error) = result {
+        std::process::exit(report(error, json));
+    }
+}
+
+fn run(args: Args) -> anyhow::Result<()> {
     // The status bar polls frequently. Avoid creating a worker pool per query.
     let mut runtime = if matches!(&args.command, Some(Action::Tmux { .. })) {
         tokio::runtime::Builder::new_current_thread()
     } else {
         tokio::runtime::Builder::new_multi_thread()
     };
-    let result = runtime
+    runtime
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)
-        .and_then(|runtime| runtime.block_on(vtamp::cli::run(args)));
-    if let Err(error) = result {
-        std::process::exit(report(error, json));
-    }
+        .and_then(|runtime| runtime.block_on(vtamp::cli::run(args)))
 }

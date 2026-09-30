@@ -20,6 +20,7 @@ impl Server {
     }
     fn cmd(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_vtamp"))
+            .env("VTAMP_MEDIA_KEYS", "0")
             .env("VTAMP_HOME", self.home.path())
             .args(args)
             .arg("--json")
@@ -146,6 +147,7 @@ fn bad_protocol_does_not_damage_server() {
 fn crash_leaves_socket_that_next_launch_recovers() {
     let server = Server::new();
     let mut child = Command::new(env!("CARGO_BIN_EXE_vtamp"))
+        .env("VTAMP_MEDIA_KEYS", "0")
         .env("VTAMP_HOME", server.home.path())
         .args(["server", "run"])
         .stdin(Stdio::null())

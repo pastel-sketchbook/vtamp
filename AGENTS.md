@@ -16,8 +16,8 @@ playing when a TUI exits or a tmux client detaches.
 - Read `README.md` for user workflows, `docs/protocol.md` for transport semantics,
   and `PRODUCT.md`, `DESIGN.md`, and `docs/themes.md` for UI work. Check the code
   when older prose disagrees with behavior, and update affected documentation.
-- Media keys/Now Playing integration has been discussed but is not implemented.
-  Do not treat a feasibility discussion as a shipped feature.
+- macOS media keys and Now Playing are implemented in the playback server.
+  The system chooses the active media app; vtamp does not intercept global keys.
 
 ## Code map
 
@@ -26,6 +26,7 @@ playing when a TUI exits or a tmux client detaches.
 | `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
 | `src/engine.rs` | Playback state machine, queue edits, shuffle/history, repeat, output recovery |
 | `src/audio.rs` | `PlaybackBackend` boundary, rodio adapter, default-device and stream monitoring |
+| `src/media_controls.rs`, `src/media_controls/macos.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, embedded app identity |
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
 | `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
@@ -88,6 +89,15 @@ can prevent CoreAudio access even when decoding works. If device access fails,
 distinguish environment restrictions from a player regression and use an
 authorized normal-terminal or escalated run for actual output verification.
 
+For real macOS media-key routing, build release and run
+`python3 scripts/check-media-keys.py` in an interactive desktop session. It uses
+generated silent audio, a muted private server, and a Swift key-posting helper.
+Only the test helper requires Accessibility permission; vtamp's receiver does not.
+This temporarily publishes a Now Playing item and posts global keys, so avoid
+competing playback in other apps. Check Control Center artwork visually as well.
+Ordinary tests and screenshot capture explicitly set `VTAMP_MEDIA_KEYS=0`, even
+if the invoking environment enables it.
+
 ## Protect the active listening session
 
 Use `target/release/vtamp` explicitly when validating a new release build. A
@@ -147,6 +157,13 @@ missing-art cases, but their presence is not a portable test prerequisite.
   endings; manual next must still advance.
 - Output-device recovery must retain track, position, volume, pause state, queue,
   and shuffle/history. An unavailable output is not an unreadable track to skip.
+- Media controls default on for the ordinary macOS server and off with
+  `VTAMP_HOME`; `VTAMP_MEDIA_KEYS=0|1` overrides this at server startup. Only the
+  server-lock owner registers handlers. Keep AppKit on the main thread, audio
+  and transport off it, and command callbacks nonblocking. Publish Now Playing
+  only after playback begins; retain it on pause, clear it on stop/shutdown,
+  freeze progress during output recovery, and discard obsolete artwork results.
+  Keep the API and dependencies macOS-specific; do not add a global keyboard hook.
 - Library searches are paginated; `gg`/`G` span the current search results, not
   just the loaded page. Reject stale page responses and avoid playing stale rows
   while a destination page loads. Ctrl-F/B move ten entries in the focused list.
