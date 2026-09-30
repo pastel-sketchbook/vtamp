@@ -108,7 +108,7 @@ Read-only commands (`status`, `watch`, volume without a value, queue listing, li
 | `R` | Cycle repeat: off → all → one |
 | `Tab` | Switch library / queue focus |
 | `j` / `k`, `↓` / `↑` | Move selection |
-| `PageDown` / `PageUp` | Move selection by ten entries |
+| `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `/` | Search title, artist, and album; Enter applies |
 | `a` | Add a music folder |
 | `r` | Rescan registered folders |

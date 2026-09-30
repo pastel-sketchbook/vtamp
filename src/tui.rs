@@ -547,6 +547,12 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::PageDown => self.move_selection(10),
             KeyCode::PageUp => self.move_selection(-10),
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(10);
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection(-10);
+            }
             KeyCode::Char('/') => {
                 self.focus = Focus::Library;
                 self.input = Some(Input::Search(self.query.clone()));
@@ -849,9 +855,9 @@ impl App {
             );
         }
         if self.help {
-            let popup = centered(area, 78, 23);
+            let popup = centered(area, 78, 24);
             frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
+            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\nCtrl-F / Ctrl-B           Page down / up (10 entries)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
             frame.render_widget(
                 Paragraph::new(text)
                     .block(block(p, " vtamp / key reference ", true))
@@ -1154,6 +1160,62 @@ fn placeholder(p: Palette) -> image::DynamicImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_f_and_b_page_lists_without_sending_previous_track() {
+        let mut app = app();
+        app.tracks = (0..25)
+            .map(|i| Track {
+                id: i.to_string(),
+                path: format!("/{i}.m4a").into(),
+                title: format!("Track {i}"),
+                artist: "Artist".into(),
+                album: "Album".into(),
+                track_number: i,
+                duration_ms: 180_000,
+                cover: None,
+            })
+            .collect();
+        app.state.queue = app.tracks.iter().cloned().map(QueueItem::new).collect();
+        let (commands, mut requests) = mpsc::channel(8);
+        for focus in [Focus::Library, Focus::Queue] {
+            app.focus = focus;
+            app.library_selection.select(Some(0));
+            app.queue_selection.select(Some(0));
+            for (code, modifiers, expected) in [
+                (KeyCode::Char('f'), KeyModifiers::CONTROL, 10),
+                (KeyCode::PageDown, KeyModifiers::NONE, 20),
+                (KeyCode::Char('f'), KeyModifiers::CONTROL, 24),
+                (KeyCode::Char('b'), KeyModifiers::CONTROL, 14),
+                (KeyCode::PageUp, KeyModifiers::NONE, 4),
+                (KeyCode::Char('b'), KeyModifiers::CONTROL, 0),
+            ] {
+                assert!(!app.key(KeyEvent::new(code, modifiers), &commands).unwrap());
+                let (active, inactive) = if focus == Focus::Library {
+                    (&app.library_selection, &app.queue_selection)
+                } else {
+                    (&app.queue_selection, &app.library_selection)
+                };
+                assert_eq!(active.selected(), Some(expected));
+                assert_eq!(inactive.selected(), Some(0));
+            }
+        }
+        assert!(requests.try_recv().is_err());
+        app.key(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(matches!(requests.try_recv().unwrap(), Command::Prev));
+        app.input = Some(Input::Search("music".into()));
+        for code in [KeyCode::Char('f'), KeyCode::Char('b')] {
+            app.key(KeyEvent::new(code, KeyModifiers::CONTROL), &commands)
+                .unwrap();
+        }
+        assert!(matches!(app.input, Some(Input::Search(ref text)) if text == "music"));
+        assert_eq!(app.queue_selection.selected(), Some(0));
+        assert!(requests.try_recv().is_err());
+    }
 
     #[test]
     fn short_panes_keep_pixel_art_beside_the_active_browser_through_resizes() {
