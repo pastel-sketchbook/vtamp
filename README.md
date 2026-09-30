@@ -299,10 +299,38 @@ To preview the landing page:
 python3 -m http.server 8765 --directory site
 ```
 
-Open `http://localhost:8765`. No build step or external network requests are needed. The demo is a simulation with original sample titles and artwork, not a browser audio player.
+Open `http://localhost:8765`. No build step or external network requests are needed. The hero cycles through actual Ghostty + tmux captures of vtamp in Catppuccin Mocha: a wide view, a compact Library, and a compact Queue. Select a layout or pause the slideshow; open an image at full resolution to inspect the terminal text and album art. Reduced-motion preferences disable automatic rotation.
+
+### Refresh the screenshots
+
+On macOS, install Ghostty at `/Applications/Ghostty.app`, tmux, Python 3, and the Xcode Command Line Tools (for `swiftc`), alongside the Rust toolchain. Allow screen recording for the terminal running the command in **System Settings → Privacy & Security → Screen & System Audio Recording**. Select a track with album art in your regular vtamp instance, then run:
+
+```sh
+python3 scripts/capture-site.py
+```
+
+The script builds the current release and replaces all three PNGs in `site/screenshots/`. It takes a read-only snapshot of your library, queue, current track, and position, then starts a paused copy under a temporary `VTAMP_HOME`. Each capture uses a dedicated Ghostty window and private tmux server. Your existing playback, theme preference, and working panes stay as they are. The script restores your previous application after opening the capture windows and captures each window directly. It checks the saved pixels for visible artwork; if Ghostty has not painted a background window, it briefly brings that window forward and redraws before retrying.
+
+The presets are 120 × 28 cells (Wide) and 100 × 24 cells (Compact Library and Compact Queue), all in Catppuccin Mocha. Captures include the real Ghostty window frame and high-resolution Kitty artwork selected by vtamp's normal automatic detection. The script inherits your Ghostty font configuration, removes `NO_COLOR` from the capture environment, and pins both tmux and PTY dimensions, waits for a real image upload, and verifies visible cover pixels before accepting the image. If a preset cannot fit on your display, reduce Ghostty's configured font size or use a larger display.
+
+To inspect a new set before replacing the website images:
+
+```sh
+python3 scripts/capture-site.py --output /tmp/vtamp-screenshots
+```
+
+An existing `VTAMP_HOME` selects the source instance; the script always uses a separate home for its copy. Missing tools, missing artwork, graphics-detection failures, and capture errors leave the existing image set in place. Temporary servers and windows are cleaned up on success, errors, Ctrl-C, and SIGTERM. A graphics-detection failure saves diagnostics from the isolated window under `/tmp/vtamp-capture-failed-*`; remove that directory when finished investigating. It may contain song titles and local paths.
+
+Review the resulting images before committing: screenshots show the selected library's actual song titles and album covers. Music files, source artwork, and databases are never copied into the site. The checked-in captures use the maintainer's selected library; depicted album artwork belongs to its respective owners and is not covered by vtamp's MIT license.
+
+Capture-script checks (no GUI or personal music required):
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
 
 ## Contributing and license
 
-Small, focused changes are welcome. Include the behavior you changed, a reproducible example for bugs, and relevant validation. Avoid bundling personal music, private paths, cache files, or copyrighted album covers. Keep platform-specific work behind the existing boundaries.
+Small, focused changes are welcome. Include the behavior you changed, a reproducible example for bugs, and relevant validation. Avoid bundling personal music, private paths, cache files, or standalone album artwork. Changes to the curated website captures should follow the screenshot workflow above. Keep platform-specific work behind the existing boundaries.
 
 vtamp is [MIT licensed](LICENSE). Its Rust dependencies retain their own licenses. The bundled Space Grotesk font is distributed under the [SIL Open Font License](site/fonts/OFL.txt). vtamp is an independent project inspired by the experience of classic desktop players, not an affiliation with Winamp.

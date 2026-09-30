@@ -30,11 +30,11 @@ Folder-based local library, search, queue editing, album art, machine-readable C
 
 ## Brand Commitments
 
-Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and labels its simulation as Classic. Name: vtamp. Voice: direct, practical, slightly nostalgic.
+Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.
 
 ## Evidence on Hand
 
-Local m4a files kept outside the repository may be used for development verification only. They and their cover art must not be redistributed. Public demonstrations use authored sample metadata and art. No published package, remote repository, endorsements, or usage metrics exist yet.
+Local m4a files in ~/work/tapmusic/out are available for development verification. The maintainer chose actual library metadata and visible album covers for the public website screenshots. Capture the real TUI in Catppuccin Mocha; do not bundle music files, source artwork, databases, or private paths. Depicted album artwork retains its respective ownership. No published package, remote repository, endorsements, or usage metrics exist yet.
 
 ## Product Principles
 

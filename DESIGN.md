@@ -33,7 +33,7 @@ TUI tokens above describe the default Mocha palette. `src/theme.rs` defines all 
 
 The registry includes Catppuccin Mocha and Latte, Rosé Pine, Gruvbox Dark Medium, Tokyo Night Night, Nord, Dracula, Kanagawa Wave, and Classic. Body and secondary text must reach 4.5:1 against canvas, panel, and selected-row backgrounds. Accent, warning, and error text must reach 4.5:1 on canvas and panel backgrounds. Palette origins and contrast adaptations are documented in `docs/themes.md`.
 
-The website keeps phosphor green (#b4f676), warm off-white (#eeeae0), muted sage (#b0bdab), and amber (#efbc72). Its green player simulation is explicitly labeled Classic.
+The website keeps phosphor green (#b4f676), warm off-white (#eeeae0), muted sage (#b0bdab), and amber (#efbc72). Its hero shows real Ghostty + tmux screenshots in Catppuccin Mocha.
 
 ## Typography
 
@@ -43,7 +43,7 @@ TUI typography follows the user's terminal font. Bold weight and text markers es
 
 The TUI is an Operate surface: queue, library, current track, timing, and key hints have priority. At 12–27 rows and at least 72 columns, the player and focused browser share one row. The player takes 40% of the width, bounded to 30–44 columns; Library or Queue takes the rest and switches with Tab. The player stacks a centered cover above metadata, progress, and two rows of controls. Cover size follows available height while reserving readable controls. At 28 or more rows, now playing sits above the lists; from 100 columns, both lists are visible below it. Panes narrower than 72 columns keep the stacked layout and use a compact now-playing summary at 12–13 rows. Minimum usable size is 40 × 12 cells. Cover art gives context without dominating the queue.
 
-The website is a Persuade surface. Lead with “Music stays. Your terminal moves on.” and a working, explicitly simulated detach demonstration. Follow with the detachable lifecycle, executable CLI examples, and source installation instructions. A broad typographic headline is balanced by a dense, mechanically precise player.
+The website is a Persuade surface. Lead with “Music stays. Your terminal moves on.” and a full-width gallery of the real terminal interface. Follow with the detachable lifecycle, executable CLI examples, and source installation instructions. The headline and introduction share a row above the gallery. Show Wide, Compact Library, and Compact Queue in a fixed image area without cropping; provide full-resolution links. Named layout controls and a pause button accompany a six-second rotation. Hover, keyboard focus, and offscreen state pause rotation; reduced motion disables automatic rotation and fading. Without JavaScript, the first screenshot remains visible.
 
 ## Shapes
 
@@ -53,7 +53,7 @@ Compact square corners and fine panel borders. TUI overlays use solid panel back
 
 The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. During overlays, pixel art is hidden and restored on close so graphics cannot cover dialog text. Selection is client-local; saved preferences apply to future attachments.
 
-Keyboard focus is explicit; reduced motion removes web transitions. All public music names and covers are authored demo content.
+Keyboard focus is explicit; reduced motion removes web transitions. The public screenshots use the maintainer’s selected real library and original album colors. Refresh them with `scripts/capture-site.py`, using isolated playback and terminal sessions.
 
 ## Do's and Don'ts
 

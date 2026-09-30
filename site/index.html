@@ -14,45 +14,46 @@
 </header>
 <main id="main">
 <section class="hero wrap" aria-labelledby="headline">
-<div class="hero-copy">
 <h1 id="headline">Music <em>stays.</em><br>Your terminal<br>moves on.</h1>
+<div class="hero-copy">
 <p class="lede">A little Winamp energy.<br>A lot more terminal freedom.</p>
 <p class="intro">Play your local music. Close the interface. Keep the soundtrack. A detachable music player for life inside tmux.</p>
 <a class="button primary" href="#install">Make room for your music <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
 <div class="hero-facts"><span>Built with Rust</span><span>macOS first</span><span>Open source · MIT</span></div>
 </div>
-<div class="demo-area">
-<div class="terminal" aria-label="Interactive simulation of vtamp attach and detach">
-<div class="terminal-chrome"><div class="window-marks" aria-hidden="true"><i></i><i></i><i></i></div><span>~/music — tmux</span><span class="pane-id">Classic theme</span></div>
-<div class="terminal-body">
-<div class="shell-line"><span class="prompt">~ ❯</span><span id="shell-command">vtamp</span></div>
-<div class="amp" id="amp">
-<div class="amp-title"><span class="amp-brand"><img src="mark.svg" alt="" width="14" height="14">V T A M P</span><span>VIRTUAL TERMINAL AMPLIFIER</span><span class="indicator" aria-label="Playing"></span></div>
-<div class="amp-main">
-<img class="album-cover" src="cover.svg" width="128" height="128" alt="Original demo cover: green geometric steps on charcoal, Terminal Sessions Vol. 1">
-<div class="track-info"><div class="display-label">NOW PLAYING</div><strong id="track-title">After Hours</strong><span>The Night Shift</span><small>Terminal Sessions, Vol. 1</small><div class="time-display"><span class="play-triangle" aria-hidden="true"></span><span id="elapsed">01:42</span><span class="total">/ 04:36</span></div></div>
+<div class="gallery" id="gallery" role="region" aria-roledescription="carousel" aria-label="vtamp in Ghostty and tmux">
+<div class="gallery-toolbar">
+<p>Real terminal. Room to adapt.</p>
+<div class="gallery-controls" hidden>
+<div class="gallery-selectors" role="group" aria-label="Choose a layout">
+<button type="button" data-slide="0" aria-pressed="true" aria-controls="shot-wide">Wide</button>
+<button type="button" data-slide="1" aria-pressed="false" aria-controls="shot-library">Compact Library</button>
+<button type="button" data-slide="2" aria-pressed="false" aria-controls="shot-queue">Compact Queue</button>
 </div>
-<div class="track-progress" aria-hidden="true"><div id="progress"></div></div>
-<div class="amp-controls">
-<button id="demo-prev" aria-label="Previous demo track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M18 5l-10 7 10 7Z"/></svg></button>
-<button id="demo-play" aria-label="Pause demo playback"><svg viewBox="0 0 24 24" aria-hidden="true"><path id="play-icon" d="M8 5v14M16 5v14"/></svg></button>
-<button id="demo-next" aria-label="Next demo track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M6 5l10 7-10 7Z"/></svg></button>
-<span class="volume-label">VOL</span><div class="volume-meter" aria-hidden="true"></div><span>70%</span>
+<button type="button" id="gallery-rotation" aria-label="Pause automatic slideshow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span>Pause</span></button>
 </div>
-<div class="queue-heading"><span>PLAY QUEUE</span><span>03 TRACKS</span></div>
-<ol class="demo-queue"><li class="is-current"><span>01</span><span>After Hours</span><time>4:36</time></li><li><span>02</span><span>Soft Focus</span><time>3:52</time></li><li><span>03</span><span>One More Commit</span><time>5:08</time></li></ol>
-<div class="amp-hints"><span><b>space</b> pause</span><span><b>n</b> next</span><span><b>q</b> detach</span></div>
 </div>
-<div id="detached" class="detached" hidden><p class="shell-result">Interface detached. Music keeps playing.</p><div class="shell-line"><span class="prompt">~ ❯</span><span>back to what you were doing</span><span class="cursor" aria-hidden="true"></span></div><div class="free-space"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M14 22 26 32 14 42M34 42h16"/></svg><p>Your pane.<br>Yours again.</p></div></div>
+<div class="gallery-stage">
+<figure id="shot-wide" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="1 of 3: Wide">
+<a href="screenshots/wide.png" target="_blank" rel="noopener" aria-label="Open Wide screenshot at full resolution"><img src="screenshots/wide.png" width="2072" height="1048" fetchpriority="high" alt="vtamp in Catppuccin Mocha: album art and current track above the Library and Queue, both visible in a wide terminal."></a>
+</figure>
+<figure id="shot-library" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="2 of 3: Compact Library" hidden>
+<a href="screenshots/compact-library.png" target="_blank" rel="noopener" aria-label="Open Compact Library screenshot at full resolution"><img data-src="screenshots/compact-library.png" width="1732" height="912" alt="A short terminal pane keeps the high-resolution album cover and current track on the left, with Library browsing on the right."></a>
+</figure>
+<figure id="shot-queue" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="3 of 3: Compact Queue" hidden>
+<a href="screenshots/compact-queue.png" target="_blank" rel="noopener" aria-label="Open Compact Queue screenshot at full resolution"><img data-src="screenshots/compact-queue.png" width="1732" height="912" alt="The same short pane with Queue on the right. The album cover and playback information stay visible on the left."></a>
+</figure>
 </div>
-<div class="server-strip"><span class="server-light" aria-hidden="true"></span><strong id="server-label">SERVER PLAYING</strong><span id="server-time">01:42</span><span class="server-independent">independent of this pane</span></div>
+<div class="gallery-caption">
+<p id="gallery-description">120 × 28 cells. Your library and queue, together.</p>
+<a id="gallery-original" href="screenshots/wide.png" target="_blank" rel="noopener">View full resolution <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12"/></svg></a>
 </div>
-<div class="demo-caption"><p>Go on. Close the interface.<br><span>The soundtrack doesn’t need a window.</span></p><button id="detach" class="button secondary" aria-controls="amp detached" aria-expanded="true">Detach interface <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v14h4M12 12h8m-4-4 4 4-4 4"/></svg></button></div>
-<p class="demo-note" id="demo-status" role="status">Interactive simulation. No audio plays in your browser.</p>
+<p class="gallery-note">Captured in Ghostty + tmux · Catppuccin Mocha · Real library, high-resolution album art</p>
+<p class="sr-only" id="gallery-status" role="status"></p>
 </div>
 </section>
 <section id="how-it-works" class="idea wrap" aria-labelledby="idea-heading">
-<div class="idea-title"><h2 id="idea-heading">Your soundtrack.<br>Not another window.</h2><div><p>We loved the little player that lived on our desktop. These days, we live in a terminal. The music should feel at home here, too.</p><p>Album covers come through in high resolution with Sixel or Kitty graphics, automatically detected when you attach. Ghostty + tmux uses Kitty; Sixel in tmux requires support from both tmux and the outer terminal. Color halfblocks keep the artwork visible when pixel graphics aren’t available.</p><p>Make it feel like your terminal. Choose from nine color themes, including cozy Catppuccin Mocha, light Latte, Rosé Pine, and the original green Classic shown above. Press <kbd>t</kbd> to preview, then <kbd>Enter</kbd> to save for your next attachment. Mocha is the default.</p></div></div>
+<div class="idea-title"><h2 id="idea-heading">Your soundtrack.<br>Not another window.</h2><div><p>We loved the little player that lived on our desktop. These days, we live in a terminal. The music should feel at home here, too.</p><p>Album covers come through in high resolution with Sixel or Kitty graphics, automatically detected when you attach. Ghostty + tmux uses Kitty; Sixel in tmux requires support from both tmux and the outer terminal. Color halfblocks keep the artwork visible when pixel graphics aren’t available.</p><p>Make it feel like your terminal. Choose from nine color themes, including cozy Catppuccin Mocha, light Latte, Rosé Pine, and the original green Classic. Press <kbd>t</kbd> to preview, then <kbd>Enter</kbd> to save for your next attachment. Mocha is the default.</p></div></div>
 <div class="lifecycle">
 <div class="lifecycle-step"><code>$ vtamp</code><h3>Drop in.</h3><p>A server starts if you need one. Your library, queue, and album art are right there.</p></div>
 <div class="lifecycle-step"><code>q</code><h3>Step out.</h3><p>The interface closes. The server keeps playing. Get your pane back for the work in front of you.</p></div>
