@@ -1,0 +1,38 @@
+[package]
+name = "vtamp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Music stays. Your terminal moves on. A detachable terminal music player."
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+directories = "6"
+fs2 = "0.4"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+libc = "0.2"
+lofty = "0.25"
+rand = "0.9"
+ratatui = "0.30"
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "mp4", "symphonia-alac", "mp3", "flac", "wav", "vorbis", "tracing"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
