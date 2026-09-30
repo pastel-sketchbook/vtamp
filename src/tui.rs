@@ -77,6 +77,7 @@ struct App {
     settings_path: PathBuf,
     settings_warning: Option<String>,
     cover_image: Option<image::DynamicImage>,
+    cover_loading: bool,
     state: State,
     tracks: Vec<Track>,
     total: usize,
@@ -151,6 +152,7 @@ pub async fn run(
         settings_path,
         settings_warning,
         cover_image: None,
+        cover_loading: false,
         state: State::default(),
         tracks: vec![],
         total: 0,
@@ -425,8 +427,9 @@ impl App {
         if self.cover_key != cover_key {
             self.cover_key = cover_key.clone();
             self.cover_image = None;
+            self.cover_loading = self.show_art && cover_key.is_some();
             self.rebuild_cover();
-            if self.show_art {
+            if self.cover_loading {
                 let sender = messages.clone();
                 tokio::task::spawn_blocking(move || {
                     let image = cover_key.as_ref().and_then(|p| {
@@ -505,6 +508,7 @@ impl App {
                 }
             },
             Message::Cover(key, image) if key == self.cover_key => {
+                self.cover_loading = false;
                 self.cover_image = image;
                 self.rebuild_cover();
             }
@@ -964,7 +968,7 @@ impl App {
                         cover,
                         &mut self.cover,
                     );
-                } else {
+                } else if !self.cover_loading {
                     // A short stacked player can reserve only four columns for
                     // a square image. Let the label use the full player width.
                     let (x, width) = if info.y > cover.y {
@@ -1794,6 +1798,69 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn track_changes_do_not_label_loading_covers_as_missing() {
+        let cache = tempfile::tempdir().unwrap();
+        let first = cache.path().join("first.png");
+        let second = cache.path().join("second.png");
+        let source = image::DynamicImage::new_rgb8(16, 16);
+        source.save(&first).unwrap();
+        source.save(&second).unwrap();
+        let mut app = navigation_app(4);
+        app.show_art = true;
+        app.state.queue[0].track.cover = Some(first.clone());
+        app.state.queue[1].track.cover = Some(second);
+        app.state.queue[3].track.cover = Some(cache.path().join("missing.png"));
+        let (messages, mut incoming) = mpsc::unbounded_channel();
+        let (commands, _requests) = mpsc::channel(8);
+        let check_label = |app: &mut App, expected| {
+            for (width, height) in [(120, 36), (100, 24), (72, 12)] {
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                        .unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert_eq!(text.contains("No album art"), expected, "{width}x{height}");
+            }
+        };
+        for index in [0, 1, 2, 3] {
+            let mut state = app.state.clone();
+            state.current_id = Some(state.queue[index].id.clone());
+            app.state(state, &messages);
+            // Render before delivering the asynchronous decode result, even
+            // when the worker happens to finish immediately.
+            check_label(&mut app, index == 2);
+            if index == 2 {
+                assert!(!app.cover_loading);
+                continue;
+            }
+            assert!(app.cover_loading);
+            if index == 1 {
+                // A late failure for the old song must not end the new load.
+                app.message(
+                    Message::Cover(Some(first.clone()), None),
+                    &messages,
+                    &commands,
+                );
+                assert!(app.cover_loading);
+                check_label(&mut app, false);
+            }
+            let decoded = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.message(decoded, &messages, &commands);
+            assert!(!app.cover_loading);
+            check_label(&mut app, index == 3);
+        }
+    }
+
     fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
         App {
@@ -1802,6 +1869,7 @@ mod tests {
             settings_path: PathBuf::new(),
             settings_warning: None,
             cover_image: None,
+            cover_loading: false,
             state: State::default(),
             tracks: vec![],
             total: 0,
