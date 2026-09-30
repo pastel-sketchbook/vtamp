@@ -35,31 +35,50 @@ pub(crate) enum Artwork {
 
 impl Artwork {
     /// Call after entering raw mode, before starting the terminal event reader.
-    pub fn detect(art: Art) -> Self {
+    /// Keep the returned guard alive until the interface detaches.
+    pub fn detect(art: Art) -> (Self, Option<TmuxPassthrough>) {
         if matches!(art, Art::None | Art::Halfblocks) {
-            return Self::native(art, false, Capabilities::default());
+            return (Self::native(art, false, Capabilities::default()), None);
         }
         let tmux = std::env::var_os("TMUX").is_some()
             || std::env::var("TERM").is_ok_and(|s| s.starts_with("tmux"))
             || std::env::var("TERM_PROGRAM").is_ok_and(|s| s == "tmux");
         let multiplexer = tmux || std::env::var("TERM").is_ok_and(|s| s.starts_with("screen"));
         if multiplexer || matches!(art, Art::Sixel) {
-            // Picker constructors enable tmux passthrough as a side effect. Probe
-            // the pane directly instead, leaving the user's tmux options alone.
-            let mut caps = probe().unwrap_or_default();
+            let mut caps = probe(false).unwrap_or_default();
             if tmux && matches!(art, Art::Auto) {
                 // tmux's DA1 describes its parser, not the attached terminal.
                 // Without end-to-end support tmux draws a '+' placeholder.
                 caps.restrict_to_tmux_clients(&tmux_client_features().unwrap_or_default());
             }
-            return Self::native(art, tmux, caps);
+            let mut passthrough = None;
+            if tmux
+                && (matches!(art, Art::Kitty)
+                    || (matches!(art, Art::Auto) && !(caps.sixel && caps.font_size.is_some())))
+            {
+                passthrough = TmuxPassthrough::enable();
+                if matches!(art, Art::Auto)
+                    && let Some(guard) = &passthrough
+                    && guard.pane_is_active()
+                {
+                    // Replies from the outer terminal go to the active pane.
+                    // Do not inject query replies into another running program.
+                    let outer = probe(true).unwrap_or_default();
+                    caps.kitty = outer.kitty;
+                    caps.font_size = caps.font_size.or(outer.font_size);
+                }
+                if matches!(art, Art::Auto) && !(caps.kitty && caps.font_size.is_some()) {
+                    passthrough = None; // Restore the pane option on failed detection.
+                }
+            }
+            return (Self::native(art, tmux, caps), passthrough);
         }
         let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
         if matches!(art, Art::Kitty) {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
         picker.set_background_color(BACKGROUND);
-        Self::Detected(picker)
+        (Self::Detected(picker), None)
     }
 
     fn native(art: Art, tmux: bool, caps: Capabilities) -> Self {
@@ -67,6 +86,7 @@ impl Artwork {
             Art::Sixel => ProtocolType::Sixel,
             Art::Kitty => ProtocolType::Kitty,
             Art::Auto if caps.sixel && caps.font_size.is_some() => ProtocolType::Sixel,
+            Art::Auto if caps.kitty && caps.font_size.is_some() => ProtocolType::Kitty,
             _ => ProtocolType::Halfblocks,
         };
         Self::Native {
@@ -103,6 +123,7 @@ impl Artwork {
 #[derive(Default)]
 struct Capabilities {
     sixel: bool,
+    kitty: bool,
     font_size: Option<FontSize>,
 }
 
@@ -125,6 +146,7 @@ impl Capabilities {
     fn accept(&mut self, response: Response) -> bool {
         match response {
             Response::Sixel => self.sixel = true,
+            Response::Kitty => self.kitty = true,
             Response::CellSize(Some((width, height))) if width > 0 && height > 0 => {
                 self.font_size = Some(FontSize::new(width, height));
             }
@@ -135,29 +157,106 @@ impl Capabilities {
     }
 }
 
-fn tmux_client_features() -> Option<String> {
-    fn query(args: &[&str]) -> Option<String> {
-        let output = Command::new("tmux")
-            .args(args)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8(output.stdout).ok())?
+fn tmux_query(args: &[&str]) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Kitty image uploads need passthrough; scope it to this pane and this attach.
+pub(crate) struct TmuxPassthrough {
+    pane: String,
+    previous: Option<String>,
+    changed: bool,
+}
+
+impl TmuxPassthrough {
+    fn enable() -> Option<Self> {
+        let pane = std::env::var("TMUX_PANE").ok()?;
+        let local = tmux_query(&["show-options", "-p", "-v", "-t", &pane, "allow-passthrough"])?;
+        let effective = tmux_query(&[
+            "show-options",
+            "-A",
+            "-p",
+            "-v",
+            "-t",
+            &pane,
+            "allow-passthrough",
+        ])?;
+        let changed = effective.trim() == "off";
+        if changed {
+            tmux_query(&["set-option", "-p", "-t", &pane, "allow-passthrough", "on"])?;
+        }
+        Some(Self {
+            pane,
+            previous: (!local.trim().is_empty()).then(|| local.trim().to_owned()),
+            changed,
+        })
     }
 
+    fn pane_is_active(&self) -> bool {
+        tmux_query(&["display-message", "-p", "-t", &self.pane, "#{pane_active}"])
+            .is_some_and(|s| s.trim() == "1")
+    }
+}
+
+impl Drop for TmuxPassthrough {
+    fn drop(&mut self) {
+        if !self.changed {
+            return;
+        }
+        // Preserve a setting the user changed while vtamp was attached.
+        if !tmux_query(&[
+            "show-options",
+            "-p",
+            "-v",
+            "-t",
+            &self.pane,
+            "allow-passthrough",
+        ])
+        .is_some_and(|s| s.trim() == "on")
+        {
+            return;
+        }
+        if let Some(previous) = &self.previous {
+            tmux_query(&[
+                "set-option",
+                "-p",
+                "-t",
+                &self.pane,
+                "allow-passthrough",
+                previous,
+            ]);
+        } else {
+            tmux_query(&[
+                "set-option",
+                "-p",
+                "-u",
+                "-t",
+                &self.pane,
+                "allow-passthrough",
+            ]);
+        }
+    }
+}
+
+fn tmux_client_features() -> Option<String> {
     // Scope to this pane's session: a Sixel client on an unrelated session
     // cannot display our image. All attached clients must be able to render it.
     let pane = std::env::var("TMUX_PANE").ok()?;
-    let session = query(&["display-message", "-p", "-t", &pane, "#{session_id}"])?;
+    let session = tmux_query(&["display-message", "-p", "-t", &pane, "#{session_id}"])?;
     let session = session.trim();
     if !session.starts_with('$') || session[1..].parse::<u32>().is_err() {
         return None;
     }
-    query(&[
+    tmux_query(&[
         "list-clients",
         "-t",
         session,
@@ -166,7 +265,7 @@ fn tmux_client_features() -> Option<String> {
     ])
 }
 
-fn probe() -> io::Result<Capabilities> {
+fn probe(tmux_passthrough: bool) -> io::Result<Capabilities> {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     if !stdin.is_terminal() || !stdout.is_terminal() {
@@ -184,9 +283,13 @@ fn probe() -> io::Result<Capabilities> {
         }
     }
     let query = Parser::query(
-        false,
+        tmux_passthrough,
         QueryStdioOptions {
-            blacklist_protocols: vec![ProtocolType::Kitty],
+            blacklist_protocols: vec![if tmux_passthrough {
+                ProtocolType::Sixel
+            } else {
+                ProtocolType::Kitty
+            }],
             ..Default::default()
         },
     );
@@ -298,6 +401,50 @@ mod tests {
                 StatefulProtocolType::Halfblocks(_)
             ));
         }
+    }
+
+    #[test]
+    fn kitty_reply_selects_pixel_graphics_through_tmux() {
+        let caps = capabilities("\x1b_Gi=31;OK\x1b\\\x1b[6;34;17t\x1b[0n");
+        let renderer = Artwork::native(Art::Auto, true, caps);
+        let mut protocol = renderer.new_resize_protocol(DynamicImage::new_rgb8(512, 512));
+        let area = Rect::new(0, 0, 18, 9);
+        protocol.resize_encode(&Resize::Fit(None), area.as_size());
+        protocol.last_encoding_result().unwrap().unwrap();
+        let mut buffer = Buffer::empty(area);
+        protocol.render(area, &mut buffer);
+        let upload = buffer[(0, 0)].symbol();
+        assert!(upload.starts_with("\x1bPtmux;\x1b\x1b_G"));
+        assert!(upload.contains("a=T,U=1,f=32,t=d,s=306,v=306,"));
+        assert!(upload.contains('\u{10eeee}'));
+        // Subsequent frames use placeholders without uploading pixels again.
+        protocol.render(area, &mut buffer);
+        assert!(!buffer[(0, 0)].symbol().contains("\x1b_G"));
+        assert!(buffer[(0, 0)].symbol().contains('\u{10eeee}'));
+    }
+
+    #[test]
+    fn failed_kitty_detection_falls_back_and_native_sixel_takes_priority() {
+        for reply in [
+            "\x1b_Gi=31;ENOTSUP\x1b\\\x1b[6;34;17t\x1b[0n",
+            "\x1b_Gi=31;OK\x1b\\\x1b[0n",
+        ] {
+            let renderer = Artwork::native(Art::Auto, true, capabilities(reply));
+            assert!(matches!(
+                renderer
+                    .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                    .protocol_type(),
+                StatefulProtocolType::Halfblocks(_)
+            ));
+        }
+        let caps = capabilities("\x1b_Gi=31;OK\x1b\\\x1b[?1;2;4c\x1b[6;34;17t\x1b[0n");
+        let renderer = Artwork::native(Art::Auto, true, caps);
+        assert!(matches!(
+            renderer
+                .new_resize_protocol(DynamicImage::new_rgb8(64, 64))
+                .protocol_type(),
+            StatefulProtocolType::Sixel(_)
+        ));
     }
 
     #[test]

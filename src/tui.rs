@@ -82,7 +82,7 @@ impl Drop for TerminalGuard {
 pub async fn run(client: Client, art: Art) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
-    let artwork = Artwork::detect(art);
+    let (artwork, _passthrough) = Artwork::detect(art);
     let (messages, mut incoming) = mpsc::unbounded_channel();
     let (commands, mut requests) = mpsc::channel::<Command>(64);
     let (resize_tx, resize_rx) = sync_mpsc::channel::<ResizeRequest>();
@@ -891,7 +891,7 @@ mod tests {
             notice: String::new(),
             notice_at: Instant::now(),
             last_progress: Instant::now(),
-            artwork: Artwork::detect(Art::Halfblocks),
+            artwork: Artwork::detect(Art::Halfblocks).0,
             cover: ThreadProtocol::new(tx, None),
             cover_key: None,
             show_art: false,
