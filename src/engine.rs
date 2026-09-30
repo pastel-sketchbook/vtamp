@@ -1,7 +1,15 @@
-use crate::{audio::PlaybackBackend, model::*};
+use crate::{
+    audio::{OutputUnavailable, PlaybackBackend},
+    model::*,
+};
 use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+
+const OUTPUT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Engine<B: PlaybackBackend> {
     pub state: State,
@@ -9,6 +17,7 @@ pub struct Engine<B: PlaybackBackend> {
     loaded: bool,
     upcoming: VecDeque<String>,
     history: Vec<String>,
+    output_retry: Option<Instant>,
 }
 
 impl<B: PlaybackBackend> Engine<B> {
@@ -19,6 +28,7 @@ impl<B: PlaybackBackend> Engine<B> {
             loaded: false,
             upcoming: VecDeque::new(),
             history: vec![],
+            output_retry: None,
         };
         if engine.state.shuffle {
             engine.refill_shuffle();
@@ -93,8 +103,16 @@ impl<B: PlaybackBackend> Engine<B> {
                     0
                 };
                 let target = (base + *milliseconds as i128).clamp(0, duration as i128) as u64;
-                if self.loaded {
-                    self.backend.seek(target)?;
+                if self.loaded
+                    && let Err(error) = self.backend.seek(target)
+                {
+                    if error.is::<OutputUnavailable>() {
+                        self.backend.stop();
+                        self.loaded = false;
+                        self.output_retry = Some(Instant::now());
+                    } else {
+                        return Err(error);
+                    }
                 }
                 self.state.position_ms = target;
             }
@@ -154,7 +172,9 @@ impl<B: PlaybackBackend> Engine<B> {
     fn pause(&mut self) {
         if self.state.status == PlaybackStatus::Playing {
             self.backend.pause();
-            self.state.position_ms = self.backend.position();
+            if self.loaded {
+                self.state.position_ms = self.backend.position();
+            }
             self.state.status = PlaybackStatus::Paused;
         }
     }
@@ -164,6 +184,11 @@ impl<B: PlaybackBackend> Engine<B> {
         }
         if self.state.queue.is_empty() {
             bail!("Queue is empty. Add music with vtamp queue add PATH");
+        }
+        if self.output_retry.is_some() {
+            self.state.status = PlaybackStatus::Playing;
+            self.output_retry = Some(Instant::now());
+            return Ok(());
         }
         if self.loaded {
             self.backend.resume();
@@ -175,12 +200,14 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     pub fn stop(&mut self) {
+        self.output_retry = None;
         self.backend.stop();
         self.loaded = false;
         self.state.status = PlaybackStatus::Stopped;
         self.state.position_ms = 0;
     }
     fn play_at(&mut self, index: usize, position_ms: u64, paused: bool) -> Result<()> {
+        self.output_retry = None;
         let old = self.state.current_id.clone();
         let mut last_error = None;
         // Every candidate is attempted at most once, even with repeat-all enabled.
@@ -191,7 +218,14 @@ impl<B: PlaybackBackend> Engine<B> {
                 .backend
                 .load(&item.track.path, position, self.state.volume, paused)
             {
-                Ok(()) => {
+                Err(error) if !error.is::<OutputUnavailable>() => {
+                    last_error = Some(format!("{}: {error:#}", item.track.title));
+                }
+                result => {
+                    let output_error = result.err();
+                    if output_error.is_some() {
+                        self.backend.stop();
+                    }
                     if let Some(id) = old
                         && id != item.id
                     {
@@ -205,11 +239,15 @@ impl<B: PlaybackBackend> Engine<B> {
                     } else {
                         PlaybackStatus::Playing
                     };
-                    self.state.last_error = last_error;
-                    self.loaded = true;
+                    self.loaded = output_error.is_none();
+                    self.output_retry = output_error
+                        .as_ref()
+                        .map(|_| Instant::now() + OUTPUT_RETRY_INTERVAL);
+                    self.state.last_error = output_error
+                        .map(|error| format!("Waiting for audio output; retrying: {error:#}"))
+                        .or(last_error);
                     return Ok(());
                 }
-                Err(error) => last_error = Some(format!("{}: {error:#}", item.track.title)),
             }
         }
         self.stop();
@@ -281,11 +319,51 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     pub fn tick(&mut self) -> bool {
-        if let Some(error) = self.backend.take_error() {
+        self.tick_at(Instant::now())
+    }
+    fn tick_at(&mut self, now: Instant) -> bool {
+        // output_event may discard the old player, so save its position first.
+        if self.loaded {
+            self.state.position_ms = self.backend.position();
+        }
+        if let Some(reason) = self.backend.output_event()
+            && (self.loaded || self.output_retry.is_some())
+        {
+            tracing::info!("Reopening audio output: {reason}");
             self.loaded = false;
-            self.state.status = PlaybackStatus::Paused;
-            self.state.last_error = Some(error);
-            return true;
+            self.output_retry.get_or_insert(now);
+        }
+        if let Some(retry_at) = self.output_retry {
+            if now < retry_at {
+                return false;
+            }
+            let Some(item) = self.state.current() else {
+                self.output_retry = None;
+                return false;
+            };
+            // Do not use play_at: an unavailable output must never skip songs or
+            // reset shuffle/history, and a paused track must remain paused.
+            match self.backend.load(
+                &item.track.path,
+                self.state.position_ms,
+                self.state.volume,
+                self.state.status != PlaybackStatus::Playing,
+            ) {
+                Ok(()) => {
+                    self.loaded = true;
+                    self.output_retry = None;
+                    self.state.last_error = None;
+                    tracing::info!("Audio output restored");
+                    return true;
+                }
+                Err(error) => {
+                    self.output_retry = Some(now + OUTPUT_RETRY_INTERVAL);
+                    let message = format!("Waiting for audio output; retrying: {error:#}");
+                    let changed = self.state.last_error.as_ref() != Some(&message);
+                    self.state.last_error = Some(message);
+                    return changed;
+                }
+            }
         }
         if self.state.status != PlaybackStatus::Playing {
             return false;
@@ -316,10 +394,19 @@ mod tests {
         ended: Arc<AtomicBool>,
         position: u64,
         loads: usize,
+        output_event: Option<String>,
+        unavailable: bool,
+        last_load: Option<(String, u64, u8, bool)>,
     }
     impl PlaybackBackend for Fake {
-        fn load(&mut self, p: &Path, pos: u64, _: u8, _: bool) -> Result<()> {
+        fn load(&mut self, p: &Path, pos: u64, volume: u8, paused: bool) -> Result<()> {
             self.loads += 1;
+            self.last_load = Some((p.to_string_lossy().into_owned(), pos, volume, paused));
+            if self.unavailable {
+                return Err(
+                    anyhow::anyhow!("No output device available").context(OutputUnavailable)
+                );
+            }
             if p.to_string_lossy().contains("bad") {
                 bail!("damaged");
             }
@@ -332,6 +419,12 @@ mod tests {
         fn stop(&mut self) {}
         fn volume(&mut self, _: u8) {}
         fn seek(&mut self, p: u64) -> Result<()> {
+            if self.unavailable {
+                self.position = 0;
+                return Err(
+                    anyhow::anyhow!("Output disappeared during seek").context(OutputUnavailable)
+                );
+            }
             self.position = p;
             Ok(())
         }
@@ -340,6 +433,13 @@ mod tests {
         }
         fn finished(&self) -> bool {
             self.ended.load(Ordering::SeqCst)
+        }
+        fn output_event(&mut self) -> Option<String> {
+            let event = self.output_event.take();
+            if event.is_some() {
+                self.position = 0;
+            }
+            event
         }
     }
     fn track(name: &str) -> Track {
@@ -361,6 +461,129 @@ mod tests {
             .unwrap();
         engine
     }
+    #[test]
+    fn output_change_restores_same_track_position_volume_and_pause_state() {
+        for paused in [false, true] {
+            let mut e = engine();
+            e.apply(&Command::Shuffle { enabled: true }).unwrap();
+            e.apply(&Command::Repeat { mode: Repeat::All }).unwrap();
+            e.apply(&Command::Volume { value: Some(36) }).unwrap();
+            e.apply(&Command::Resume).unwrap();
+            e.backend.position = 12345;
+            if paused {
+                e.apply(&Command::Pause).unwrap();
+            }
+            let queue = e.state.queue.clone();
+            let current = e.state.current_id.clone();
+            let upcoming = e.upcoming.clone();
+            let history = e.history.clone();
+            e.backend.output_event = Some("Default audio output changed".into());
+
+            assert!(e.tick());
+            assert_eq!(e.backend.last_load, Some(("a".into(), 12345, 36, paused)));
+            assert_eq!(e.state.position_ms, 12345);
+            assert_eq!(e.state.current_id, current);
+            assert_eq!(e.state.queue, queue);
+            assert_eq!(e.upcoming, upcoming);
+            assert_eq!(e.history, history);
+            assert_eq!(
+                e.state.status,
+                if paused {
+                    PlaybackStatus::Paused
+                } else {
+                    PlaybackStatus::Playing
+                }
+            );
+            assert!(e.loaded);
+            assert!(e.state.last_error.is_none());
+        }
+    }
+
+    #[test]
+    fn unavailable_output_retries_without_skipping_and_honors_controls() {
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        e.backend.position = 12345;
+        e.backend.output_event = Some("Disconnected".into());
+        e.backend.unavailable = true;
+        let now = Instant::now();
+        assert!(e.tick_at(now));
+        assert_eq!(e.backend.loads, 2);
+        assert_eq!(e.state.current().unwrap().track.id, "a");
+        assert_eq!(e.state.position_ms, 12345);
+        assert!(e.state.last_error.as_ref().unwrap().contains("retrying"));
+        assert!(!e.tick_at(now + Duration::from_millis(500)));
+        assert_eq!(e.backend.loads, 2);
+        // Still unavailable after the retry interval: exactly one more attempt.
+        assert!(!e.tick_at(now + OUTPUT_RETRY_INTERVAL));
+        assert_eq!(e.backend.loads, 3);
+        assert_eq!(e.state.position_ms, 12345);
+
+        e.apply(&Command::Pause).unwrap();
+        assert_eq!(e.state.position_ms, 12345);
+        e.apply(&Command::Seek {
+            milliseconds: 2000,
+            relative: true,
+        })
+        .unwrap();
+        e.apply(&Command::Volume { value: Some(25) }).unwrap();
+        e.backend.unavailable = false;
+        assert!(e.tick_at(now + OUTPUT_RETRY_INTERVAL * 2));
+        assert_eq!(e.backend.last_load, Some(("a".into(), 14345, 25, true)));
+        assert_eq!(e.state.status, PlaybackStatus::Paused);
+        assert_eq!(e.state.queue.len(), 3);
+        assert!(e.state.last_error.is_none());
+    }
+
+    #[test]
+    fn output_loss_during_seek_preserves_requested_position_for_recovery() {
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        e.backend.unavailable = true;
+        e.apply(&Command::Seek {
+            milliseconds: 12000,
+            relative: false,
+        })
+        .unwrap();
+        assert!(!e.loaded);
+        assert_eq!(e.state.position_ms, 12000);
+        e.apply(&Command::Pause).unwrap();
+        e.backend.unavailable = false;
+        assert!(e.tick());
+        assert_eq!(e.backend.last_load, Some(("a".into(), 12000, 70, true)));
+        assert_eq!(e.state.status, PlaybackStatus::Paused);
+    }
+
+    #[test]
+    fn play_during_output_loss_waits_on_requested_track_instead_of_skipping() {
+        let mut e = engine();
+        e.backend.unavailable = true;
+        e.play_track(track("b")).unwrap();
+        assert_eq!(e.backend.loads, 1);
+        assert_eq!(e.state.current().unwrap().track.id, "b");
+        assert_eq!(e.state.queue.len(), 3);
+        assert!(e.output_retry.is_some());
+        e.backend.unavailable = false;
+        assert!(e.tick_at(Instant::now() + OUTPUT_RETRY_INTERVAL));
+        assert_eq!(e.backend.last_load, Some(("b".into(), 0, 70, false)));
+    }
+
+    #[test]
+    fn stop_cancels_output_recovery() {
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        e.backend.output_event = Some("Disconnected".into());
+        e.backend.unavailable = true;
+        let now = Instant::now();
+        e.tick_at(now);
+        e.apply(&Command::Stop).unwrap();
+        e.backend.unavailable = false;
+        assert!(!e.tick_at(now + OUTPUT_RETRY_INTERVAL));
+        assert_eq!(e.backend.loads, 2);
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        assert_eq!(e.state.position_ms, 0);
+    }
+
     #[test]
     fn pause_resume_seek_and_stop_are_consistent() {
         let mut e = engine();

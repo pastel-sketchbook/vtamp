@@ -240,7 +240,7 @@ VTAMP_HOME=/tmp/vtamp-dev cargo run -- server stop
 This places data, covers, and the runtime socket under that directory. Keep the complete socket path under macOS's 104-byte limit. All clients for an instance must use the same `VTAMP_HOME`.
 
 - **No sound:** inspect `vtamp doctor`, system output selection, player volume, and `last_error`. Sandboxed development shells may not see CoreAudio devices even when decoding succeeds. Run the built binary in a normal terminal for output-device access.
-- **A changed output device:** this release does not proactively follow default-device changes. Pause and restart the server, then resume to open the current default device.
+- **A changed output device:** vtamp follows the system default output, including AirPods-to-speaker changes. It checks the device every 500 ms and reopens playback at the saved position, preserving volume, queue, and pause state. Stream errors or three seconds without playback progress also trigger recovery. If an output is temporarily unavailable, it retries once a second; `last_error` explains the wait. Pause and stop remain available during recovery.
 - **Missing songs:** rescan with `vtamp library scan`, wait for `scanning` to become false, and inspect `last_error` or the server log. Only supported local formats are scanned.
 - **Client/server version mismatch after rebuilding:** stop the old server with its matching binary before replacing it. `doctor` reports paths; `server run` is also available as a foreground diagnostic command.
 - **Terminal looks wrong:** try `--art halfblocks` or `--art none`. Normal errors and panics restore terminal modes; after an uncatchable kill, your shell's `reset` command can restore the terminal.
@@ -260,6 +260,12 @@ Optional local-media verification, without redistributing your music:
 
 ```sh
 VTAMP_TEST_MUSIC_DIR=/path/to/m4a/files cargo test --test media -- --ignored
+```
+
+An optional muted output test checks stream reopening and seeking on a real audio device. Supply a track at least 15 seconds long and run outside an audio-restricted sandbox. Device changes and stream errors are injected; the test does not change your system output or physically disconnect headphones.
+
+```sh
+VTAMP_TEST_AUDIO_FILE=/path/to/track.m4a cargo test --lib audio::tests::real_output -- --ignored
 ```
 
 The implementation separates the queue state machine (`engine`), the rodio adapter (`audio`), metadata/catalog work (`library`, `store`), local transport (`wire`, `client`, `daemon`), platform paths (`platform`), and human/CLI interfaces (`tui`, `cli`). The server alone owns authoritative state and SQLite writes. Scans and artwork work run separately from playback control. See [the protocol notes](docs/protocol.md) for low-level integration.
