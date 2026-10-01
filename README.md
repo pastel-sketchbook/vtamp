@@ -41,7 +41,23 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
-## Install from source
+## Install
+
+### Homebrew
+
+On an Apple Silicon Mac:
+
+```sh
+brew install rath/tap/vtamp
+```
+
+The formula installs a prebuilt, self-contained binary from the
+[GitHub release](https://github.com/rath/vtamp/releases); Rust is not required.
+Upgrade with `brew update && brew upgrade vtamp`, then run `vtamp server stop`
+so the next `vtamp` starts the new build: a running playback server is never
+replaced by an install. Intel Macs build from source.
+
+### Install from source
 
 You need **Rust 1.90 or newer** and the macOS Command Line Tools (`xcode-select --install` if you do not have them). Clone the repository and install:
 
@@ -57,7 +73,7 @@ Make sure `~/.cargo/bin` is on your `PATH`. Or run directly from the checkout:
 cargo run --release
 ```
 
-There is no published crates.io package or Homebrew formula yet. Local playback does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite is bundled. Optional installed-tool imports are described in [the integration guide](docs/imports.md).
+There is no published crates.io package. Local playback does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite is bundled. Optional installed-tool imports are described in [the integration guide](docs/imports.md).
 
 ## First listen
 
@@ -340,7 +356,7 @@ track visible with `Ⅱ`; stopping playback, clearing the current track, or shut
 down the server hides the segment. It inherits your status-bar colors and needs no
 Nerd Font, jq, Python, or additional background service.
 
-Install the latest vtamp binary using the [source installation steps](#install-from-source),
+Install the latest vtamp binary with [Homebrew or from source](#install),
 then add this to `~/.tmux.conf`, **after any theme or other status-bar settings**:
 
 ```tmux
@@ -360,7 +376,8 @@ For [TPM](https://github.com/tmux-plugins/tpm), use `set -g @plugin 'rath/vtamp'
 instead of the `run-shell` line above, before your existing TPM initialization.
 Press your tmux prefix followed by `I` to install the plugin. TPM downloads the
 repository but does not build Rust code: if vtamp is not installed yet, run
-`cargo install --locked --path ~/.tmux/plugins/vtamp` (adjust for a custom TPM directory).
+`brew install rath/tap/vtamp` or `cargo install --locked --path ~/.tmux/plugins/vtamp`
+(adjust for a custom TPM directory).
 
 Optional settings, placed before loading the plugin:
 
