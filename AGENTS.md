@@ -1,53 +1,51 @@
 # Agent guide
 
-## Project and scope
+vtamp is a local music player: a persistent playback server with detachable
+terminal clients (virtual terminal + Winamp). Music must keep playing when a TUI
+exits or a tmux client detaches.
 
-vtamp is a local music player with a persistent playback server and detachable
-terminal clients. The name combines virtual terminal and Winamp. Music must keep
-playing when a TUI exits or a tmux client detaches.
-
-- Single Rust crate, edition 2024, Rust 1.90 or newer. Use `Cargo.lock`.
-- macOS is the supported platform. Keep platform-specific code isolated for
-  future Linux support; do not claim Linux support without testing it.
-- TUI: ratatui + crossterm; audio: rodio; transport: local Unix sockets;
-  persistence: bundled SQLite. The website is static HTML/CSS/JS without a build step.
+- Single Rust crate, edition 2024, Rust 1.90 or newer; use `Cargo.lock`. TUI:
+  ratatui + crossterm; audio: rodio; transport: Unix sockets; persistence: bundled
+  SQLite. The website in `site/` is static HTML/CSS/JS without a build step.
+- macOS is the supported platform. Keep platform code isolated for future Linux
+  support; do not claim Linux support without testing it.
 - Product UI and repository documentation are English. Match the user's language
   in conversation.
-- Read `README.md` for user workflows, `docs/protocol.md` for transport semantics,
-  and `PRODUCT.md`, `DESIGN.md`, and `docs/themes.md` for UI work. Check the code
-  when older prose disagrees with behavior, and update affected documentation.
-- macOS media keys and Now Playing are implemented in the playback server.
-  The system chooses the active media app; vtamp does not intercept global keys.
+
+## Where the rules live
+
+This file holds only cross-cutting rules for agents. Behavior specifications live in:
+
+| Topic | Document |
+| --- | --- |
+| Workflows, keys, audio, media keys, storage, troubleshooting, optional live checks | `README.md` |
+| Wire protocol, CLI/agent contracts, queue edits, receipts, scans, reservations, radio, migrations | `docs/protocol.md` |
+| TUI layout and interaction, spectrum, imports and radio UI, website | `DESIGN.md`, `PRODUCT.md`, `docs/themes.md` |
+| Optional yt-dlp imports and LLM metadata | `docs/imports.md`, `docs/llm.md` |
+
+Read the relevant document before changing behavior and update it in the same
+change. When prose disagrees with the code, check the code and correct the prose.
+Put new feature details in those documents, not here.
 
 ## Code map
 
-| Location | Responsibility |
+| Area | Location |
 | --- | --- |
-| `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
-| `src/engine.rs`, `src/queue_edit.rs` | Playback state machine, pure batch queue validation, explicit play-next priority, shuffle/history, stop reservations, output recovery |
-| `src/audio.rs`, `src/audio/macos.rs` | Shared decoder entry point, macOS AudioToolbox AAC source, rodio adapter, default-device and stream monitoring |
-| `src/audio/buffered.rs` | Bounded PCM decode-ahead, output-format conversion, starvation counters and music-position accounting |
-| `src/media_controls.rs`, `src/media_controls/macos.rs`, `src/media_controls/app_bundle.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, private signed app bundle and embedded identity |
-| `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
-| `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
-| `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
-| `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs` | Optional installed-tool imports, staging, progress, bounded/cancellable child processes |
-| `src/import_config.rs`, `src/metadata.rs` | Import configuration snapshots, metadata rules and inference validation |
-| `src/prompts/music_metadata.txt` | Shared extraction instructions with fictional examples; embedded at build time |
-| `src/llm.rs`, `src/llm/config.rs` | Shared LLM requests, generic connection tests, independent configuration and Keychain references |
-| `src/daemon/imports.rs`, `src/store/imports.rs`, `src/tui/imports.rs` | Import ownership, transactional reports/overrides, optional TUI overlays |
-| `src/platform.rs` | Paths, instance isolation, private runtime directories |
-| `src/cli.rs`, `src/main.rs` | CLI parsing, command dispatch, output and process entry point |
-| `src/tui.rs` | Input/event loop, client state, responsive layout, navigation and overlays |
-| `src/artwork.rs` | Terminal capability detection, Sixel/Kitty selection, tmux passthrough guard |
-| `src/cover.rs` | Background image preparation, buffered cover swap, stale-result rejection |
-| `src/theme.rs`, `src/settings.rs` | Semantic palettes and client-local `ui.json` preferences |
-| `src/tmux.rs`, `vtamp.tmux`, `scripts/tmux-status.sh` | Bounded now-playing CLI output and optional tmux plugin |
-| `site/` | Landing page, local font, real terminal screenshots |
-| `assets/icon.png`, `assets/vtamp.icns`, `scripts/build-icons.py` | Approved V-meter icon and reproducible macOS/web size exports |
-| `scripts/capture-site.py`, `scripts/capture-window.swift` | Isolated Ghostty + tmux screenshot capture and atomic publication |
+| Shared model, protocol version | `src/model.rs` |
+| Playback state machine, batch queue edits | `src/engine.rs`, `src/queue_edit.rs` |
+| Server, transport | `src/daemon.rs`, `src/daemon/`, `src/client.rs`, `src/wire.rs` |
+| Decoding, output, radio | `src/audio.rs`, `src/audio/` |
+| Spectrum analysis and drawing | `src/spectrum.rs`, `src/spectrum_view.rs` |
+| Media keys, Now Playing, app bundle | `src/media_controls.rs`, `src/media_controls/`, `build.rs` |
+| Library, persistence, radio registrations | `src/library.rs`, `src/store.rs`, `src/store/`, `src/streams.rs` |
+| Imports and LLM metadata | `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs`, `src/import_config.rs`, `src/metadata.rs`, `src/covers.rs`, `src/llm.rs`, `src/llm/`, `src/prompts/` |
+| CLI and TUI | `src/cli.rs`, `src/main.rs`, `src/tui.rs`, `src/tui/` |
+| Artwork, themes, client settings | `src/artwork.rs`, `src/cover.rs`, `src/theme.rs`, `src/settings.rs` |
+| tmux status | `src/tmux.rs`, `vtamp.tmux`, `scripts/tmux-status.sh` |
+| Paths and instance isolation | `src/platform.rs` |
+| Icons, screenshots, live checks | `scripts/` |
 
-## Development and checks
+## Checks
 
 Run these for Rust changes, with targeted tests first when investigating a bug:
 
@@ -58,402 +56,153 @@ cargo test --locked
 cargo build --locked --release
 ```
 
-`--offline` can be added when dependencies are already cached. The macOS workflow
-in `.github/workflows/ci.yml` runs the checks above. Do not silently update the
-lockfile to work around a build failure. Documentation-only changes do not need
-an audio session or a full Rust rebuild.
+CI (`.github/workflows/ci.yml`) runs the same commands. Add `--offline` when
+dependencies are cached. Never update the lockfile to work around a build failure.
+Documentation-only changes need no Rust rebuild.
 
-For screenshot tooling or the tmux plugin, also run:
+For `scripts/` or the tmux plugin, also run
+`python3 -m unittest discover -s scripts -p 'test_*.py'`. Plugin tests skip
+without tmux; report skips as skips, not as live validation.
 
-```sh
-python3 -m unittest discover -s scripts -p 'test_*.py'
-```
-
-These Python tests need no personal music or GUI. The plugin tests use private
-tmux servers and a PTY; they skip when tmux is unavailable. Report skips rather
-than describing them as successful live validation.
-
-- Engine unit tests use a fake `PlaybackBackend`; use them for deterministic
-  transitions and regression cases. Inject a seeded RNG for shuffle assertions.
-- `tests/server.rs` covers real isolated server processes, startup races,
-  persistence, subscriptions, malformed requests, and stale sockets.
-- `tests/media.rs` includes a small synthesized AAC fixture with an extended-size
-  MP4 `mdat` atom. Preserve this regression; ordinary MP4 files do not cover it.
-  All media tests use `audio::decode_file`, the same entry point as playback.
-  Native AAC tests also cover stereo, codec selection, EOF, and seeking; they
-  need macOS codec-service access but do not open an output device. If a sandbox
-  blocks AudioToolbox (including PCM format setup), rerun outside the sandbox.
-- `tests/themes.rs` and `tests/tmux.rs` cover CLI behavior and instance isolation.
-- Tests requiring personal media or an audio device are ignored by default.
-  Passing the default suite does not prove actual playback or terminal graphics.
-
-Optional local checks:
-
-```sh
-VTAMP_TEST_MUSIC_DIR="$HOME/work/tapmusic/out" cargo test --locked --test media -- --ignored
-VTAMP_TEST_AUDIO_FILE="/absolute/path/to/a-track.m4a" cargo test --locked --lib audio::tests::real_output -- --ignored
-```
-
-The real-output test is muted and needs a track at least 15 seconds long. It
-injects output changes; it does not physically disconnect headphones. A sandbox
-can prevent CoreAudio access even when decoding works. If device access fails,
-distinguish environment restrictions from a player regression and use an
-authorized normal-terminal or escalated run for actual output verification.
-
-LLM prompt quality can be checked explicitly with synthetic metadata only:
-
-```sh
-VTAMP_TEST_LLM_HOME="/absolute/path/to/llm-settings" cargo test --locked --test metadata_llm -- --ignored --nocapture
-```
-
-This directory must contain `llm.json` for the provider to test. The test makes
-ten real model requests, may consume subscription/API quota, and does not read
-music, download media, or start a playback server. It is ignored in ordinary
-checks. Fake-provider tests verify request separation and fallback behavior;
-they do not establish extraction quality.
-
-For real macOS media-key routing, build release and run
-`python3 scripts/check-media-keys.py` in an interactive desktop session. It uses
-generated silent audio, a muted private server, and a Swift key-posting helper.
-Only the test helper requires Accessibility permission; vtamp's receiver does not.
-This temporarily publishes a Now Playing item and posts global keys, so avoid
-competing playback in other apps. Check Control Center artwork visually as well.
-Ordinary tests and screenshot capture explicitly set `VTAMP_MEDIA_KEYS=0`, even
-if the invoking environment enables it.
+- Engine tests use a fake `PlaybackBackend` and a seeded RNG. Use fake clocks for
+  timers and transaction-failure injection for queue edits.
+- `tests/media.rs` holds a synthesized AAC fixture with an extended-size MP4
+  `mdat` atom; preserve that regression. If a sandbox blocks AudioToolbox or
+  CoreAudio, rerun outside it instead of reporting a decoder or player failure.
+- Tests needing personal media, an audio device, or a desktop session are ignored
+  by default (README > Development). The default suite proves neither audible
+  playback nor terminal graphics.
+- `tests/metadata_llm.rs` (`VTAMP_TEST_LLM_HOME` pointing at a directory with
+  `llm.json`, run with `--ignored`) makes ten real model requests and consumes
+  quota. Run it only when asked; fake-provider tests do not measure extraction quality.
 
 ## Protect the active listening session
 
-Use `target/release/vtamp` explicitly when validating a new release build. A
-`vtamp` on PATH or an already running daemon may still be an older executable.
-Inspect `status --json` and `doctor --json` before drawing conclusions.
+The maintainer may be listening while you work.
 
-Default macOS paths are:
+- Validate new builds with `target/release/vtamp` explicitly; a `vtamp` on PATH or
+  a running daemon may be older. Inspect `status --json` and `doctor --json`
+  before drawing conclusions.
+- Never seek, clear, replace, stop, or restart the user's playback or server for a
+  test unless that is the task, and never restart it just to upgrade.
+- Mutating tests use a unique, short, absolute `VTAMP_HOME` (socket path under
+  104 bytes), shared by every client of that instance, and stay muted:
 
-- Data, `state.db`, `ui.json`, `server.log`: `~/Library/Application Support/vtamp/`
-- Generated media-server app bundles: `macos/<generation>/vtamp.app` inside that data directory
-- Cover cache: `~/Library/Caches/vtamp/covers/`
-- Socket: `/tmp/vtamp-<uid>/control.sock`
+  ```sh
+  vtamp_test_home=$(mktemp -d /tmp/vtamp-agent.XXXXXX)
+  VTAMP_HOME="$vtamp_test_home" target/release/vtamp server start
+  VTAMP_HOME="$vtamp_test_home" target/release/vtamp volume 0
+  # Run test commands with the same VTAMP_HOME.
+  VTAMP_HOME="$vtamp_test_home" target/release/vtamp server stop
+  ```
 
-Use a unique, short, absolute `VTAMP_HOME` for mutating tests. All test clients
-must use the same value. Keep the complete socket path below macOS's 104-byte
-limit. For example, after building:
+- Harnesses set `VTAMP_MEDIA_KEYS=0`, stop their own servers, and remove temporary
+  files in cleanup handlers, including on failure. Scope tmux to a private socket;
+  never run an unqualified `tmux kill-server`.
+- Never use the user's authenticated browser profile or a real LLM provider in
+  tests unless asked.
+- Snapshot a live `state.db` with SQLite's backup API from a read-only
+  connection; copying the file alone can omit WAL contents.
+- Default paths: data in `~/Library/Application Support/vtamp/` (`state.db`,
+  `ui.json`, `server.log`, `macos/<generation>/vtamp.app`), covers in
+  `~/Library/Caches/vtamp/covers/`, socket at `/tmp/vtamp-<uid>/control.sock`.
+- `~/work/tapmusic/out/*.m4a` may be used locally but never modified. Never commit
+  music, databases, caches, logs, or standalone album art. Some tracks genuinely
+  have no cover (Bills, Liebestraum); inspect metadata and sidecar files before
+  diagnosing a graphics failure.
 
-```sh
-vtamp_test_home=$(mktemp -d /tmp/vtamp-agent.XXXXXX)
-VTAMP_HOME="$vtamp_test_home" target/release/vtamp server start
-VTAMP_HOME="$vtamp_test_home" target/release/vtamp volume 0
-VTAMP_HOME="$vtamp_test_home" target/release/vtamp status --json
-# Run test commands with the same VTAMP_HOME.
-VTAMP_HOME="$vtamp_test_home" target/release/vtamp server stop
-```
+## Invariants that are easy to break
 
-Automated harnesses must stop their own servers and clean up temporary files in
-`finally`/cleanup handlers, including failures. Scope tmux cleanup to the private
-socket; never issue an unqualified `tmux kill-server` against the user's session.
-Do not seek, clear, replace, or stop the user's playback just to run a test unless
-that interaction is part of the authorized task. Prefer a paused, muted copy.
-Use SQLite's backup API with a read-only source connection for a live database
-snapshot; copying `state.db` alone can omit WAL contents.
+The documents above hold the full contracts; these are the most common regressions.
 
-The maintainer's `~/work/tapmusic/out/*.m4a` files may be used locally. Do not
-modify them or commit music, databases, caches, logs, or standalone album art.
-Some tracks genuinely have no cover: inspect metadata and sidecar files before
-diagnosing a graphics failure. Bills and Liebestraum have been useful local
-missing-art cases, but their presence is not a portable test prerequisite.
-
-## Agent CLI contracts
-
-- Protocol and database versions are 6. New server startup migrates v1/v2/v3/v4/v5 databases
-  with transactional migration steps, preserving IDs; old binaries reject v6. Do not restart the listener
-  just to upgrade during an active user listening session.
-- `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
-  status are read-only and never auto-start a server. Dry-run edits also must not
-  start a server or write state. Unpaginated queue list retains its array response.
-- Batch queue edits validate a candidate before any mutation. Protect the current
-  entry from removal and preserve output/position. Commit the session and optional
-  request receipt in the same DB transaction before publishing the candidate.
-- Request IDs cover parsed edits plus their revision guard. Replay before checking
-  the guard; preserve successful receipts for 24 hours across restarts. Do not
-  evict unexpired receipts to make room. This applies to new batch edits/adds,
-  not legacy playback or path-import commands. Report the limits accurately.
-- Queue revision tracks entry membership/order, explicit play-next entries, and
-  current entry identity across every mutation path and natural advancement.
-  Position/volume/pause do not invalidate queue guards. Avoid cloning the full
-  queue in the periodic playback tick when nothing changed.
-- Explicit play-next entries precede shuffle in their supplied order; repeat-one
-  still wins on natural endings unless after-current stop is scheduled. Preserve
-  the remaining shuffle pool and persist pending entries across restart.
-- Scan jobs run off the owner thread. Commit successful catalog replacement and
-  the terminal report together; retain 100 terminal jobs. On startup mark running
-  jobs interrupted. Wait timeouts do not cancel work. Count all warnings but cap
-  detailed path/message records at 100.
-- Stop reservations run in the server, including during output recovery. A new
-  reservation replaces the old one. After-current binds to an entry and is cleared
-  when that identity changes; deadlines use wall time, including pause/system sleep.
-  Stop/cancel/restart clears reservations. No timer may resume playback.
-- Use fake clocks/backend tests for ordering and timers, transaction failure
-  injection for edits, and isolated process tests for receipts and scan reports.
-
-## Behavior to preserve
-
-- `q`, Escape, and Ctrl+C detach the TUI; Escape first clears an applied search.
-  `vtamp stop` stops playback and resets position; **`vtamp server stop` stops
-  the daemon**. Restart restores paused.
-- TUI-only changes need a new attachment, not a daemon restart. Engine/audio/server
-  changes need the running daemon restarted to take effect. Explain this clearly
-  when delivering a rebuilt binary; rebuilding does not replace a running process.
-- Read-only status/query commands do not start a server. Theme commands use local
-  preferences without connecting to it. Preserve machine-readable JSON and exit codes.
-- A disconnected or timed-out mutation has an unknown outcome. Inspect state
-  before retrying `next`, queue additions, or another non-idempotent operation.
-- Queue entry IDs differ from library track IDs. Library Enter / `play --track`
-  reuses the current matching entry, then the first match, and appends only if
-  absent. Explicit enqueue permits duplicates. Never silently deduplicate a queue.
-- Library Ctrl+Enter / `play --no-queue` plays a separate item, preserving queue
-  contents, cursor, shuffle pool, and play-next entries. On completion/next, continue
-  from that cursor; previous restarts the direct track. Queue clear must not stop
-  direct playback. Persist and restore it paused. Direct IDs are not queue IDs.
-- Shuffle changes playback order, not visible queue order. New entries must be
-  mixed into the remaining unplayed pool without reintroducing visited entries.
-  Test both manual next and natural endings. Repeat-one applies only to natural
-  endings; manual next must still advance.
-- Output-device recovery must retain track, position, volume, pause state, queue,
-  and shuffle/history. An unavailable output is not an unreadable track to skip.
-- Decode and convert audio on the decoder worker, never in the output callback.
-  Keep PCM bounded (about 500 ms for common formats, at most 128 blocks); do not
-  use rodio's whole-source buffering as decode-ahead. The consumer must not wait
-  for files, decode, allocate blocks, or log. Underflow silence must not advance
-  music position or end the track; aggregate counters on the control thread.
-  Stop/pause release the output and decoder; paused seek/load must not open a
-  device. Resume failures enter ordinary output recovery. Reuse the stream for
-  playing track changes/seeks and keep the OS buffer size. Dispose/join native
-  decoders on the worker/control threads, not from a source dropped by rodio.
-  Unchanged idle sessions must not write periodic position checkpoints.
-- For local files on macOS, only AAC uses AudioToolbox; inspect the actual codec rather than the
-  extension so ALAC/m4a remains on Symphonia. Do not add an AAC software fallback.
-  Keep `symphonia-codec-aac` out of the macOS target dependency graph (it may remain
-  in Cargo.lock for non-macOS). Native handles have exclusive ownership and are
-  disposed on every exit; preserve bounded PCM buffering and frame-based seeking.
-- Spectrum visualization is read-only and observes decoded samples before volume.
-  Keep FFT, allocation, locks, and socket I/O out of the analysis tap's sample path.
-  Use bounded lossy storage and latest-value streams; no subscribers or paused
-  playback means no analysis timer. Wake on demand/state changes, suppress equal
-  inactive frames (active frames remain liveness heartbeats), and release the worker when its last owner disappears.
-  Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
-  pause/resume, track changes, and output recovery. SpectrumWatch is an optional
-  protocol-6 stream separate from State/Event, without database or revision writes.
-  `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
-  Tab returns to the previous list and slash opens Library search. Theme saves and
-  spectrum toggles must preserve each other's stored preference.
-- Media controls default on for the ordinary macOS server and off with
-  `VTAMP_HOME`; `VTAMP_MEDIA_KEYS=0|1` overrides this at server startup. Only the
-  server-lock owner registers handlers. Keep AppKit on the main thread, audio
-  and transport off it, and command callbacks nonblocking. Publish Now Playing
-  only after playback begins; retain it on pause, clear it on stop/shutdown,
-  freeze progress during output recovery, and discard obsolete artwork results.
-  Media-enabled server startup prepares and re-execs a private app bundle before
-  AppKit starts. Its ad-hoc signing identifier must match `CFBundleIdentifier`,
-  and Launch Services must register the final bundle path for Now Playing icons.
-  Do not use a personal signing certificate or require an Apple developer account.
-  Preserve immutable bundle generations, concurrent startup and CLI-only fallback.
-  Keep the API and dependencies macOS-specific; do not add a global keyboard hook.
-- Library searches are paginated; `gg`/`G` span the current search results, not
-  just the loaded page. Reject stale page responses and avoid playing stale rows
-  while a destination page loads. Ctrl-F/B move ten entries in the focused list.
-  Initial attachment during playback focuses Queue and reveals the current entry;
-  later state updates/reconnections preserve navigation. Ctrl-W w and Ctrl-W
-  Ctrl-W share Tab's list-switch behavior outside prompts and overlays.
-  `/` opens a blank search draft; Esc preserves the applied filter, while Enter
-  applies the draft (an empty draft clears the filter). Outside prompts, Esc
-  clears an applied filter before it detaches.
-- Text fields (search/folder prompts, track editor) share one line editor:
-  Ctrl-U clears, Backspace removes a grapheme. Show the real terminal cursor at
-  the caret, never a drawn block; otherwise IME composition (Korean) renders at
-  whichever cell changed last. Long prompt input scrolls to keep the caret visible.
-- Keep terminal input and incoming server/artwork messages immediately actionable
-  through the event loop. Do not reintroduce a 100 ms polling gate for keys or
-  image completion; redraw deadlines are for time-based updates. Suppress empty
-  terminal diffs, and stop the 20 Hz spectrum timer once bars and peaks settle.
-  Preserve progress/notice expiry and invalidate presentation after terminal clears.
-- Decode and encode artwork off the input loop. Keep the old cover visible while
-  preparing a replacement, swap when ready, and reject obsolete generations.
-  Show `No album art` for missing/failed artwork, not briefly during decoding.
-  Layout resizing may need to hide an image that no longer fits. Keep the theme
-  picker in the browser area so the player and art remain visible. Hide pixel art
-  under help/import overlays and restore it when they close. Bottom search/folder
-  prompts do not overlap the cover; keep it visible without clearing the terminal.
-- Help scrolls by wrapped rows with a fixed footer. Keep scrolling keys local to
-  the modal, clamp its offset on resize, and reset to the top when reopening.
-  Show scroll hints and position only when content overflows; otherwise show close keys.
-  Esc/q/? close help; Ctrl+C still detaches the TUI.
+- The server owns state and SQLite writes. Read-only queries (`status`, `now`,
+  paginated `queue list`, search, lookups, scan and sleep status), dry runs, and
+  theme commands never start a server or write state. Keep JSON shapes and exit
+  codes stable.
+- A timed-out or disconnected mutation has an unknown outcome. Inspect state
+  before retrying `next`, queue additions, or another non-idempotent command.
+- Queue entry IDs are not library track IDs, and direct `--no-queue` IDs are
+  neither. Never silently deduplicate a queue. Shuffle changes playback order, not
+  visible order. Repeat-one applies only to natural endings.
+- Protocol and database versions are 6. A schema change needs a transactional,
+  ID-preserving migration, a version bump, and a `docs/protocol.md` update.
+- Decoding, format conversion, file I/O, allocation, locks, logging, FFT, and
+  socket I/O stay out of the audio output callback and the spectrum tap. PCM
+  decode-ahead stays bounded; underflow silence never advances position or ends a
+  track. Output loss enters recovery that keeps track, position, volume, pause,
+  queue, and shuffle; it is never a reason to skip a track.
+- On macOS, AAC decodes only through AudioToolbox, chosen by the actual codec
+  rather than the extension (ALAC stays on Symphonia). Add no AAC software
+  fallback; keep `symphonia-codec-aac` out of the macOS dependency graph.
+- AppKit and AVPlayer objects stay on the main run loop; server commands and media
+  callbacks never wait on them or on the network. Do not add a global keyboard
+  hook. The media-server app bundle is ad-hoc signed with an identifier equal to
+  `CFBundleIdentifier`; never require a personal certificate or Apple developer account.
+- Optional tools are detected at runtime, never installed or bundled. Without
+  yt-dlp, no import controls, hints, help, or doctor messages appear. Child
+  processes run off the playback and input loops and are cancelled by process
+  group. The LLM defaults to `none`; credentials live in Keychain or an environment
+  variable name, never plaintext config; connection tests send only a generic
+  request, never library data.
+- Radio persists registered URLs only, never resolved or tokenized endpoints.
+- Terminal input, server events, and artwork completions stay immediately
+  actionable: no polling gate, and artwork decodes off the input loop. Text fields
+  show the real terminal cursor at the caret so IME composition (Korean) works.
 
 ## Terminal and UI verification
 
-The maintainer uses Ghostty inside tmux. Verify graphics fixes in that combination
-with real pixels; `tmux capture-pane` and ratatui buffer tests can establish text
-and layout behavior but cannot prove that an album cover rendered correctly.
-Discover current panes, client capabilities, and dimensions instead of hardcoding
-pane IDs, PIDs, window IDs, or a previously observed tmux version.
+- The maintainer uses Ghostty inside tmux. Graphics fixes need real pixels there;
+  `tmux capture-pane` and ratatui buffer tests prove only text and layout.
+  Discover panes, sizes, and client capabilities instead of hardcoding them.
+- Rows of `+` or `SIXEL IMAGE` are tmux placeholders, not a rendered cover.
+  Ghostty + tmux uses Kitty; passthrough changes stay pane-local and are restored
+  on detach or detection failure.
+- After graphics or input changes, exercise track changes, rapid navigation,
+  missing art, overlays, resizing, detach, and the `DESIGN.md` layout breakpoints
+  (minimum 40×12).
+- The tmux plugin only substitutes `#{vtamp}`. Never impose colors, clocks, keys,
+  refresh intervals, or width, and never interpolate metadata as shell code.
 
-Automatic art selection inside tmux checks native Sixel support in both tmux and
-its attached client terminals, then probes Kitty, then falls back to halfblocks.
-Ghostty + tmux has been verified using Kitty. A Sixel-capable tmux alone is not
-enough: rows of `+` or `SIXEL IMAGE` can be tmux placeholders. Sixel is sent natively;
-Kitty uploads use passthrough and Unicode placeholders. Keep passthrough changes
-pane-local and restore them on detach or detection failure. Probe before starting
-the crossterm event reader; automatic Kitty replies require the active pane.
+## Website and screenshots
 
-Exercise track changes, rapid navigation, missing art, theme/help overlays,
-resizing, and detach after graphics/input changes. Important layout boundaries:
-40×12 minimum; 72+ columns and 12–27 rows use player/browser columns; 28+ rows use
-the stacked layout; 100+ columns in the tall layout show both Library and Queue.
-Use semantic theme roles. The TUI defaults to Catppuccin Mocha; the website keeps
-its charcoal/green identity. Client theme preferences must not mutate playback.
+- Preview with `python3 -m http.server 8765 --directory site`. Use the
+  system-installed **agent-browser** CLI for all browser work, always headed with
+  the repository session; do not substitute another browser tool:
 
-For tmux status work, preserve the user's format and settings. The plugin only
-substitutes `#{vtamp}`; it must not impose colors, clocks, keys, refresh intervals,
-or width. Status requests have a 500 ms deadline and must not start the daemon.
-Unavailable/stopped state emits an empty line to clear old text. Preserve Unicode
-graphemes and escape metadata for tmux; do not interpolate it as shell code.
+  ```sh
+  agent-browser --headed --session vtamp open http://localhost:8765
+  agent-browser --headed --session vtamp snapshot
+  ```
 
-## Website, browser, and screenshots
-
-Preview with `python3 -m http.server 8765 --directory site`. Use the system-installed
-**agent-browser** CLI for all browser work, always headed and with the repository
-session name. Do not substitute another browser tool.
-
-```sh
-agent-browser --headed --session vtamp open http://localhost:8765
-agent-browser --headed --session vtamp snapshot
-agent-browser --headed --session vtamp click @e1
-agent-browser --headed --session vtamp screenshot
-```
-
-Read pages with `snapshot`; refs come from the latest snapshot. See
-`agent-browser --help` for other commands. Check mobile overflow, keyboard access,
-and reduced motion for relevant website changes. No frontend dependency install
-is needed.
-
-Refresh the real terminal gallery with the repository capture tooling:
-
-```sh
-python3 scripts/capture-site.py --output /tmp/vtamp-screenshots
-python3 scripts/capture-site.py
-```
-
-The first command stages images for inspection; the second replaces the website
-set. Requirements: macOS, `/Applications/Ghostty.app`, tmux, Python 3, Rust,
-`swiftc`, and screen-recording permission. Select the desired covered track in the
-source instance first. The curated gallery uses Training Montage by Vince DiCola;
-preserve that choice unless the user requests another. The script copies live
-state into an isolated paused instance, captures Wide / Compact Library / Compact
-Queue, verifies artwork pixels, publishes atomically, and restores the front app.
-Do not replace this with text-only terminal screenshots or a fabricated mockup.
-Inspect all resulting PNGs. Temporary capture diagnostics can contain local paths
-and song titles. Album art depicted in approved screenshots retains its owners'
-rights and is not covered by the project's MIT license.
+  Refs come from the latest `snapshot`; see `agent-browser --help`. Check mobile
+  overflow, keyboard access, and reduced motion.
+- Refresh the gallery only with `scripts/capture-site.py`: stage with
+  `python3 scripts/capture-site.py --output /tmp/vtamp-screenshots`, then publish
+  without `--output`. Keep Training Montage by Vince DiCola as the selected track
+  unless asked otherwise. Never substitute text captures or mockups, and inspect
+  every PNG before committing.
 
 ## Git and delivery
 
-The maintainer authorizes commits in logical units without repeated permission.
-Review the diff, stage only task changes, and preserve unrelated work. Do not push
-unless explicitly requested, and never ask “Should I push?”
+- Commits in logical units are authorized. Review the diff, stage only task
+  changes, and preserve unrelated work. Do not push unless explicitly requested,
+  and never ask “Should I push?”
+- Use English Conventional Commits: a concise title, exactly one blank line, then
+  mandatory bullets. No blank lines between bullets, no extra leading or trailing
+  blank lines, and no AI attribution metadata.
 
-Use English Conventional Commits with a concise title, exactly one blank line,
-then mandatory bullets explaining the changes. No blank lines between bullets,
-extra leading/trailing blank lines, or AI attribution metadata.
+  ```text
+  fix(playback): shuffle newly queued tracks
 
-```text
-fix(playback): shuffle newly queued tracks
+  - Mix additions into the remaining unplayed pool
+  - Cover natural endings and manual advancement with regression tests
+  ```
 
-- Mix additions into the remaining unplayed pool
-- Cover natural endings and manual advancement with regression tests
-```
-
-Invoke `git commit` directly using `-m "title" -m "body"` with literal newlines,
-or `git commit -F <message-file>`. Never use ANSI-C `$'...'` quoting or wrap the
-commit in `sh -c` / `zsh -lc`.
-
-Report what changed, relevant checks and their limits, the commit, and any needed
-reattach/server restart. Do not claim live playback or visual verification from
-unit tests alone. Keep this guide aligned with the implementation as it evolves.
-
-## Optional import integration
-
-- Detect yt-dlp at runtime; never install or bundle it. Without an executable,
-  omit integration hints, help entries, TUI controls, and doctor messages. Keep
-  ordinary local playback unchanged. No Cargo feature flag is required.
-- Imports belong to the server, with one download worker and bounded jobs. Keep
-  child processes off playback/input loops; cancel their process groups and reap.
-  Wait timeouts and client detachment do not cancel jobs. Restart marks unfinished
-  jobs interrupted; no automatic resume. Retain 100 terminal reports.
-- Opening TUI Imports reveals the status-line job, or the newest finished job,
-  and resets item paging. Preserve an open reader's selected job by ID across
-  snapshots and progress events, not by row index. Delayed list replies must not
-  regress job revisions or remove jobs created after that snapshot. Enter on the
-  selected import plays the track shown in its details — the first added track
-  while that page loads — and selects it in Library; an import with no Library
-  track only reports that and keeps the dialog open.
-- Show Imports as a selectable history list above its details. Keep the selected
-  row and navigation hints visible at small sizes and while scrolling diagnostics.
-  Label source and saved titles; do not reuse the compact status-line summary as
-  the details layout or confuse history position with playlist progress.
-- On observed import completion, reveal the first added track in Library once
-  per job, including its page. Preserve matching searches; clear hiding filters.
-  Defer through prompts/overlays; explicit browsing cancels a pending reveal.
-  Historical/offline completions and zero-add jobs do not steal focus. Preserve
-  playback and Queue. The first added track ID is committed with publication.
-- Deduplicate library imports by video ID, never queue entries. Stage downloads
-  privately, defer publication during catalog work, and transactionally register
-  source, effective metadata, track and successful item report. Preserve stable
-  IDs and manual overrides across rescans, retagging, missing files, and retries.
-- Albums are optional. Prefer structured source albums, then audio tags, and do
-  not guess missing names. Empty album overrides must survive scans and retagging.
-  Omit missing albums and their separators in the TUI; title/artist stay required.
-- Imported thumbnails are stored at their own aspect ratio, bounded like album
-  art; never crop or pad the stored file. The player sizes its cover area to the
-  image's shape (within the space the layout reserves) and scales the artwork to
-  fill that rect, so a wide thumbnail is drawn in full without bars or cropping.
-  `library cover refresh` rebuilds covers for managed imports without re-downloading
-  audio: one refresh at a time, cancellable, off the playback loop, writing only
-  inside the managed `imports/` directory. Its report is in-memory only and must
-  stay bounded; re-running it must be harmless.
-- Import options live in imports.json; shared LLM settings live in llm.json.
-  `llm setup/status/test` work without yt-dlp. The LLM defaults to `none`, while
-  explicit setup defaults to `api`; imports use code rules when it is disabled.
-  Connection tests send only a generic JSON acknowledgement request, never song
-  examples or library data. Only the selected provider may run. API credentials
-  use Keychain or an environment name, never plaintext config. Chrome cookies
-  are opt-in via yt-dlp itself.
-- `tests/imports.rs` uses fake installed tools and isolated servers. Metadata tests
-  use local mock HTTP/CLI backends. Real extraction and graphics checks are
-  separate; never test against the user's active session or authenticated browser
-  profile unless explicitly requested.
-
-## Live radio
-
-- `src/streams.rs` validates registrations and UTF-8 M3U/PLS channel lists;
-  `src/audio/radio.rs` owns native macOS AVPlayer controls; `src/tui/streams.rs`
-  owns radio prompts/previews. Radio does not require yt-dlp or FFmpeg.
-- Preserve fixed registration URLs across redirects/reconnects. Never persist
-  resolved tokenized endpoints. HTTP(S) only; no credentials, DRM, or recording.
-- Store streams separately from scanned files and query the combined catalog for
-  search, paging, and anchors. Invalid batches are atomic; URL registration
-  duplicates keep the old identity/name, while queue duplicates remain permitted.
-- Native AVPlayer and its retained objects stay on the main run loop; server
-  commands never wait on network/native creation. Supply the run loop even with
-  media keys disabled, without publishing system media controls. Reject obsolete
-  connection generations and dispose players on pause, stop, switching, and exit.
-- Live duration is null, position stays zero, and stream status is transient.
-  Restore paused without network. Disconnects never advance Queue; sleep deadlines
-  still stop retries, and after-current/seek reject live media. Native stream
-  playback does not feed the spectrum in v1. Local decoding rules remain intact.
-- Exercise real radio only in a muted private VTAMP_HOME with media keys off;
-  terminate its server in finally. Native playable metadata alone does not prove
-  audio output. Never upgrade the active listening server for a test.
-
-After TUI stream registration, focus Library and reveal the first newly added
-channel, or the first existing channel when all inputs were duplicates. Locate
-its page by ID, preserve matching filters, and clear only filters that hide it.
-Reuse deferred Library selection for prompts/overlays and explicit navigation;
-registration must not start playback or change Queue.
+- Run `git commit -m "title" -m "body"` with literal newlines, or
+  `git commit -F <message-file>`. Never use ANSI-C `$'...'` quoting or wrap the
+  commit in `sh -c` / `zsh -lc`.
+- Report what changed, the checks run and their limits, and the commit. TUI-only
+  changes take effect on reattach; engine, audio, and server changes need the
+  running daemon restarted (`vtamp server stop`, not `vtamp stop`), because
+  rebuilding never replaces a running process. Do not claim live playback or
+  visual verification from unit tests alone.
