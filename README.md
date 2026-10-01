@@ -39,7 +39,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - JSON commands and an event stream for scripts and AI agents.
 - An optional tmux status-bar plugin for the current track and playback time.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
-- A small, dependency-free [landing page](site/).
+- A small, dependency-free [landing page](https://vtamp.told.me/) with [source in `site/`](site/).
 
 macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
@@ -763,6 +763,19 @@ other apps during the check, since macOS decides where global media keys go.
 It cleans up its own server and tmux socket without editing your library.
 Inspect Control Center separately for visual cover verification; this script
 does not prove that the OS rendered artwork or expose a seek slider on every OS.
+
+### Website
+
+The landing page is hosted at **https://vtamp.told.me/** on GitHub Pages.
+The `Deploy website` workflow publishes `site/` when changes to that directory
+or `.github/workflows/pages.yml` reach `main`. It can also be run manually with
+`gh workflow run pages.yml`. The static files are uploaded directly, with no
+build step.
+
+GitHub Pages uses the GitHub Actions source and the custom domain
+`vtamp.told.me`, with HTTPS enforced once its certificate is ready. DNS points
+the `vtamp` CNAME to `rath.github.io`. The domain is configured in the repository's
+Pages settings; Actions deployments do not require a `CNAME` file in `site/`.
 
 To preview the landing page:
 
