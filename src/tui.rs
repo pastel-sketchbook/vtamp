@@ -465,11 +465,15 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let [body, hint] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
         let paragraph = Paragraph::new(HELP_TEXT).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
-        let rows = paragraph.line_count(body.width).min(u16::MAX as usize) as u16;
+        let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
+        let scrollable = rows > inner.height.saturating_sub(1);
+        let [body, hint] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(if scrollable { 2 } else { 1 }),
+        ])
+        .areas(inner);
         self.help_scroll.page_height = body.height;
         self.help_scroll.max = rows.saturating_sub(body.height);
         self.help_scroll.offset = self.help_scroll.offset.min(self.help_scroll.max);
@@ -480,11 +484,13 @@ impl App {
             .offset
             .saturating_add(body.height)
             .min(rows);
+        let hint_text = if scrollable {
+            format!("↑/↓ j/k scroll · PgUp/PgDn page\nEsc/q/? close · {start}–{end}/{rows}")
+        } else {
+            "Esc/q/? close".into()
+        };
         frame.render_widget(
-            Paragraph::new(format!(
-                "↑/↓ j/k scroll · PgUp/PgDn page\nEsc/q/? close · {start}–{end}/{rows}"
-            ))
-            .style(Style::default().fg(p.muted).bg(p.panel)),
+            Paragraph::new(hint_text).style(Style::default().fg(p.muted).bg(p.panel)),
             hint,
         );
     }
@@ -2350,7 +2356,14 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>()
         };
-        for (width, height) in [(40, 12), (72, 12), (100, 20), (100, 24), (120, 28)] {
+        for (width, height, scrollable) in [
+            (40, 12, true),
+            (72, 12, true),
+            (100, 20, true),
+            (100, 24, true),
+            (100, 25, false),
+            (120, 28, false),
+        ] {
             let mut app = app();
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let press = |app: &mut App, key| app.key(key, &commands).unwrap();
@@ -2358,7 +2371,8 @@ mod tests {
             press(&mut app, key(KeyCode::Char('?')));
             let top = draw(&mut app, &mut terminal);
             assert!(top.contains("ATTACH / DETACH"));
-            assert!(top.contains("↑/↓ j/k scroll"));
+            assert_eq!(top.contains("↑/↓ j/k scroll"), scrollable);
+            assert_eq!(top.contains("Esc/q/? close ·"), scrollable);
             assert!(top.contains("Esc/q/? close"));
             for code in [KeyCode::Down, KeyCode::Char('j'), KeyCode::PageDown] {
                 press(&mut app, key(code));
@@ -2420,6 +2434,8 @@ mod tests {
         assert!(text.contains("ATTACH / DETACH"));
         assert!(text.contains("vtamp server stop"));
         assert!(text.contains("Esc/q/? close"));
+        assert!(!text.contains("↑/↓ j/k scroll"));
+        assert!(!text.contains("Esc/q/? close ·"));
     }
 
     #[test]

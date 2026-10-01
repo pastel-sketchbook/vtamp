@@ -82,8 +82,9 @@ The V-meter source is `assets/icon.png`. Use derived PNGs for the website header
 
 The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. Help and theme overlays hide pixel art and restore it on close so graphics cannot cover dialog text. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft; Enter applies it (empty clears the filter), while Esc keeps the current filter. Theme selection is client-local; saved preferences apply to future attachments.
 
-Help scrolls through wrapped text at small pane sizes. Keep scroll/page controls,
-close keys, and the visible row range in a fixed two-line footer. Arrow keys and
+Help scrolls through wrapped text at small pane sizes. When scrolling is needed,
+keep scroll/page controls, close keys, and the visible row range in a fixed
+two-line footer. When all text fits, show only a one-line close hint. Arrow keys and
 j/k scroll; PageUp/PageDown or Ctrl-B/F page; Home/End jump. Esc/q/? close help,
 other playback/list keys stay inside the modal, and reopening starts at the top.
 

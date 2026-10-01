@@ -240,6 +240,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   prompts do not overlap the cover; keep it visible without clearing the terminal.
 - Help scrolls by wrapped rows with a fixed footer. Keep scrolling keys local to
   the modal, clamp its offset on resize, and reset to the top when reopening.
+  Show scroll hints and position only when content overflows; otherwise show close keys.
   Esc/q/? close help; Ctrl+C still detaches the TUI.
 
 ## Terminal and UI verification

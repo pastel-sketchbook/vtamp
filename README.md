@@ -179,7 +179,8 @@ the desktop integration cannot initialize.
 
 Help scrolls with `↑`/`↓` or `j`/`k`; `PageUp`/`PageDown` and `Ctrl-B`/`Ctrl-F`
 move by a page, and `Home`/`End` jump to the top/bottom. Press `Esc`, `q`, or `?`
-to close help. The scroll position and key hints stay visible in short panes.
+to close help. Scroll hints and position stay visible when content overflows;
+when everything fits, only the close hint is shown.
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
