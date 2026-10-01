@@ -7,6 +7,8 @@ use crate::{
     model::*,
     platform,
     settings::Settings,
+    spectrum::SpectrumFrame,
+    spectrum_view::SpectrumView,
     theme::{Palette, Theme, channels},
     wire,
 };
@@ -29,7 +31,7 @@ use std::{
     sync::mpsc as sync_mpsc,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 const PAGE_SIZE: usize = 200;
 
@@ -71,6 +73,8 @@ struct ThemePicker {
 }
 
 struct App {
+    spectrum: SpectrumView,
+    viewport: Rect,
     theme: Theme,
     theme_picker: Option<ThemePicker>,
     settings_path: PathBuf,
@@ -144,7 +148,12 @@ pub async fn run(
         }
     });
     let cover = Cover::new(resize_tx, None);
+    let saved_spectrum = Settings::load(&settings_path)
+        .map(|s| s.spectrum)
+        .unwrap_or(false);
     let mut app = App {
+        spectrum: SpectrumView::new(saved_spectrum),
+        viewport: Rect::default(),
         theme,
         theme_picker: None,
         settings_path,
@@ -216,6 +225,9 @@ pub async fn run(
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+    let (spectrum_enabled, wanted) = watch::channel(false);
+    let (spectrum_frames, mut latest_spectrum) = watch::channel(None);
+    let spectrum_task = tokio::spawn(spectrum_stream(client.clone(), wanted, spectrum_frames));
     let reply_messages = messages.clone();
     let command_task = tokio::spawn(async move {
         while let Some(command) = requests.recv().await {
@@ -232,8 +244,9 @@ pub async fn run(
         }
     });
     let result = async {
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut tick = tokio::time::interval(Duration::from_millis(50));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -242,6 +255,21 @@ pub async fn run(
         loop {
             let terminal_event = tokio::select! {
                 _ = tick.tick() => None,
+                changed = latest_spectrum.changed(), if spectrum_stream_alive => {
+                    if changed.is_err() {
+                        spectrum_stream_alive = false;
+                        app.spectrum.clear();
+                        app.spectrum.error = Some("Spectrum disconnected. Reattach to retry.".into());
+                        continue;
+                    }
+                    match latest_spectrum.borrow_and_update().clone() {
+                        Some(Ok(frame)) if frame.current_id == app.state.current_id => app.spectrum.accept(frame),
+                        Some(Err(error)) => { app.spectrum.clear(); app.spectrum.error = Some(error); },
+                        _ => (),
+                    }
+                    // The animation timer draws at 20 Hz; inputs/artwork still draw immediately.
+                    continue;
+                },
                 Some(message) = incoming.recv() => {
                     app.message(message, &messages, &commands);
                     None
@@ -261,10 +289,11 @@ pub async fn run(
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let cover_hidden = app.cover_hidden();
                         let theme = app.theme;
+                        let spectrum = app.spectrum.enabled;
                         if app.key(key, &commands)? {
                             return Ok::<_, anyhow::Error>(());
                         }
-                        if cover_hidden != app.cover_hidden() || theme != app.theme {
+                        if cover_hidden != app.cover_hidden() || theme != app.theme || spectrum != app.spectrum.enabled {
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
                             terminal.clear()?;
@@ -275,15 +304,87 @@ pub async fn run(
                 }
             }
             terminal.draw(|frame| app.draw(frame))?;
+            let wanted = app.spectrum.enabled && app.connected && !app.cover_hidden()
+                && app.viewport.width >= 40 && app.viewport.height >= 12;
+            let period = Duration::from_millis(if wanted { 50 } else { 100 });
+            if tick.period() != period {
+                tick = tokio::time::interval(period);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            }
+            spectrum_enabled.send_if_modified(|value| {
+                if *value == wanted { false } else { *value = wanted; true }
+            });
         }
     }
     .await;
+    spectrum_task.abort();
     watch_task.abort();
     command_task.abort();
     result
 }
 
+async fn spectrum_stream(
+    client: Client,
+    mut wanted: watch::Receiver<bool>,
+    frames: watch::Sender<Option<Result<SpectrumFrame, String>>>,
+) {
+    loop {
+        if !*wanted.borrow() {
+            if wanted.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let connection = tokio::select! {
+            changed = wanted.changed() => { if changed.is_err() { return; } continue; },
+            result = client.spectrum() => result,
+        };
+        if let Ok((first, mut stream)) = connection {
+            frames.send_replace(Some(Ok(first)));
+            loop {
+                tokio::select! {
+                    changed = wanted.changed() => {
+                        if changed.is_err() { return; }
+                        break;
+                    },
+                    reply = tokio::time::timeout(Duration::from_secs(3), wire::read::<_, Reply>(&mut stream)) => {
+                        let frame = reply.ok().and_then(Result::ok).and_then(|r| r.into_data().ok())
+                            .and_then(|data| serde_json::from_value::<SpectrumFrame>(data).ok());
+                        match frame {
+                            Some(frame) => { frames.send_replace(Some(Ok(frame))); },
+                            None => break,
+                        }
+                    }
+                }
+            }
+        }
+        if !*wanted.borrow() {
+            continue;
+        }
+        frames.send_replace(Some(Err(
+            "Spectrum unavailable. Restart the server with this binary. v closes this view.".into(),
+        )));
+        tokio::select! {
+            changed = wanted.changed() => { if changed.is_err() { return; } },
+            _ = tokio::time::sleep(Duration::from_secs(1)) => (),
+        }
+    }
+}
+
 impl App {
+    fn spectrum_replaces_list(&self) -> bool {
+        self.spectrum.enabled && (self.viewport.height < 28 || self.viewport.width < 72)
+    }
+    fn toggle_spectrum(&mut self, enabled: bool) {
+        self.spectrum.enabled = enabled;
+        self.spectrum.clear();
+        if let Err(error) = Settings::set_spectrum(&self.settings_path, enabled) {
+            self.notice(format!(
+                "Spectrum changed for this session; could not save: {error:#}"
+            ));
+        }
+    }
+
     fn cover_hidden(&self) -> bool {
         // Help and themes can cover the image. Search/folder prompts sit below
         // it in every layout, so they need neither hiding nor a terminal clear.
@@ -324,7 +425,7 @@ impl App {
                 let original = self.theme_picker.take().unwrap().original;
                 self.apply_theme(original);
             }
-            KeyCode::Enter => match (Settings { theme: self.theme }).save(&self.settings_path) {
+            KeyCode::Enter => match Settings::set_theme(&self.settings_path, self.theme) {
                 Ok(()) => {
                     self.theme_picker = None;
                     self.settings_warning = None;
@@ -456,6 +557,9 @@ impl App {
                 });
             }
         }
+        if self.state.current_id != state.current_id {
+            self.spectrum.clear();
+        }
         self.state = state;
         self.last_progress = Instant::now();
         clamp_selection(&mut self.queue_selection, self.state.queue.len());
@@ -468,12 +572,14 @@ impl App {
     ) {
         match message {
             Message::Connected(state) => {
+                self.spectrum.clear();
                 self.connected = true;
                 self.state(state, messages);
                 self.notice("Attached. q detaches; music keeps playing.");
                 self.refresh(commands);
             }
             Message::Disconnected(reason) => {
+                self.spectrum.clear();
                 self.connected = false;
                 self.notice(reason);
             }
@@ -576,7 +682,31 @@ impl App {
             }
             return Ok(false);
         }
+        if self.spectrum_replaces_list() {
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.toggle_spectrum(false);
+                    return Ok(false);
+                }
+                KeyCode::Char('/') => self.toggle_spectrum(false),
+                KeyCode::Down
+                | KeyCode::Up
+                | KeyCode::PageDown
+                | KeyCode::PageUp
+                | KeyCode::Enter
+                | KeyCode::Char('j' | 'k' | 'g' | 'G' | '[' | ']' | 'e' | 'x' | 'd' | 'J' | 'K') => {
+                    return Ok(false);
+                }
+                KeyCode::Char('f' | 'b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(false);
+                }
+                _ => (),
+            }
+        }
         match key.code {
+            KeyCode::Char('v') if key.modifiers.is_empty() => {
+                self.toggle_spectrum(!self.spectrum.enabled)
+            }
             KeyCode::Char('g') if key.modifiers.is_empty() => {
                 if previous_g {
                     self.jump_selection(ListEdge::First, commands);
@@ -815,6 +945,7 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let p = self.theme.palette();
         let area = frame.area();
+        self.viewport = area;
         frame.render_widget(
             Block::default().style(Style::default().bg(p.bg).fg(p.text)),
             area,
@@ -878,8 +1009,19 @@ impl App {
             ])),
             header,
         );
-        self.now_playing(frame, now);
-        if !side_by_side && area.width >= 100 {
+        let embedded_spectrum = self.spectrum.enabled && area.height >= 28 && area.width >= 72;
+        self.now_playing(frame, now, embedded_spectrum);
+        if self.spectrum_replaces_list() {
+            if !self.cover_hidden() {
+                self.spectrum.draw(
+                    frame,
+                    content,
+                    p,
+                    true,
+                    self.connected && self.state.status == PlaybackStatus::Playing,
+                );
+            }
+        } else if !side_by_side && area.width >= 100 {
             let [library, queue] =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
                     .areas(content);
@@ -918,11 +1060,11 @@ impl App {
             status,
         );
         let keys = if area.width >= 100 {
-            " Space play/pause  n/b skip  ←/→ seek  +/- vol  Tab switch  / search  t theme  ? help  q detach"
+            " Space play  n/b skip  ←/→ seek  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
         } else if area.width >= 52 {
-            " Space play  Tab switch  t theme  ? help  q detach"
+            " Space play  Tab list  v spectrum  ? help  q detach"
         } else {
-            " Space play  t theme  ? help  q detach"
+            " Space play  v spectrum  ? help  q detach"
         };
         frame.render_widget(
             Paragraph::new(keys).style(Style::default().bg(p.panel).fg(p.muted)),
@@ -953,7 +1095,7 @@ impl App {
         if self.help {
             let popup = centered(area, 78, 24);
             frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
+            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nv       Toggle spectrum (read-only)\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
             frame.render_widget(
                 Paragraph::new(text)
                     .block(block(p, " vtamp / key reference ", true))
@@ -966,12 +1108,41 @@ impl App {
             self.draw_theme_picker(frame, area);
         }
     }
-    fn now_playing(&mut self, frame: &mut Frame, area: Rect) {
+    fn now_playing(&mut self, frame: &mut Frame, area: Rect, spectrum: bool) {
         let p = self.theme.palette();
         let panel = block(p, " NOW PLAYING ", false);
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
-        let (cover, info) = now_playing_regions(inner, self.show_art);
+        let (cover, info) = if spectrum {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(inner);
+            if !self.cover_hidden() {
+                self.spectrum.draw(
+                    frame,
+                    right,
+                    p,
+                    false,
+                    self.connected && self.state.status == PlaybackStatus::Playing,
+                );
+            }
+            if self.show_art && left.width >= 28 {
+                let cover_width = (left.width.saturating_sub(22)).min(inner.height * 2);
+                let cover_height = (cover_width / 2).min(inner.height);
+                let cover = Rect::new(left.x, left.y, cover_height * 2, cover_height);
+                let info = Rect::new(
+                    left.x + cover.width + 2,
+                    left.y,
+                    left.width - cover.width - 2,
+                    left.height,
+                );
+                (Some(cover), info)
+            } else {
+                (None, left)
+            }
+        } else {
+            now_playing_regions(inner, self.show_art)
+        };
         if let Some(cover) = cover {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide for help/themes, and redraw when they close.
@@ -1261,6 +1432,58 @@ fn cover_background(p: Palette) -> image::Rgba<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spectrum_layout_and_hidden_list_keys_preserve_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = navigation_app(10);
+        app.settings_path = dir.path().join("ui.json");
+        app.library_selection.select(Some(4));
+        app.queue_selection.select(Some(2));
+        let (commands, mut requests) = mpsc::channel(16);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        for theme in Theme::ALL {
+            app.theme = theme;
+            for (width, height) in [(40, 12), (72, 12), (100, 24), (72, 28), (120, 36)] {
+                app.spectrum.enabled = true;
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                        .unwrap();
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect();
+                assert!(text.contains("SPECTRUM"), "{width}x{height}");
+                let replaces = height < 28 || width < 72;
+                assert_eq!(text.contains("LIBRARY"), !replaces);
+                if replaces {
+                    for code in [
+                        KeyCode::Enter,
+                        KeyCode::Down,
+                        KeyCode::Char('e'),
+                        KeyCode::Char('x'),
+                    ] {
+                        app.key(key(code), &commands).unwrap();
+                    }
+                    assert_eq!(app.library_selection.selected(), Some(4));
+                    assert!(requests.try_recv().is_err());
+                    app.key(key(KeyCode::Tab), &commands).unwrap();
+                    assert!(!app.spectrum.enabled);
+                    assert!(app.focus == Focus::Library);
+                    assert_eq!(app.queue_selection.selected(), Some(2));
+                    app.key(key(KeyCode::Char('v')), &commands).unwrap();
+                    app.key(key(KeyCode::Char('/')), &commands).unwrap();
+                    assert!(!app.spectrum.enabled);
+                    assert!(matches!(&app.input, Some(Input::Search(s)) if s.is_empty()));
+                    app.key(key(KeyCode::Esc), &commands).unwrap();
+                }
+            }
+        }
+    }
 
     fn navigation_app(count: usize) -> App {
         let mut app = app();
@@ -1749,7 +1972,12 @@ mod tests {
             attachment_theme(&path, None),
             (Theme::CatppuccinMocha, None)
         );
-        Settings { theme: Theme::Nord }.save(&path).unwrap();
+        Settings {
+            theme: Theme::Nord,
+            ..Settings::default()
+        }
+        .save(&path)
+        .unwrap();
         assert_eq!(
             attachment_theme(&path, Some(Theme::Dracula)),
             (Theme::Dracula, None)
@@ -1939,6 +2167,8 @@ mod tests {
     fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
         App {
+            spectrum: SpectrumView::new(false),
+            viewport: Rect::default(),
             theme: Theme::default(),
             theme_picker: None,
             settings_path: PathBuf::new(),

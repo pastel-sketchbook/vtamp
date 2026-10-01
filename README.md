@@ -27,6 +27,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 - Folder-based library, title/artist/album search, and an editable shared queue.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
+- Read-only audio spectrum with multicolor bars and falling peaks; press `v` to toggle.
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
@@ -172,12 +173,34 @@ the desktop integration cannot initialize.
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `x` / `d` | Remove the selected queue entry |
 | `J` / `K` | Move the selected queue entry down / up |
+| `v` | Toggle the read-only audio spectrum |
 | `t` | Preview and choose a color theme |
 | `?` | Show key reference |
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
 Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
+
+## See the music
+
+Press **`v`** for a live audio spectrum: bass on the left, treble on the right,
+with green, yellow, and red height zones and falling peak markers. Colors follow
+your theme. This is a visualization, not an equalizer; it never changes the sound.
+Analysis uses the decoded signal before app volume, so the bars also move when muted.
+Mono and stereo are supported; multichannel files visualize the front stereo pair.
+
+In short panes, the spectrum replaces the Library/Queue area. **`Tab`** returns to
+the previous list; **`/`** returns to Library and opens a blank search. Hidden lists
+cannot be played or edited with selection keys. At 28+ rows and 72+ columns, the
+spectrum occupies the right half of Now Playing while lists remain available below.
+Narrower panes use the list area. **`v`** closes it in either layout.
+
+The view starts off and remembers your choice in `ui.json`. Each attached TUI has
+its own visibility; toggling one does not change another. Analysis runs only while
+a spectrum view is subscribed, and slow displays drop old frames instead of
+holding up playback. Pause, stop, and missing data let the bars settle to zero.
+After upgrading from a server without spectrum support, restart the server with
+the new binary and reattach. Regular protocol-2 commands remain compatible.
 
 ## Make it yours
 
@@ -528,7 +551,7 @@ open the migrated database.
 
 On macOS, persistent data lives under `~/Library/Application Support/vtamp/`; cover thumbnails are under `~/Library/Caches/vtamp/covers/`. The control socket is `/tmp/vtamp-<uid>/control.sock`. Directories are private to the current user. A held advisory lock ensures one server, and a later launch recovers stale sockets left by crashes.
 
-`ui.json` holds client theme preferences, saved independently of the playback server. `state.db` holds the library and session. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
+`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library and session. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
 
 For isolated development or independent test instances, set an absolute, short `VTAMP_HOME`:
 

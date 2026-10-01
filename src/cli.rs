@@ -361,7 +361,7 @@ pub async fn run(args: Args) -> Result<()> {
                     json!({"theme": Settings::load(&path)?.theme, "path": path})
                 }
                 ThemeAction::Set { name } => {
-                    Settings { theme: name }.save(&path)?;
+                    Settings::set_theme(&path, name)?;
                     json!({"theme": name, "path": path, "applies_to": "future_attachments"})
                 }
             };

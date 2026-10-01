@@ -119,7 +119,20 @@ impl Theme {
             warning,
             error,
         ] = colors.map(rgb);
+        let spectrum = match self {
+            Self::CatppuccinMocha => [0xa6e3a1, 0xf9e2af, 0xf38ba8],
+            Self::CatppuccinLatte => [0x287c12, 0x946000, 0xd20f39],
+            Self::RosePine => [0x9ccfa1, 0xf6c177, 0xeb6f92],
+            Self::Gruvbox => [0xb8bb26, 0xfabd2f, 0xfb4934],
+            Self::TokyoNight => [0x9ece6a, 0xe0af68, 0xf7768e],
+            Self::Nord => [0xa3be8c, 0xebcb8b, 0xbf616a],
+            Self::Dracula => [0x50fa7b, 0xf1fa8c, 0xff5555],
+            Self::Kanagawa => [0x98bb6c, 0xe6c384, 0xff5d62],
+            Self::Classic => [0xb4f676, 0xefbc72, 0xff9090],
+        }
+        .map(rgb);
         Palette {
+            spectrum,
             bg,
             panel,
             selection,
@@ -135,6 +148,7 @@ impl Theme {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
+    pub spectrum: [Color; 3],
     pub bg: Color,
     pub panel: Color,
     pub selection: Color,

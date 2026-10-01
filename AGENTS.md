@@ -201,6 +201,15 @@ missing-art cases, but their presence is not a portable test prerequisite.
   Keep `symphonia-codec-aac` out of the macOS target dependency graph (it may remain
   in Cargo.lock for non-macOS). Native handles have exclusive ownership and are
   disposed on every exit; preserve bounded PCM buffering and frame-based seeking.
+- Spectrum visualization is read-only and observes decoded samples before volume.
+  Keep FFT, allocation, locks, and socket I/O out of the analysis tap's sample path.
+  Use bounded lossy storage and latest-value streams; no subscribers means no FFT.
+  Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
+  pause/resume, track changes, and output recovery. SpectrumWatch is an optional
+  protocol-2 stream separate from State/Event, without database or revision writes.
+  `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
+  Tab returns to the previous list and slash opens Library search. Theme saves and
+  spectrum toggles must preserve each other's stored preference.
 - Media controls default on for the ordinary macOS server and off with
   `VTAMP_HOME`; `VTAMP_MEDIA_KEYS=0|1` overrides this at server startup. Only the
   server-lock owner registers handlers. Keep AppKit on the main thread, audio

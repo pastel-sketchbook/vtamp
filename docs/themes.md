@@ -20,7 +20,13 @@ Body and secondary text have at least 4.5:1 contrast on normal, panel, and selec
 
 ## Preferences and JSON
 
-The client stores `{"theme":"catppuccin-mocha"}` in `ui.json` under the data directory (`~/Library/Application Support/vtamp/` on macOS, or `$VTAMP_HOME`). Writes use a private temporary file and atomic rename. The last completed explicit save wins. The file is independent of the server's database and wire protocol.
+The client stores `{"theme":"catppuccin-mocha","spectrum":false}` in `ui.json` under the data directory (`~/Library/Application Support/vtamp/` on macOS, or `$VTAMP_HOME`). Writes use a private temporary file and atomic rename. The last completed explicit save wins. The file is independent of the server's database and wire protocol. Older files
+without `spectrum` default to false. Theme saves preserve spectrum visibility,
+and spectrum toggles preserve the saved theme (including during a `--theme`
+override). A spectrum toggle applies to the current attachment even if saving
+fails; it does not replace an invalid settings file. The three decorative
+spectrum roles use theme-specific low/middle/high colors, with darker colors in
+Latte to remain visible on its light background.
 
 Missing files use Mocha. Invalid files are left intact and produce a warning on attach; explicitly saving a theme replaces them. A failed save leaves the preview open, with retry and cancel controls. CLI `theme current` returns a settings error for an invalid file; `theme list` remains available and `theme set` can repair it.
 

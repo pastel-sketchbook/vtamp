@@ -351,3 +351,49 @@ fn concurrent_and_disconnected_batch_requests_apply_once() {
     });
     assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn spectrum_is_a_separate_read_only_latest_frame_stream() {
+    let server = Server::new();
+    server.ok(&["server", "start"]);
+    let before = server.ok(&["status"]);
+    let mut watchers = Vec::new();
+    for _ in 0..3 {
+        let mut stream = UnixStream::connect(server.socket()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        send(
+            &mut stream,
+            json!({"version":2,"request":{"command":"spectrum_watch"}}),
+        );
+        let first = receive(&mut stream);
+        assert_eq!(first["ok"], true);
+        assert_eq!(first["data"]["levels"].as_array().unwrap().len(), 32);
+        assert_eq!(first["data"]["active"], false);
+        assert!(first["data"].get("queue").is_none());
+        watchers.push(stream);
+    }
+    // An ordinary watch still contains only its established event types.
+    let mut ordinary = UnixStream::connect(server.socket()).unwrap();
+    ordinary
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    send(
+        &mut ordinary,
+        json!({"version":2,"request":{"command":"watch"}}),
+    );
+    assert_eq!(receive(&mut ordinary)["data"], before);
+    assert_eq!(receive(&mut ordinary)["data"]["event"], "progress");
+    let frame = receive(&mut watchers[0]);
+    assert!(
+        frame["data"]["levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v.as_f64() == Some(0.0))
+    );
+    assert_eq!(server.ok(&["status"]), before);
+    drop(watchers);
+    assert!(server.ok(&["now"]).get("levels").is_none());
+}

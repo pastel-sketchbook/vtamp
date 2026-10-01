@@ -65,6 +65,7 @@ impl std::error::Error for OutputUnavailable {}
 
 #[derive(Default)]
 pub struct RodioBackend {
+    spectrum: Option<Arc<crate::spectrum::Spectrum>>,
     // Player must be dropped before its output stream.
     player: Option<Player>,
     device: Option<MixerDeviceSink>,
@@ -98,6 +99,12 @@ impl ProgressWatch {
 }
 
 impl RodioBackend {
+    pub fn with_spectrum(spectrum: Arc<crate::spectrum::Spectrum>) -> Self {
+        Self {
+            spectrum: Some(spectrum),
+            ..Self::default()
+        }
+    }
     fn reset_output(&mut self) {
         self.stop();
         self.device = None;
@@ -155,10 +162,16 @@ impl PlaybackBackend for RodioBackend {
         }
         self.ensure_output().context(OutputUnavailable)?;
         self.stop();
+        if let Some(spectrum) = &self.spectrum {
+            source = Box::new(spectrum.tap(source));
+        }
         let player = Player::connect_new(self.device.as_ref().unwrap().mixer());
         player.pause();
         player.set_volume(f32::from(volume) / 100.0);
         player.append(source);
+        if let Some(spectrum) = &self.spectrum {
+            spectrum.playing(!paused);
+        }
         if !paused {
             player.play();
         }
@@ -169,18 +182,27 @@ impl PlaybackBackend for RodioBackend {
         Ok(())
     }
     fn pause(&mut self) {
+        if let Some(spectrum) = &self.spectrum {
+            spectrum.playing(false);
+        }
         if let Some(p) = &self.player {
             p.pause();
         }
         self.progress = ProgressWatch::default();
     }
     fn resume(&mut self) {
+        if let Some(spectrum) = &self.spectrum {
+            spectrum.playing(true);
+        }
         if let Some(p) = &self.player {
             p.play();
         }
         self.progress = ProgressWatch::default();
     }
     fn stop(&mut self) {
+        if let Some(spectrum) = &self.spectrum {
+            spectrum.reset();
+        }
         if let Some(p) = self.player.take() {
             p.stop();
         }

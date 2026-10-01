@@ -44,6 +44,35 @@ Send `{"version":2,"request":{"command":"watch"}}`. The first reply contains the
 
 The CLI's NDJSON watch output normalizes the first snapshot into a `state` event, so every printed line follows the same event-envelope shape.
 
+## Spectrum subscription (optional protocol-2 extension)
+
+Send `{"version":2,"request":{"command":"spectrum_watch"}}` on a separate
+connection. The first and subsequent replies contain a `SpectrumFrame` directly
+in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
+`active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
+inactive frame can precede the first analyzed window. Frequency bands are logarithmic
+from 40 Hz to the lower of 16 kHz and Nyquist. Values are display magnitudes over
+a −70 to −10 dB display range, not calibrated loudness measurements.
+
+The stream publishes at up to 20 Hz. Frames are disposable: each subscriber keeps
+the latest value, socket writes have a two-second deadline, and EOF releases its
+subscription. There is no replay, persistence, or playback revision change.
+Analysis is shared across subscribers and skips FFT work without demand. Audio
+capture uses bounded preallocated storage and never waits for analysis or sockets.
+A seek, reload, or output reset changes `generation`; clients discard old results
+and clear their peaks. Pause/resume also flushes internal capture epochs.
+
+Decoded samples are observed before app volume, without changing the samples sent
+to the output. Stereo channels contribute power independently, avoiding phase
+cancellation; multichannel inputs use their front pair. Stale samples produce an
+inactive zero frame. TUI clients additionally reject a frame for a different
+current queue entry and let the display decay if frames stop arriving.
+
+Ordinary `watch`, `status`, and `now` do not include spectrum frames. The protocol
+and database versions remain 2: old clients keep working with a new server, while
+a new TUI displays an unavailable/restart notice when an old server rejects this
+optional command. A spectrum error does not disconnect the ordinary state stream.
+
 ## Agent commands
 
 Protocol 2 keeps the existing command names and adds:

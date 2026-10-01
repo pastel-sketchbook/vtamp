@@ -4,6 +4,7 @@ use crate::{
     library::{self, Scan},
     model::*,
     platform::Paths,
+    spectrum::Spectrum,
     store::Store,
     wire,
 };
@@ -22,6 +23,11 @@ use tokio::{
 };
 
 type Answer = oneshot::Sender<Reply>;
+struct Observers {
+    events: broadcast::Sender<Event>,
+    media: crate::media_controls::Controls,
+    spectrum: Arc<Spectrum>,
+}
 enum Work {
     Request(Command, Answer),
     Catalog {
@@ -65,22 +71,27 @@ pub async fn run(paths: Paths) -> Result<()> {
             .try_send(Work::Request(command, answer))
             .is_ok()
     });
+    let spectrum = Spectrum::start()?;
     let shutdown = Arc::new(Notify::new());
     let thread = {
         let events = events.clone();
         let shutdown = shutdown.clone();
         let tx = sender.clone();
+        let spectrum = spectrum.clone();
         std::thread::Builder::new()
             .name("vtamp-player".into())
             .spawn(move || {
                 let result = worker(
                     paths,
                     store,
-                    Engine::new(state, RodioBackend::default()),
+                    Engine::new(state, RodioBackend::with_spectrum(spectrum.clone())),
                     receiver,
                     tx,
-                    &events,
-                    media,
+                    Observers {
+                        events: events.clone(),
+                        media,
+                        spectrum,
+                    },
                 );
                 if let Err(error) = result {
                     tracing::error!("Player stopped: {error:#}");
@@ -101,10 +112,10 @@ pub async fn run(paths: Paths) -> Result<()> {
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
-                    let sender = sender.clone(); let events = events.clone();
+                    let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        if let Err(error) = connection(stream, sender, events).await { tracing::debug!("Client disconnected: {error:#}"); }
+                        if let Err(error) = connection(stream, sender, events, spectrum).await { tracing::debug!("Client disconnected: {error:#}"); }
                     });
                 }
             }
@@ -142,6 +153,7 @@ async fn connection(
     mut stream: UnixStream,
     sender: mpsc::SyncSender<Work>,
     events: broadcast::Sender<Event>,
+    spectrum: Arc<Spectrum>,
 ) -> Result<()> {
     let request: Request =
         match tokio::time::timeout(Duration::from_secs(5), wire::read(&mut stream)).await {
@@ -168,6 +180,9 @@ async fn connection(
         )
         .await?;
         return Ok(());
+    }
+    if matches!(request.request, Command::SpectrumWatch) {
+        return spectrum_connection(stream, spectrum).await;
     }
     let watch = matches!(request.request, Command::Watch);
     let mut subscription = events.subscribe();
@@ -204,15 +219,44 @@ async fn connection(
     Ok(())
 }
 
+async fn spectrum_connection(mut stream: UnixStream, spectrum: Arc<Spectrum>) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let mut subscription = spectrum.subscribe();
+    let first = subscription.frames.borrow_and_update().clone();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        wire::write(&mut stream, &Reply::success(first)),
+    )
+    .await??;
+    loop {
+        let mut byte = [0u8; 1];
+        tokio::select! {
+            // This stream is read-only after subscribing. EOF releases demand immediately.
+            _ = stream.read(&mut byte) => break,
+            changed = subscription.frames.changed() => {
+                if changed.is_err() { break; }
+                let frame = subscription.frames.borrow_and_update().clone();
+                tokio::time::timeout(Duration::from_secs(2), wire::write(&mut stream, &Reply::success(frame))).await??;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn worker(
     paths: Paths,
     mut store: Store,
     mut engine: Engine<RodioBackend>,
     rx: mpsc::Receiver<Work>,
     tx: mpsc::SyncSender<Work>,
-    events: &broadcast::Sender<Event>,
-    mut media: crate::media_controls::Controls,
+    observers: Observers,
 ) -> Result<()> {
+    let Observers {
+        events,
+        mut media,
+        spectrum,
+    } = observers;
+    let events = &events;
     let mut last_save = Instant::now();
     let mut last_progress = Instant::now();
     let mut imports = 0usize;
@@ -492,6 +536,7 @@ fn worker(
             store.save(&engine.state)?;
             let _ = events.send(Event::State(engine.state.clone()));
         }
+        spectrum.context(engine.state.current_id.clone());
         media.update(&engine.state, engine.output_waiting());
         if last_progress.elapsed() >= Duration::from_secs(1) {
             // Heartbeats also let abandoned watch connections be detected while paused.

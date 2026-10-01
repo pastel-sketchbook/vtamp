@@ -131,6 +131,7 @@ pub enum Command {
     SleepStatus,
     SleepCancel,
     Watch,
+    SpectrumWatch,
     Shutdown,
     Play {
         paths: Vec<PathBuf>,

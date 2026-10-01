@@ -8,9 +8,23 @@ use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path};
 pub struct Settings {
     #[serde(default)]
     pub theme: Theme,
+    #[serde(default)]
+    pub spectrum: bool,
 }
 
 impl Settings {
+    pub fn set_theme(path: &Path, theme: Theme) -> Result<()> {
+        // Explicit theme saves retain the existing repair behavior for invalid files.
+        let mut settings = Self::load(path).unwrap_or_default();
+        settings.theme = theme;
+        settings.save(path)
+    }
+    pub fn set_spectrum(path: &Path, enabled: bool) -> Result<()> {
+        // A visualization toggle must not silently repair/replace a broken theme file.
+        let mut settings = Self::load(path)?;
+        settings.spectrum = enabled;
+        settings.save(path)
+    }
     pub fn load(path: &Path) -> Result<Self> {
         match fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -47,6 +61,20 @@ impl Settings {
 mod tests {
     use super::*;
     #[test]
+    fn spectrum_and_theme_updates_preserve_each_other_and_legacy_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui.json");
+        fs::write(&path, br#"{"theme":"nord"}"#).unwrap();
+        assert!(!Settings::load(&path).unwrap().spectrum);
+        Settings::set_spectrum(&path, true).unwrap();
+        assert_eq!(Settings::load(&path).unwrap().theme, Theme::Nord);
+        Settings::set_theme(&path, Theme::RosePine).unwrap();
+        assert!(Settings::load(&path).unwrap().spectrum);
+        fs::write(&path, b"broken").unwrap();
+        assert!(Settings::set_spectrum(&path, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"broken");
+    }
+    #[test]
     fn defaults_roundtrip_and_corruption_does_not_write() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ui.json");
@@ -54,6 +82,7 @@ mod tests {
         assert!(!path.exists());
         Settings {
             theme: Theme::RosePine,
+            ..Settings::default()
         }
         .save(&path)
         .unwrap();

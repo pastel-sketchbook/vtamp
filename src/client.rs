@@ -73,6 +73,24 @@ impl Client {
         let state = serde_json::from_value(reply.into_data()?)?;
         Ok((state, stream))
     }
+    /// Independent, optional stream; never starts a server or changes playback.
+    pub async fn spectrum(&self) -> Result<(crate::spectrum::SpectrumFrame, UnixStream)> {
+        let mut stream = self.connect().await?;
+        wire::write(
+            &mut stream,
+            &Request {
+                version: PROTOCOL_VERSION,
+                request: Command::SpectrumWatch,
+            },
+        )
+        .await?;
+        let reply: Reply =
+            tokio::time::timeout(Duration::from_secs(3), wire::read(&mut stream)).await??;
+        if reply.version != PROTOCOL_VERSION {
+            bail!("Incompatible server protocol");
+        }
+        Ok((serde_json::from_value(reply.into_data()?)?, stream))
+    }
     pub async fn ensure(&self) -> Result<()> {
         // Never spawn over a reachable server, even if its protocol is incompatible.
         if UnixStream::connect(self.paths.socket()).await.is_ok() {

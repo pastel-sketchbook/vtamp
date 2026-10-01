@@ -51,6 +51,22 @@ A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard refer
 
 The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-2 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
 
+## Audio spectrum
+
+The read-only spectrum extends the existing TUI. `v` toggles it and saves the
+client preference (default off). Bars run from low to high frequencies, using
+fixed height zones: green below 55%, yellow up to 80%, and red above. Each theme
+provides three spectrum roles; Latte uses darker inks. Unicode eighth blocks and
+briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R meters.
+
+At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
+with a cover and compact metadata/controls on the left. Keep the lists below.
+Otherwise replace the browser area, preserving its selection and scroll. Tab
+returns to the previous list; slash returns to Library with a blank search draft.
+Disable hidden-list actions. Help/theme overlays obscure the spectrum and suspend
+its subscription. Labels remain neutral and the axes read LOW / HIGH. Paused,
+stopped, or stale data settles to zero instead of showing decorative motion.
+
 ## Shapes
 
 Compact square corners and fine panel borders. TUI overlays use solid panel backgrounds, not transparency over album art.
