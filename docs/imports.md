@@ -128,10 +128,13 @@ and LLM configuration, so changing settings does not affect queued/running jobs.
 The [extraction prompt](../src/prompts/music_metadata.txt) asks for concise titles,
 removing upload promotion and duplicate romanization while preserving the original
 language and recording versions. It distinguishes cover performers from original
-artists and treats a medley or full session as one recording, rather than picking
-its first song. Its examples use fictional names and songs. Channel names alone
-are never performer evidence. Evidence must quote one supplied metadata field;
-model inference can still be wrong, so manual edits remain available.
+artists and keeps primary/featured artists separate from accompaniment, backing
+vocals and production credits. Instrumental soloists and explicitly co-billed
+musicians remain artists. A medley or full session stays one recording, rather
+than being named after its first song. Its examples use fictional names and
+songs. Channel names alone are never performer evidence. Evidence must quote one
+supplied metadata field; model inference can still be wrong, so manual edits
+remain available.
 
 Updating the prompt requires rebuilding and restarting the playback server.
 Existing tracks keep their metadata until explicitly retagged; saved manual

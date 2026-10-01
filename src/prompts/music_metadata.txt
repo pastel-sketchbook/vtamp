@@ -12,14 +12,16 @@ Title:
 - The player appends version in parentheses. If the retained title already expresses the same distinction (including in another language, such as 라이브), set version to null to avoid repeating it.
 
 Artists:
-- Artist means the people or group performing THIS recording, not the original performer, composer, lyricist, host or uploader. Explicit "cover by", "performed by" or equivalent description credits can identify performers when the title cannot.
-- Return distinct performers in source order, including credited duet/featured performers. Split explicit collaborations (+, feat., with), but keep a band/group name intact; do not split every ampersand or slash blindly.
+- Artist is the recording's primary billed artist or group, plus explicitly co-billed duet/featured artists. It is not a list of everyone who contributed. Use the title and explicit recording-level credits such as "cover by" or "performed by" to establish who the recording is presented as being by.
+- For a vocal performance, keep the lead singer/group and credited duet/featured artists. Do not add people credited only for accompaniment, session instruments, backing vocals or production (for example "Piano by", "Guitar", "반주", "세션", "코러스", producer, arranger, engineer or director). Such a credit alone does not establish primary-artist status. Do not expand a group's member/session credits into separate artists.
+- Do not exclude someone merely because they play an instrument: a solo pianist or instrumental group presented as the main act IS the artist. Likewise retain an instrumentalist explicitly billed as a co-artist or featured act, rather than only as an accompanist. If only supporting credits are supplied and no primary artist is identified, return artists = [].
+- Return distinct primary/co-billed artists in source order. Split explicit collaborations (+, feat., with), but keep a band/group name intact; do not split every ampersand or slash blindly. A mention of "with" in a supporting credit alone is not co-billing.
 - Deduplicate equivalent names written in different scripts using the same language rule as title. A "원곡", "original by", "written by" or "composed by" credit alone is not evidence of a performer here.
 
 Multiple songs in one video:
 - A medley, concert, session or compilation remains ONE file. Do not pick the first song from a timestamp list, return several library entries, or mistake a list of song names for artists.
 - Prefer a concise source-backed session/program title, preserving Medley, Concert or the equivalent original-language label when supplied. Remove the trailing track list, promotional text and redundant performer prefix. If no collective title exists, retain the identifying song list; do not invent a collection name.
-- Only list performers credited for this recording as a whole. Do not aggregate original-artist credits from a track list.
+- Only list primary/co-billed artists credited for this recording as a whole. Do not aggregate original-artist credits from a track list or supporting musicians from the production credits.
 
 Evidence and uncertainty:
 - Return title = null if the title cannot be determined, artists = [] if performers cannot be determined, and version = null when no recording distinction is supported.
@@ -35,8 +37,11 @@ Output: {"title":"작은 등불","artists":["하린","도윤"],"version":"Live",
 Input: {"original_title":"Paper Satellites | cover by Mira Vale (original by The Glass Orchard)","description":""}
 Output: {"title":"Paper Satellites","artists":["Mira Vale"],"version":"Cover","evidence":{"title":"Paper Satellites | cover by Mira Vale","artists":"cover by Mira Vale"}}
 
-Input: {"original_title":"하린(HARIN)의 별빛 라이브! - 작은 등불, 푸른 창, 종이배 | 음악방","description":"하린의 라이브 세션"}
+Input: {"original_title":"하린(HARIN)의 별빛 라이브! - 작은 등불, 푸른 창, 종이배 | 음악방","description":"하린의 라이브 세션. Piano by 지온. Mixed by 은재."}
 Output: {"title":"별빛 라이브","artists":["하린"],"version":null,"evidence":{"title":"별빛 라이브! - 작은 등불, 푸른 창, 종이배","artists":"하린의 라이브 세션"}}
+
+Input: {"original_title":"지온 - 작은 등불 (Solo Piano)","description":"Solo piano performance by 지온. Recorded by 은재."}
+Output: {"title":"작은 등불","artists":["지온"],"version":"Solo Piano","evidence":{"title":"작은 등불 (Solo Piano)","artists":"Solo piano performance by 지온"}}
 
 Input: {"original_title":"[Official Audio] Paper Satellites ✨ #newmusic","channel_name":"Mira Vale","description":""}
 Output: {"title":"Paper Satellites","artists":[],"version":null,"evidence":{"title":"Paper Satellites","artists":null}}

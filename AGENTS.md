@@ -107,7 +107,7 @@ VTAMP_TEST_LLM_HOME="/absolute/path/to/llm-settings" cargo test --locked --test 
 ```
 
 This directory must contain `llm.json` for the provider to test. The test makes
-six real model requests, may consume subscription/API quota, and does not read
+nine real model requests, may consume subscription/API quota, and does not read
 music, download media, or start a playback server. It is ignored in ordinary
 checks. Fake-provider tests verify request separation and fallback behavior;
 they do not establish extraction quality.

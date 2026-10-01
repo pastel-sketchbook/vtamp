@@ -43,7 +43,7 @@ fn configured_provider_cleans_synthetic_metadata() {
             "whole session rather than first song",
             Source {
                 original_title: "서린(SEORIN)의 달빛 라이브! - 유리 정원, 겨울 편지, 먼 바다 | 음악채널".into(),
-                description: "서린의 라이브 세션\n00:00 유리 정원\n03:20 겨울 편지\n07:00 먼 바다".into(),
+                description: "서린의 라이브 세션. Piano by 민결. Backing vocals by 이솔. Produced by 도하.\n00:00 유리 정원\n03:20 겨울 편지\n07:00 먼 바다".into(),
                 ..Default::default()
             },
             "달빛 라이브",
@@ -68,6 +68,36 @@ fn configured_provider_cleans_synthetic_metadata() {
             },
             "Velvet Horizon (Blue Harbor Remix)",
             "Amber Atlas, Cora Willow",
+        ),
+        (
+            "solo instrumentalist remains the primary artist",
+            Source {
+                original_title: "Cora Willow - Velvet Horizon (Solo Piano)".into(),
+                description: "Solo piano performance by Cora Willow. Recorded by Finn Brook.".into(),
+                ..Default::default()
+            },
+            "Velvet Horizon (Solo Piano)",
+            "Cora Willow",
+        ),
+        (
+            "co-billed instrumentalist is not just accompaniment",
+            Source {
+                original_title: "Amber Atlas feat. Cora Willow - Velvet Horizon (Live)".into(),
+                description: "A featured collaboration: Amber Atlas (vocals) and Cora Willow (piano). Piano by Cora Willow. Mixed by Finn Brook.".into(),
+                ..Default::default()
+            },
+            "Velvet Horizon (Live)",
+            "Amber Atlas, Cora Willow",
+        ),
+        (
+            "supporting credits alone do not identify the primary artist",
+            Source {
+                original_title: "Velvet Horizon (Live)".into(),
+                description: "Vocal performance. Accompaniment: Piano by Finn Brook. Backing vocals by Cora Willow. Produced by Amber Atlas.".into(),
+                ..Default::default()
+            },
+            "Velvet Horizon (Live)",
+            "Unknown artist",
         ),
         (
             "structured title stays authoritative",
