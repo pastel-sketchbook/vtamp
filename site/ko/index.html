@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#171c18">
+<meta name="description" content="vtamp는 터미널 음악 플레이어입니다. 화면을 닫아도 백그라운드 서버가 재생을 이어 가고, 로컬 음악과 라이브 라디오를 한 큐에서 재생하며, 스크립트와 에이전트를 위한 JSON CLI를 제공합니다. Rust로 만들었고 macOS를 먼저 지원합니다.">
+<title>vtamp · 화면을 닫아도 재생이 멈추지 않는 터미널 음악 플레이어</title>
+<link rel="alternate" hreflang="ko" href="https://vtamp.told.me/ko/"><link rel="alternate" hreflang="en" href="https://vtamp.told.me/"><link rel="alternate" hreflang="x-default" href="https://vtamp.told.me/">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="../favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png"><link rel="preload" href="../fonts/Pretendard-Regular.subset.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="../fonts/Pretendard-Medium.subset.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="../style.css">
+<script type="application/json" id="strings">{"pauseLabel":"자동 전환 멈추기","playLabel":"자동 전환 시작하기","pause":"일시정지","play":"재생","loading":"스크린샷을 아직 불러오는 중입니다. 잠시 후 다시 시도해 주세요.","unavailable":"스크린샷을 불러올 수 없습니다","unavailableReload":"스크린샷을 불러올 수 없습니다. 페이지를 새로 고쳐 주세요.","copied":"명령을 복사했습니다.","copyFallback":"직접 선택해 복사하세요: "}</script><script src="../app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+<header class="masthead wrap">
+<a class="brand" href="#main" aria-label="vtamp 홈"><img src="../mark.png" alt="" width="32" height="32">vtamp<span class="version">v0.1.0</span></a>
+<nav aria-label="주 메뉴"><a href="#how-it-works">소개</a><a href="#commands">명령어</a><a class="nav-install" href="#install">시작하기 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12"/></svg></a><a class="nav-lang" href="../" hreflang="en" lang="en">English</a></nav>
+</header>
+<main id="main">
+<section class="hero wrap" aria-labelledby="headline">
+<h1 id="headline">화면을 닫아도 <em>재생이 멈추지 않는</em> 터미널 음악 플레이어.</h1>
+<div class="hero-copy">
+<p class="lede">재생은 백그라운드 서버가 맡습니다. 플레이어를 열어 곡을 고르고 q로 닫은 뒤, 나중에 다른 창에서 다시 열어도 그대로 이어집니다.</p>
+<p class="intro">로컬 파일과 라이브 라디오를 하나의 큐에서 재생합니다. 스크립트와 에이전트를 위한 JSON CLI와 이벤트 스트림도 제공합니다.</p>
+<a class="button primary" href="#install">설치 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
+<div class="hero-install"><code>brew install rath/tap/vtamp</code><button class="copy-icon" data-copy="brew install rath/tap/vtamp" aria-label="Homebrew 설치 명령 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="hero-facts"><span>Rust로 제작</span><span>macOS 우선 지원</span><span>오픈 소스 · MIT</span></div>
+</div>
+<div class="gallery" id="gallery" role="region" aria-roledescription="carousel" aria-label="Ghostty와 tmux에서 실행한 vtamp">
+<div class="gallery-toolbar">
+<p>tmux 안의 Ghostty에서 찍은 스크린샷입니다.</p>
+<div class="gallery-controls" hidden>
+<div class="gallery-selectors" role="group" aria-label="레이아웃 선택">
+<button type="button" data-slide="0" aria-pressed="true" aria-controls="shot-wide">와이드</button>
+<button type="button" data-slide="1" aria-pressed="false" aria-controls="shot-library">컴팩트 Library</button>
+<button type="button" data-slide="2" aria-pressed="false" aria-controls="shot-queue">컴팩트 Queue</button>
+</div>
+<button type="button" id="gallery-rotation" aria-label="자동 전환 멈추기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span>일시정지</span></button>
+</div>
+</div>
+<div class="gallery-stage">
+<figure id="shot-wide" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="슬라이드 1/3: 와이드" data-caption="120 × 28칸. Library와 Queue를 한 화면에.">
+<a href="../screenshots/wide.png" target="_blank" rel="noopener" aria-label="와이드 스크린샷을 원본 크기로 열기"><img src="../screenshots/wide.png" width="2072" height="1048" fetchpriority="high" alt="Catppuccin Mocha 테마의 vtamp. 넓은 터미널에서 앨범 아트와 현재 곡 아래에 Library와 Queue가 함께 보입니다."></a>
+</figure>
+<figure id="shot-library" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="슬라이드 2/3: 컴팩트 Library" data-caption="100 × 24칸. 높이가 낮아도 커버와 Library가 들어갑니다." hidden>
+<a href="../screenshots/compact-library.png" target="_blank" rel="noopener" aria-label="컴팩트 Library 스크린샷을 원본 크기로 열기"><img data-src="../screenshots/compact-library.png" width="1732" height="912" alt="높이가 낮은 터미널 창. 왼쪽에 고해상도 앨범 커버와 현재 곡, 오른쪽에 Library가 보입니다."></a>
+</figure>
+<figure id="shot-queue" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="슬라이드 3/3: 컴팩트 Queue" data-caption="100 × 24칸. Tab을 누르면 Queue가 음악 옆에 나타납니다." hidden>
+<a href="../screenshots/compact-queue.png" target="_blank" rel="noopener" aria-label="컴팩트 Queue 스크린샷을 원본 크기로 열기"><img data-src="../screenshots/compact-queue.png" width="1732" height="912" alt="같은 창에서 오른쪽에 Queue를 띄운 모습. 앨범 커버와 재생 정보는 왼쪽에 그대로 있습니다."></a>
+</figure>
+</div>
+<div class="gallery-caption">
+<p id="gallery-description">120 × 28칸. Library와 Queue를 한 화면에.</p>
+<a id="gallery-original" href="../screenshots/wide.png" target="_blank" rel="noopener">원본 크기로 보기 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M6 6h12v12"/></svg></a>
+</div>
+<p class="gallery-note">Ghostty + tmux에서 캡처 · Catppuccin Mocha · 실제 라이브러리, 고해상도 앨범 아트</p>
+<p class="sr-only" id="gallery-status" role="status"></p>
+</div>
+</section>
+<section id="how-it-works" class="idea wrap" aria-labelledby="idea-heading">
+<div class="idea-title"><h2 id="idea-heading">다른 창 없이,<br>터미널 안에서.</h2><div><p>데스크톱 한구석에 두고 쓰던 작은 플레이어를 좋아했습니다. 요즘은 하루 대부분을 터미널에서 보내니, 음악도 여기에 있는 편이 자연스럽습니다.</p><p>앨범 커버는 Sixel 또는 Kitty 그래픽으로 고해상도 표시되며, 접속할 때 자동으로 감지합니다. Ghostty + tmux는 Kitty를 사용하고, tmux에서 Sixel을 쓰려면 tmux와 바깥 터미널이 모두 지원해야 합니다. 픽셀 그래픽을 쓸 수 없으면 컬러 하프블록으로 커버를 보여 줍니다.</p><p>색 테마는 아홉 가지입니다. 기본값인 Catppuccin Mocha, 밝은 Latte, Rosé Pine, 초기 녹색 Classic 등이 있습니다. <kbd>t</kbd>로 미리 보고 <kbd>Enter</kbd>로 저장하면 다음 접속부터 적용됩니다.</p></div></div>
+<div class="lifecycle">
+<div class="lifecycle-step"><code>$ vtamp</code><h3>열기</h3><p>서버가 없으면 자동으로 시작합니다. 라이브러리, 큐, 앨범 아트가 바로 나타납니다.</p></div>
+<div class="lifecycle-step"><code>q</code><h3>닫기</h3><p>화면만 닫히고 서버는 계속 재생합니다. 터미널은 하던 작업으로 돌아갑니다.</p></div>
+<div class="lifecycle-step"><code>$ vtamp</code><h3>다시 열기</h3><p>다른 창에서 다시 열면 같은 음악, 같은 큐, 재생 중이던 바로 그 지점이 그대로 나타납니다.</p></div>
+</div>
+<div class="architecture"><span>TUI</span><span class="connector" aria-hidden="true"></span><strong>PLAYBACK SERVER</strong><span class="connector" aria-hidden="true"></span><span>CLI / AGENTS</span><p>큐는 하나, 화면은 필요한 만큼.</p></div>
+<div class="media-feature" aria-labelledby="media-heading">
+<div>
+<h3 id="media-heading">미디어 키와 Now Playing 지원</h3>
+<p>익숙한 미디어 키를 그대로 씁니다. 플레이어를 닫아 둔 채로, tmux에서 detach한 뒤에도 재생, 일시정지, 곡 넘기기가 됩니다.</p>
+<p>곡 제목, 아티스트, 앨범 커버가 macOS Now Playing에 표시됩니다. 터미널을 열지 않아도 제어 센터에서 바로 조작할 수 있습니다.</p>
+<a class="feature-guide" href="https://github.com/rath/vtamp#macos-media-keys-and-now-playing">macOS 연동 설명 보기</a>
+</div>
+<figure class="media-keyboard">
+<div class="media-keys">
+<div><kbd><svg viewBox="0 0 32 24" aria-hidden="true"><path d="M5 5v14M16 5 6 12l10 7V5Zm11 0-10 7 10 7V5Z"/></svg>F7</kbd><span>이전 곡</span></div>
+<div><kbd><svg viewBox="0 0 32 24" aria-hidden="true"><path d="m5 5 11 7-11 7V5Zm17 0v14m5-14v14"/></svg>F8</kbd><span>재생 / 일시정지</span></div>
+<div><kbd><svg viewBox="0 0 32 24" aria-hidden="true"><path d="M27 5v14M16 5l10 7-10 7V5ZM5 5l10 7-10 7V5Z"/></svg>F9</kbd><span>다음 곡</span></div>
+</div>
+<figcaption>macOS 기본 기능입니다. 곡을 재생하면 Now Playing에 등록됩니다.<br>키보드 설정에 따라 Fn을 함께 눌러야 할 수 있습니다.</figcaption>
+</figure>
+</div>
+<div class="tmux-feature" aria-labelledby="tmux-heading">
+<div>
+<h3 id="tmux-heading">tmux 상태 표시줄에 현재 곡 표시</h3>
+<p>플레이어를 닫아도 현재 곡을 계속 볼 수 있습니다. 선택 설치하는 tmux 플러그인이 곡 제목과 경과 / 전체 시간을 상태 표시줄에 보여 줍니다.</p>
+<p>일시정지해도 곡은 계속 표시되고, 재생을 멈추거나 서버를 끄면 사라집니다. 너비를 정하고, 아티스트를 추가하고, 원하는 위치에 둘 수 있습니다.</p>
+<a class="tmux-guide" href="https://github.com/rath/vtamp#tmux-status-bar">tmux 플러그인 설치하기</a>
+</div>
+<div class="tmux-example">
+<figure>
+<div class="tmux-status" aria-label="예시: 창 제목 work, Training Montage 재생 중, 3분 39초 중 56초"><code class="tmux-pane">&quot;work&quot;</code><code class="tmux-track">▶ Training Montage</code><code class="tmux-time">· 0:56 / 3:39</code></div>
+<figcaption>상태 표시줄 예시 · 창 제목 다음에 음악이 옵니다.</figcaption>
+</figure>
+<p>플러그인을 불러오기 전에 상태 형식에 <code>#{vtamp}</code>를 넣어 두세요. 시계나 날짜는 없어도 됩니다.</p>
+<pre><code>set -g status-right \
+  '&quot;#{=21:pane_title}&quot; #{vtamp}'</code></pre>
+<div class="tmux-example-foot"><span>TPM 또는 직접 불러오기</span><button type="button" class="copy-text" data-copy="set -g status-right '&quot;#{=21:pane_title}&quot; #{vtamp}'" aria-label="tmux 상태 형식 복사">상태 형식 복사</button></div>
+</div>
+</div>
+</section>
+<section id="commands" class="commands wrap" aria-labelledby="commands-heading">
+<div class="commands-copy"><h2 id="commands-heading">단축키로도,<br>명령어로도.</h2><p>에이전트가 곡을 찾고, 다음에 재생할 곡을 줄 세우고, 지금 나오는 곡을 끊지 않은 채 큐를 편집할 수 있습니다.</p><p>일괄 편집은 적용하기 전에 미리 볼 수 있습니다. 취침 타이머를 걸어 두면 나머지는 서버가 처리합니다.</p><a class="feature-guide" href="https://github.com/rath/vtamp#for-scripts-and-agents">에이전트 CLI 살펴보기</a><p class="aside">로컬 파일, 로컬 소켓. 계정도 API 키도 클라우드도 끼지 않습니다.</p></div>
+<div class="command-sheet">
+<div class="sheet-heading"><span>사람과 에이전트 모두를 위한</span><span>CLI</span></div>
+<div class="command-row"><code>vtamp now --json</code><span>지금 재생 중인 곡 보기.</span><button class="copy-icon" data-copy="vtamp now --json" aria-label="vtamp now --json 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp library search --artist &quot;DAY6&quot; --json</code><span>원하는 곡 찾기.</span><button class="copy-icon" data-copy="vtamp library search --artist &quot;DAY6&quot; --json" aria-label="vtamp library search --artist &quot;DAY6&quot; --json 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp sleep set 30m</code><span>30분 뒤 정지.</span><button class="copy-icon" data-copy="vtamp sleep set 30m" aria-label="vtamp sleep set 30m 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="json-example"><code>$ vtamp now --json</code><pre aria-label="축약한 JSON 응답 예시">{
+  <span>"version"</span>: 6,
+  <span>"ok"</span>: true,
+  <span>"data"</span>: {
+    <span>"status"</span>: <b>"playing"</b>,
+    <span>"position_ms"</span>: 102000,
+    <span>"remaining_ms"</span>: 117000,
+    <span>"queue_revision"</span>: 42
+  }
+}</pre><small>응답 일부 · 전체 큐 없이 현재 곡과 설정만 담깁니다.</small></div>
+</div>
+</section>
+<section id="install" class="install wrap" aria-labelledby="install-heading">
+<div><h2 id="install-heading">설치하고<br>바로 재생.</h2><p>음악 폴더와 터미널만 있으면 됩니다.<br>나머지는 vtamp가 처리합니다.</p><p class="requirements">macOS · Homebrew 또는 Rust 1.90+ · 로컬 오디오 파일<br>AAC / ALAC m4a, MP3, FLAC, WAV, Ogg Vorbis</p></div>
+<div class="install-options">
+<div class="install-code"><div class="install-heading"><span>HOMEBREW · APPLE SILICON</span><button class="copy-text" data-copy="brew install rath/tap/vtamp" aria-label="Homebrew 설치 명령 복사">명령 복사</button></div><p>명령 하나면 되고 Rust 툴체인은 필요 없습니다. 설치한 뒤 음악 폴더를 등록하고 접속하세요:</p><pre><code><span class="comment"># 플레이어 설치</span>
+brew install rath/tap/vtamp
+
+<span class="comment"># 음악 폴더 등록</span>
+vtamp library add ~/Music
+
+<span class="comment"># 접속. 곡을 고르고 Enter.</span>
+vtamp</code></pre><p class="install-foot">창을 계속 띄워 둘 필요가 없습니다. <kbd>q</kbd>로 닫습니다.</p></div>
+<div class="install-code"><div class="install-heading"><span>소스에서 빌드</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="소스 빌드 명령 복사">명령 복사</button></div><p>Intel Mac이거나 Homebrew가 없다면 저장소를 복제한 뒤 Rust 1.90 이상으로 설치하세요:</p><pre><code><span class="comment"># 소스 받기</span>
+git clone https://github.com/rath/vtamp.git
+cd vtamp
+
+<span class="comment"># 플레이어 설치</span>
+cargo install --locked --path .</code></pre></div>
+</div>
+</section>
+</main>
+<footer class="footer wrap"><a class="brand" href="#main"><img src="../mark.png" alt="" width="26" height="26">vtamp</a><p>가상 터미널 + Winamp.</p><span>만든 사람: <a href="https://xrath.com">황장호</a> · MIT 라이선스</span></footer>
+<div class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></div>
+</body>
+</html>

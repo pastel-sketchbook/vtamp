@@ -176,6 +176,10 @@ The documents above hold the full contracts; these are the most common regressio
 
   Refs come from the latest `snapshot`; see `agent-browser --help`. Check mobile
   overflow, keyboard access, and reduced motion.
+- `site/ko/index.html` is the Korean mirror of `site/index.html` with the same
+  sections and ids, sharing `style.css` and `app.js`. Change copy, markup, and
+  the `#strings` block in both pages, verify both at `/` and `/ko/`, and run the
+  `scripts/` unit tests so the bundled Pretendard subsets still cover the text.
 - Refresh the gallery only with `scripts/capture-site.py`: stage with
   `python3 scripts/capture-site.py --output /tmp/vtamp-screenshots`, then publish
   without `--output`. Keep Training Montage by Vince DiCola as the selected track

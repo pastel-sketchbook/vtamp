@@ -1,4 +1,8 @@
 @font-face { font-family: 'Space Grotesk'; src: url('fonts/SpaceGrotesk.ttf') format('truetype'); font-weight: 300 700; font-display: swap; }
+/* Pretendard loads only on the Korean page, where html:lang(ko) puts it first. */
+@font-face { font-family: 'Pretendard'; src: url('fonts/Pretendard-Regular.subset.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Pretendard'; src: url('fonts/Pretendard-Medium.subset.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+@font-face { font-family: 'Pretendard'; src: url('fonts/Pretendard-SemiBold.subset.woff2') format('woff2'); font-weight: 600; font-display: swap; }
 :root {
   --bg: #171c18; --panel: #222a23; --deep: #101610; --text: #eeeae0;
   --muted: #b0bdab; --line: #46513f; --green: #b4f676; --amber: #efbc72;
@@ -29,8 +33,9 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 .brand { display: inline-flex; gap: 10px; align-items: center; font-size: 27px; font-weight: 600; letter-spacing: -.04em; text-decoration: none; }
 .version { font: 11px var(--mono); letter-spacing: 0; color: var(--muted); border: 1px solid var(--line); padding: 4px 6px; margin-left: 5px; }
 .masthead nav { display: flex; gap: 32px; align-items: center; font-size: 14px; }
-.masthead nav a { text-decoration: none; }
+.masthead nav a { text-decoration: none; white-space: nowrap; }
 .masthead nav a:hover { color: var(--green); }
+.nav-lang { color: var(--muted); }
 .nav-install { display: flex; align-items: center; gap: 14px; border-bottom: 1px solid var(--green); padding-block: 7px; }
 .nav-install svg { width: 15px; height: 15px; }
 
@@ -151,7 +156,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 }
 @media (max-width: 760px) {
   .wrap { width: calc(100% - 40px); } .masthead { height: 80px; } .masthead nav { gap: 16px; font-size: 12px; }
-  .masthead nav > a:first-child { display: none; } .brand { font-size: 25px; } .version { display: none; }
+  .masthead nav > a:not(.nav-install):not(.nav-lang) { display: none; } .brand { font-size: 25px; } .version { display: none; }
   .hero { grid-template-columns: 1fr; gap: 28px; padding-block: 40px 56px; }
   .hero h1 { font-size: clamp(2.3rem, 7.6vw, 3.2rem); line-height: 1.06; }
   .hero .lede { font-size: 19px; } .intro { max-width: 40ch; font-size: 15px; margin-bottom: 24px; }
@@ -201,3 +206,10 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 .command-row code { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
 .command-row > span { display: inline; grid-column: 1; }
 .command-row .copy-icon { grid-column: 2; grid-row: 1 / span 2; }
+
+/* Korean page: Pretendard carries Hangul and Latin together; only the wordmark keeps Space Grotesk. */
+html:lang(ko) { font-family: 'Pretendard', 'Apple SD Gothic Neo', 'Space Grotesk', sans-serif; word-break: keep-all; --mono: ui-monospace, SFMono-Regular, Consolas, 'Pretendard', monospace; }
+html:lang(ko) .brand { font-family: 'Space Grotesk', sans-serif; }
+html:lang(ko) .architecture p { font-family: 'Pretendard', 'Apple SD Gothic Neo', sans-serif; }
+html:lang(ko) h1, html:lang(ko) h2 { letter-spacing: -.02em; line-height: 1.2; }
+html:lang(ko) h3 { letter-spacing: -.01em; line-height: 1.3; }

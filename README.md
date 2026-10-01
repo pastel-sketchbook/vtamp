@@ -45,7 +45,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - JSON commands and an event stream for scripts and AI agents.
 - An optional tmux status-bar plugin for the current track and playback time.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
-- A small, dependency-free [landing page](https://vtamp.told.me/) with [source in `site/`](site/).
+- A small, dependency-free [landing page](https://vtamp.told.me/) in English and [Korean](https://vtamp.told.me/ko/), with [source in `site/`](site/).
 
 macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
@@ -789,7 +789,7 @@ To preview the landing page:
 python3 -m http.server 8765 --directory site
 ```
 
-Open `http://localhost:8765`. No build step or external network requests are needed. The hero cycles through actual Ghostty + tmux captures of vtamp in Catppuccin Mocha: a wide view, a compact Library, and a compact Queue. Select a layout or pause the slideshow; open an image at full resolution to inspect the terminal text and album art. Reduced-motion preferences disable automatic rotation.
+Open `http://localhost:8765`, or `http://localhost:8765/ko/` for the Korean page. No build step or external network requests are needed. The hero cycles through actual Ghostty + tmux captures of vtamp in Catppuccin Mocha: a wide view, a compact Library, and a compact Queue. Select a layout or pause the slideshow; open an image at full resolution to inspect the terminal text and album art. Reduced-motion preferences disable automatic rotation.
 
 ### Refresh the screenshots
 
@@ -823,4 +823,4 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 Small, focused changes are welcome. Include the behavior you changed, a reproducible example for bugs, and relevant validation. Avoid bundling personal music, private paths, cache files, or standalone album artwork. Changes to the curated website captures should follow the screenshot workflow above. Keep platform-specific work behind the existing boundaries.
 
-vtamp is [MIT licensed](LICENSE). Its Rust dependencies retain their own licenses. The bundled Space Grotesk font is distributed under the [SIL Open Font License](site/fonts/OFL.txt). vtamp is an independent project inspired by the experience of classic desktop players, not an affiliation with Winamp.
+vtamp is [MIT licensed](LICENSE). Its Rust dependencies retain their own licenses. The bundled Space Grotesk and Pretendard fonts are distributed under the SIL Open Font License ([Space Grotesk](site/fonts/OFL.txt), [Pretendard](site/fonts/OFL-Pretendard.txt)). vtamp is an independent project inspired by the experience of classic desktop players, not an affiliation with Winamp.
