@@ -161,7 +161,7 @@ the desktop integration cannot initialize.
 | `+` / `-` | Volume up / down 5 percentage points |
 | `s` | Toggle shuffle |
 | `R` | Cycle repeat: off → all → one |
-| `Tab` | Switch library / queue focus |
+| `Tab`, `Ctrl-W w`, `Ctrl-W Ctrl-W` | Switch library / queue focus |
 | `j` / `k`, `↓` / `↑` | Move selection |
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
@@ -183,6 +183,8 @@ to close help. Scroll hints and position stay visible when content overflows;
 when everything fits, only the close hint is shown.
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
+
+Attaching during playback focuses Queue and scrolls to the current entry. Paused or stopped sessions open on Library. Later playback updates and automatic reconnections preserve your navigation. If the saved spectrum view would hide Queue, it starts hidden for this attachment without changing `ui.json`; press `v` to show it.
 
 Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
 

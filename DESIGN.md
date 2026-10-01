@@ -43,6 +43,15 @@ TUI typography follows the user's terminal font. Bold weight and text markers es
 
 The TUI is an Operate surface: queue, library, current track, timing, and key hints have priority. At 12–27 rows and at least 72 columns, the player and focused browser share one row. The player takes 40% of the width, bounded to 30–44 columns; Library or Queue takes the rest and switches with Tab. The player stacks a centered cover above metadata, progress, and two rows of controls. Cover size follows available height while reserving readable controls. At 28 or more rows, now playing sits above the lists; from 100 columns, both lists are visible below it. Panes narrower than 72 columns keep the stacked layout and use a compact now-playing summary at 12–13 rows. Minimum usable size is 40 × 12 cells. Cover art gives context without dominating the queue.
 
+On the first connection of a TUI attachment, active playback focuses Queue and
+selects the current queue entry, scrolling it into view. Paused/stopped sessions
+keep Library focus. Subsequent state updates and automatic reconnections preserve
+the user's focus and selection. If the saved spectrum view would replace the
+list, hide it for this attachment without changing the saved preference.
+Tab, Ctrl-W w, and Ctrl-W Ctrl-W switch Library/Queue. Both Ctrl-W sequences
+follow Tab's behavior when returning from the spectrum, and do not switch panels
+inside prompts or overlays. Any other intervening key cancels the prefix.
+
 The website is a Persuade surface. Lead with “Music stays. Your terminal moves on.” and a full-width gallery of the real terminal interface. Follow with the detachable lifecycle, executable CLI examples, and source installation instructions. The headline and introduction share a row above the gallery. Show Wide, Compact Library, and Compact Queue in a fixed image area without cropping; provide full-resolution links. Named layout controls and a pause button accompany a six-second rotation. Hover, keyboard focus, and offscreen state pause rotation; reduced motion disables automatic rotation and fading. Without JavaScript, the first screenshot remains visible.
 
 The lifecycle section also introduces the optional tmux status-bar plugin with a labeled text example, a copyable status format, and a link to installation instructions. The example places music after the pane title without a clock or date; on narrow screens, the title truncates while playback times remain visible.

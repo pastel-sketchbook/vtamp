@@ -139,11 +139,13 @@ struct App {
     queue_selection: ListState,
     focus: Focus,
     pending_g: bool,
+    pending_ctrl_w: bool,
     library_jump: Option<ListEdge>,
     input: Option<Input>,
     help: bool,
     help_scroll: HelpScroll,
     connected: bool,
+    initial_attachment: bool,
     notice: String,
     notice_at: Instant,
     last_progress: Instant,
@@ -203,10 +205,11 @@ pub async fn run(
     let saved_spectrum = Settings::load(&settings_path)
         .map(|s| s.spectrum)
         .unwrap_or(false);
+    let size = terminal.size()?;
     let mut app = App {
         import_ui: imports::ImportUi::default(),
         spectrum: SpectrumView::new(saved_spectrum),
-        viewport: Rect::default(),
+        viewport: Rect::new(0, 0, size.width, size.height),
         theme,
         theme_picker: None,
         settings_path,
@@ -222,11 +225,13 @@ pub async fn run(
         queue_selection: ListState::default().with_selected(Some(0)),
         focus: Focus::Library,
         pending_g: false,
+        pending_ctrl_w: false,
         library_jump: None,
         input: None,
         help: false,
         help_scroll: HelpScroll::default(),
         connected: false,
+        initial_attachment: true,
         notice: "Connecting…".into(),
         notice_at: Instant::now(),
         last_progress: Instant::now(),
@@ -777,6 +782,18 @@ impl App {
                 self.spectrum.clear();
                 self.connected = true;
                 self.state(state, messages);
+                if std::mem::take(&mut self.initial_attachment)
+                    && self.state.status == PlaybackStatus::Playing
+                    && let Some(index) = self.state.current_index()
+                {
+                    self.focus = Focus::Queue;
+                    self.queue_selection.select(Some(index));
+                    // Reveal the selected entry even when the saved spectrum view
+                    // would hide the list. Keep the saved preference unchanged.
+                    if self.spectrum_replaces_list() {
+                        self.spectrum.enabled = false;
+                    }
+                }
                 self.notice("Attached. q detaches; music keeps playing.");
                 self.refresh(commands);
                 self.send(commands, Command::ImportAvailable);
@@ -927,9 +944,10 @@ impl App {
             _ => (),
         }
     }
-    fn key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
-        // Any intervening key (including Tab or opening a prompt) cancels gg.
+    fn key(&mut self, mut key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
+        // Any intervening key (including opening a prompt) cancels a prefix.
         let previous_g = std::mem::take(&mut self.pending_g);
+        let previous_ctrl_w = std::mem::take(&mut self.pending_ctrl_w);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
@@ -995,6 +1013,18 @@ impl App {
                 _ => (),
             }
             return Ok(false);
+        }
+        // Vim accepts both Ctrl-W w and Ctrl-W Ctrl-W. Reuse Tab's behavior,
+        // including returning from the spectrum, only outside prompts/overlays.
+        if key.code == KeyCode::Char('w')
+            && key.modifiers.difference(KeyModifiers::CONTROL).is_empty()
+        {
+            if previous_ctrl_w {
+                key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+            } else if key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.pending_ctrl_w = true;
+                return Ok(false);
+            }
         }
         if self.spectrum_replaces_list() {
             match key.code {
@@ -1853,6 +1883,173 @@ mod tests {
     }
 
     #[test]
+    fn playing_attachment_reveals_the_current_queue_entry_in_every_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("ui.json");
+        for spectrum in [false, true] {
+            Settings::set_spectrum(&settings_path, spectrum).unwrap();
+            for (width, height) in [(40, 12), (72, 12), (100, 24), (40, 28), (72, 28), (120, 36)] {
+                let mut app = navigation_app(100);
+                app.settings_path = settings_path.clone();
+                app.spectrum.enabled = spectrum;
+                app.viewport = Rect::new(0, 0, width, height);
+                let mut state = app.state.clone();
+                // Two entries share a track; select by queue entry identity.
+                state.queue[80].track = state.queue[2].track.clone();
+                state.current_id = Some(state.queue[80].id.clone());
+                state.status = PlaybackStatus::Playing;
+                let (messages, _incoming) = mpsc::unbounded_channel();
+                let (commands, _requests) = mpsc::channel(16);
+                app.message(Message::Connected(state), &messages, &commands);
+
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(app.focus == Focus::Queue);
+                assert_eq!(app.queue_selection.selected(), Some(80));
+                assert!(app.queue_selection.offset() > 0);
+                assert!(text.contains("› ▶ 81  Track 2"), "{width}x{height}: {text}");
+                assert_eq!(
+                    app.spectrum.enabled,
+                    spectrum && width >= 72 && height >= 28
+                );
+                assert_eq!(Settings::load(&settings_path).unwrap().spectrum, spectrum);
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_focus_does_not_follow_updates_or_reconnections() {
+        let mut app = navigation_app(10);
+        let mut state = app.state.clone();
+        state.current_id = Some(state.queue[7].id.clone());
+        state.status = PlaybackStatus::Playing;
+        let (messages, _incoming) = mpsc::unbounded_channel();
+        let (commands, _requests) = mpsc::channel(16);
+        app.message(Message::Connected(state.clone()), &messages, &commands);
+        app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &commands)
+            .unwrap();
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+            .unwrap();
+        state.current_id = Some(state.queue[8].id.clone());
+        app.message(
+            Message::Event(Event::State(state.clone())),
+            &messages,
+            &commands,
+        );
+        assert!(app.focus == Focus::Library);
+        assert_eq!(app.queue_selection.selected(), Some(6));
+        app.message(
+            Message::Disconnected("Retrying…".into()),
+            &messages,
+            &commands,
+        );
+        app.message(Message::Connected(state), &messages, &commands);
+        assert!(app.focus == Focus::Library);
+        assert_eq!(app.queue_selection.selected(), Some(6));
+    }
+
+    #[test]
+    fn attachment_without_a_playing_entry_keeps_library_focus() {
+        for status in [
+            PlaybackStatus::Paused,
+            PlaybackStatus::Stopped,
+            PlaybackStatus::Playing,
+        ] {
+            let mut app = navigation_app(10);
+            let mut state = app.state.clone();
+            state.status = status;
+            if status != PlaybackStatus::Playing {
+                state.current_id = Some(state.queue[7].id.clone());
+            }
+            let (messages, _incoming) = mpsc::unbounded_channel();
+            let (commands, _requests) = mpsc::channel(16);
+            app.message(Message::Connected(state.clone()), &messages, &commands);
+            assert!(app.focus == Focus::Library);
+            assert_eq!(app.queue_selection.selected(), Some(0));
+            state.status = PlaybackStatus::Playing;
+            state.current_id = Some(state.queue[7].id.clone());
+            app.message(
+                Message::Event(Event::State(state.clone())),
+                &messages,
+                &commands,
+            );
+            app.message(Message::Connected(state), &messages, &commands);
+            assert!(app.focus == Focus::Library);
+            assert_eq!(app.queue_selection.selected(), Some(0));
+        }
+    }
+
+    #[test]
+    fn ctrl_w_sequences_share_tab_behavior_without_changing_selection_or_playback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = navigation_app(25);
+        app.settings_path = dir.path().join("ui.json");
+        app.viewport = Rect::new(0, 0, 100, 24);
+        app.library_selection.select(Some(4));
+        app.queue_selection.select(Some(12));
+        let (commands, mut requests) = mpsc::channel(8);
+        let prefix = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
+            let suffix = KeyEvent::new(KeyCode::Char('w'), modifiers);
+            for focus in [Focus::Library, Focus::Queue] {
+                app.focus = focus;
+                app.key(prefix, &commands).unwrap();
+                assert!(app.focus == focus);
+                app.key(suffix, &commands).unwrap();
+                assert!(app.focus != focus);
+            }
+            app.spectrum.enabled = true;
+            let focus = app.focus;
+            app.key(prefix, &commands).unwrap();
+            app.key(suffix, &commands).unwrap();
+            assert!(!app.spectrum.enabled);
+            assert!(app.focus == focus);
+            assert_eq!(app.library_selection.selected(), Some(4));
+            assert_eq!(app.queue_selection.selected(), Some(12));
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn ctrl_w_prefix_cancels_on_other_keys_and_leaves_prompts_and_overlays_alone() {
+        let mut app = navigation_app(25);
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let prefix = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        app.key(prefix, &commands).unwrap();
+        app.key(key('j'), &commands).unwrap();
+        app.key(key('w'), &commands).unwrap();
+        assert_eq!(app.library_selection.selected(), Some(1));
+        assert!(app.focus == Focus::Library);
+
+        for opener in ['/', 'a', '?', 't'] {
+            app.key(prefix, &commands).unwrap();
+            app.key(key(opener), &commands).unwrap();
+            app.key(prefix, &commands).unwrap();
+            app.key(key('w'), &commands).unwrap();
+            if matches!(opener, '/' | 'a') {
+                assert!(
+                    matches!(&app.input, Some(Input::Search(s) | Input::Folder(s)) if s == "w")
+                );
+            }
+            assert!(app.focus == Focus::Library);
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+                .unwrap();
+            app.key(key('w'), &commands).unwrap();
+            assert!(app.focus == Focus::Library);
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
     fn gg_and_uppercase_g_jump_only_the_focused_list_without_playing() {
         let mut app = navigation_app(25);
         let (commands, mut requests) = mpsc::channel(8);
@@ -2536,11 +2733,13 @@ mod tests {
             queue_selection: ListState::default(),
             focus: Focus::Library,
             pending_g: false,
+            pending_ctrl_w: false,
             library_jump: None,
             input: None,
             help: false,
             help_scroll: HelpScroll::default(),
             connected: true,
+            initial_attachment: true,
             notice: String::new(),
             notice_at: Instant::now(),
             last_progress: Instant::now(),

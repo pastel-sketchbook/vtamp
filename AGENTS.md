@@ -229,6 +229,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
 - Library searches are paginated; `gg`/`G` span the current search results, not
   just the loaded page. Reject stale page responses and avoid playing stale rows
   while a destination page loads. Ctrl-F/B move ten entries in the focused list.
+  Initial attachment during playback focuses Queue and reveals the current entry;
+  later state updates/reconnections preserve navigation. Ctrl-W w and Ctrl-W
+  Ctrl-W share Tab's list-switch behavior outside prompts and overlays.
   `/` opens a blank search draft; Esc preserves the applied filter, while Enter
   applies the draft (an empty draft clears the filter).
 - Keep terminal input and incoming server/artwork messages immediately actionable
