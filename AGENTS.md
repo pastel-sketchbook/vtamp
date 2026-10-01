@@ -33,6 +33,7 @@ playing when a TUI exits or a tmux client detaches.
 | `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
 | `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs` | Optional installed-tool imports, staging, progress, bounded/cancellable child processes |
 | `src/import_config.rs`, `src/metadata.rs` | Import configuration snapshots, metadata rules and inference validation |
+| `src/prompts/music_metadata.txt` | Shared extraction instructions with fictional examples; embedded at build time |
 | `src/llm.rs`, `src/llm/config.rs` | Shared LLM requests, generic connection tests, independent configuration and Keychain references |
 | `src/daemon/imports.rs`, `src/store/imports.rs`, `src/tui/imports.rs` | Import ownership, transactional reports/overrides, optional TUI overlays |
 | `src/platform.rs` | Paths, instance isolation, private runtime directories |
@@ -98,6 +99,18 @@ injects output changes; it does not physically disconnect headphones. A sandbox
 can prevent CoreAudio access even when decoding works. If device access fails,
 distinguish environment restrictions from a player regression and use an
 authorized normal-terminal or escalated run for actual output verification.
+
+LLM prompt quality can be checked explicitly with synthetic metadata only:
+
+```sh
+VTAMP_TEST_LLM_HOME="/absolute/path/to/llm-settings" cargo test --locked --test metadata_llm -- --ignored --nocapture
+```
+
+This directory must contain `llm.json` for the provider to test. The test makes
+six real model requests, may consume subscription/API quota, and does not read
+music, download media, or start a playback server. It is ignored in ordinary
+checks. Fake-provider tests verify request separation and fallback behavior;
+they do not establish extraction quality.
 
 For real macOS media-key routing, build release and run
 `python3 scripts/check-media-keys.py` in an interactive desktop session. It uses

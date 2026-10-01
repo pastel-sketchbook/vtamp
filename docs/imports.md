@@ -125,6 +125,19 @@ invalid JSON, and unsupported options produce an item warning and use the rules.
 Requests can be cancelled with the import job. Each new job captures both import
 and LLM configuration, so changing settings does not affect queued/running jobs.
 
+The [extraction prompt](../src/prompts/music_metadata.txt) asks for concise titles,
+removing upload promotion and duplicate romanization while preserving the original
+language and recording versions. It distinguishes cover performers from original
+artists and treats a medley or full session as one recording, rather than picking
+its first song. Its examples use fictional names and songs. Channel names alone
+are never performer evidence. Evidence must quote one supplied metadata field;
+model inference can still be wrong, so manual edits remain available.
+
+Updating the prompt requires rebuilding and restarting the playback server.
+Existing tracks keep their metadata until explicitly retagged; saved manual
+overrides remain in place. A single-video `--preview` uses the invoked CLI binary
+and can check extraction without downloading or changing the library.
+
 Import options remain separate in `imports.json`. For automation, for example:
 
 ```json

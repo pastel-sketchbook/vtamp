@@ -69,6 +69,10 @@ working directory with structured JSON output and restricted tool/settings
 options. vtamp does not copy tokens or configuration.
 
 Codex must support `exec` with `--output-schema`, `--ephemeral`, and
-`--ignore-user-config`; Claude must support `--safe-mode`, `--json-schema`, and
-`--tools`. Missing tools, unsupported options, or authentication failures produce
-errors. The selected tool may use its normal subscription or API billing.
+`--ignore-user-config`; Claude must support `--safe-mode`, `--json-schema`,
+`--tools`, and `--system-prompt`. Claude receives feature instructions through
+`--system-prompt`, with the schema and input data separately on standard input.
+This replaces its default coding instructions for that request. API requests
+likewise separate system instructions from user data; Codex receives both in its
+`exec` input. Missing tools, unsupported options, or authentication failures
+produce errors. The selected tool may use its normal subscription or API billing.

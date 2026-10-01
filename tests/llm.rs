@@ -97,17 +97,21 @@ fn cli_connection_tests_send_only_generic_prompts_and_use_selected_tool() {
 import sys,json,os
 a=sys.argv[1:]
 if '--help' in a:
- print('--output-schema --ephemeral --ignore-user-config --safe-mode --json-schema --tools');sys.exit(0)
+ print('--output-schema --ephemeral --ignore-user-config --safe-mode --json-schema --tools --system-prompt');sys.exit(0)
 if '--version' in a:
  print('fake-cli 1');sys.exit(0)
 assert 'vtamp-llm-' in os.getcwd()
 prompt=sys.stdin.read()
-assert 'connection test' in prompt
-assert not any(s in prompt.lower() for s in ['youtube','artist','song','metadata','video_id'])
 if '--output-schema' in a:
+ instruction=prompt
  schema=json.load(open(a[a.index('--output-schema')+1]))
 else:
+ instruction=a[a.index('--system-prompt')+1]
+ assert 'connection test' not in prompt
+ assert prompt.startswith('Schema: ')
  schema=json.loads(a[a.index('--json-schema')+1])
+assert 'connection test' in instruction
+assert not any(s in (instruction+prompt).lower() for s in ['youtube','artist','song','metadata','video_id'])
 assert schema['required']==['ok']
 print({})
 "#, serde_json::to_string(&output.to_string()).unwrap())).unwrap();
@@ -129,6 +133,26 @@ print({})
         assert!(!home.path().join("imports.json").exists());
         assert!(!home.path().join("state.db").exists());
     }
+}
+
+#[test]
+fn claude_without_system_prompt_support_is_rejected_before_sending_input() {
+    let home = tempfile::tempdir().unwrap();
+    let exe = home.path().join("fake-claude");
+    fs::write(&exe, "#!/bin/sh\nif [ \"$1\" = --help ]; then\n echo '--safe-mode --json-schema --tools'\n exit 0\nfi\nexit 99\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+    vtamp::llm::Config {
+        provider: vtamp::llm::Provider::Claude,
+        executable: Some(exe),
+        ..Default::default()
+    }
+    .save(&paths(home.path()))
+    .unwrap();
+    let output = run(home.path(), &["llm", "test"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("lacks required isolation/JSON options")
+    );
 }
 
 #[test]

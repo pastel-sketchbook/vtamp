@@ -17,7 +17,7 @@ pub(crate) fn request(
     schema: &Value,
     stop: &Cancel,
 ) -> Result<Value> {
-    let prompt = format!("{instruction}\nSchema: {}\nInput: {data}", schema);
+    let input = format!("Schema: {schema}\nInput: {data}");
     let text = match config.provider {
         Provider::None => bail!("LLM is disabled"),
         Provider::Api => {
@@ -34,7 +34,7 @@ pub(crate) fn request(
             }
             let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
             url.set_path(&path);
-            let mut body = json!({"model":config.model.as_deref().context("Model ID is missing")?,"messages":[{"role":"system","content":instruction},{"role":"user","content":format!("Schema: {}\nInput: {data}",schema)}],"response_format":{"type":"json_schema","json_schema":{"name":"response","strict":true,"schema":schema}}});
+            let mut body = json!({"model":config.model.as_deref().context("Model ID is missing")?,"messages":[{"role":"system","content":instruction},{"role":"user","content":input}],"response_format":{"type":"json_schema","json_schema":{"name":"response","strict":true,"schema":schema}}});
             if let Some(effort) = &config.effort {
                 body["reasoning_effort"] = json!(effort);
             }
@@ -108,7 +108,7 @@ pub(crate) fn request(
             let required = if name == "codex" {
                 vec!["--output-schema", "--ephemeral", "--ignore-user-config"]
             } else {
-                vec!["--safe-mode", "--json-schema", "--tools"]
+                vec!["--safe-mode", "--json-schema", "--tools", "--system-prompt"]
             };
             if required.iter().any(|s| !help.contains(s)) {
                 bail!(
@@ -169,7 +169,9 @@ pub(crate) fn request(
                     "json",
                     "--json-schema",
                 ])
-                .arg(serde_json::to_string(&schema)?);
+                .arg(serde_json::to_string(&schema)?)
+                .arg("--system-prompt")
+                .arg(instruction);
                 if let Some(e) = &config.effort {
                     cmd.arg("--effort").arg(e);
                 }
@@ -177,6 +179,11 @@ pub(crate) fn request(
             if let Some(model) = &config.model {
                 cmd.arg("--model").arg(model);
             }
+            let prompt = if name == "claude" {
+                input
+            } else {
+                format!("{instruction}\n{input}")
+            };
             let bytes = subprocess::run(
                 &mut cmd,
                 Some(prompt.into_bytes()),
