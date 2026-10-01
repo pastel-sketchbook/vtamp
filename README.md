@@ -21,6 +21,8 @@ $ vtamp                   # Same server. Same queue. Pick up where it is now.
 
 No account. No streaming subscription. No permanent pane. Your music stays on your machine.
 
+On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
+
 ## What ships in v0.1
 
 - Persistent playback server, with multiple TUI and CLI clients.

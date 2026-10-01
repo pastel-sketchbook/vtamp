@@ -115,19 +115,23 @@
 </div>
 </section>
 <section id="install" class="install wrap" aria-labelledby="install-heading">
-<div><h2 id="install-heading">Press play.<br>Then get on with it.</h2><p>Bring a folder of music and a terminal.<br>vtamp takes care of the rest.</p><p class="requirements">macOS · Rust 1.90+ · local audio files<br>AAC / ALAC m4a, MP3, FLAC, WAV, Ogg Vorbis</p></div>
-<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="Copy installation commands">Copy commands</button></div><p>Clone the repository, then install:</p><pre><code><span class="comment"># Get the source</span>
-git clone https://github.com/rath/vtamp.git
-cd vtamp
-
-<span class="comment"># Install the player</span>
-cargo install --locked --path .
+<div><h2 id="install-heading">Press play.<br>Then get on with it.</h2><p>Bring a folder of music and a terminal.<br>vtamp takes care of the rest.</p><p class="requirements">macOS · Homebrew or Rust 1.90+ · local audio files<br>AAC / ALAC m4a, MP3, FLAC, WAV, Ogg Vorbis</p></div>
+<div class="install-options">
+<div class="install-code"><div class="install-heading"><span>HOMEBREW · APPLE SILICON</span><button class="copy-text" data-copy="brew install rath/tap/vtamp" aria-label="Copy the Homebrew install command">Copy command</button></div><p>One command, no Rust toolchain. Then register a folder and attach:</p><pre><code><span class="comment"># Install the player</span>
+brew install rath/tap/vtamp
 
 <span class="comment"># Register your music folder</span>
 vtamp library add ~/Music
 
 <span class="comment"># Attach. Pick a track. Press Enter.</span>
 vtamp</code></pre><p class="install-foot">No permanent pane required. <kbd>q</kbd> to detach.</p></div>
+<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="Copy the source build commands">Copy commands</button></div><p>Intel Mac, or no Homebrew? Clone the repository, then install with Rust 1.90 or newer:</p><pre><code><span class="comment"># Get the source</span>
+git clone https://github.com/rath/vtamp.git
+cd vtamp
+
+<span class="comment"># Install the player</span>
+cargo install --locked --path .</code></pre></div>
+</div>
 </section>
 </main>
 <footer class="footer wrap"><a class="brand" href="#main"><img src="mark.png" alt="" width="26" height="26">vtamp</a><p>Virtual terminal. Winamp spirit.</p><span>Made by <a href="https://xrath.com">Jang-Ho Hwang</a> · MIT licensed</span></footer>

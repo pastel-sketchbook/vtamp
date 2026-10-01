@@ -123,6 +123,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 .install { display: grid; grid-template-columns: 1fr 1fr; gap: 10%; border-top: 1px solid var(--line); padding-top: 80px; padding-bottom: 90px; }
 .install > div > p { font-size: 16px; color: var(--muted); }
 .install .requirements { font-size: 12px; line-height: 1.8; margin-top: 27px; }
+.install-options { display: grid; gap: 18px; min-width: 0; }
 .install-code { background: #232e20; border: 1px solid #596b49; padding: 24px 26px; min-width: 0; }
 .install-heading { display: flex; justify-content: space-between; align-items: center; font: 9px var(--mono); color: #bfd4ae; gap: 15px; letter-spacing: .05em; }
 .copy-text { border: 0; background: none; color: var(--green); font-size: 11px; padding: 5px 0; text-decoration: underline; text-underline-offset: 4px; white-space: nowrap; }
