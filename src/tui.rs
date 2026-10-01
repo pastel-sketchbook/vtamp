@@ -41,7 +41,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -1292,7 +1292,7 @@ impl App {
             KeyCode::Char('o' | 'O') if self.import_ui.enabled => {
                 self.open_source(key.code == KeyCode::Char('O'), commands)
             }
-            KeyCode::Char('r') => self.send(commands, Command::LibraryScan),
+            KeyCode::Char('R') => self.send(commands, Command::LibraryScan),
             KeyCode::Char(' ') => self.send(commands, Command::Toggle),
             KeyCode::Char('n') => self.send(commands, Command::Next),
             KeyCode::Char('b') => self.send(commands, Command::Prev),
@@ -1302,7 +1302,7 @@ impl App {
                     enabled: !self.state.shuffle,
                 },
             ),
-            KeyCode::Char('R') => self.send(
+            KeyCode::Char('r') => self.send(
                 commands,
                 Command::Repeat {
                     mode: match self.state.repeat {
@@ -1913,7 +1913,7 @@ impl App {
         );
         let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press r to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press R to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
@@ -3642,6 +3642,29 @@ mod tests {
             assert_eq!(row.contains("v spectrum"), width >= 59, "{width}: {row}");
             assert_eq!(row.contains("/ search"), width >= 102, "{width}: {row}");
         }
+    }
+
+    #[test]
+    fn lowercase_r_cycles_repeat_and_uppercase_r_rescans() {
+        let mut app = app();
+        let (commands, mut requests) = mpsc::channel(8);
+        app.key(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(Command::Repeat { mode: Repeat::All })
+        ));
+        // Terminals report Shift+r as an uppercase character with the Shift modifier.
+        app.key(
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT),
+            &commands,
+        )
+        .unwrap();
+        assert!(matches!(requests.try_recv(), Ok(Command::LibraryScan)));
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]

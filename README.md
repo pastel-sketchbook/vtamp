@@ -228,7 +228,7 @@ the desktop integration cannot initialize.
 | `←` / `→` | Seek backward / forward 10 seconds |
 | `+` / `-` | Volume up / down 5 percentage points |
 | `s` | Toggle shuffle |
-| `R` | Cycle repeat: off → all → one |
+| `r` | Cycle repeat: off → all → one |
 | `Tab`, `Ctrl-W w`, `Ctrl-W Ctrl-W` | Switch library / queue focus |
 | `j` / `k`, `↓` / `↑` | Move selection |
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
@@ -236,7 +236,7 @@ the desktop integration cannot initialize.
 | `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears the filter |
 | `Ctrl-U` | Clear the text in a search, folder, or track-editor field |
 | `a` | Add a folder, stream URL, or M3U/PLS channel list |
-| `r` | Rescan registered folders |
+| `R` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |
 | `Enter` | Play a library track, reusing a queue entry if present; or play the selected queue entry |
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
