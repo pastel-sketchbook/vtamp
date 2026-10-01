@@ -56,8 +56,10 @@ queued/running jobs, and 100 retained terminal reports. Restart marks unfinished
 jobs interrupted; explicit retry is required. Completed tracks remain available.
 
 In the TUI, press `a` and paste a URL into the existing add prompt. Playlist URLs
-open a preview; Enter confirms all entries, Esc closes it. Press `i` for job
-progress, `j`/`k` to select a job, `[`/`]` to select an item, PgUp/PgDn to scroll,
+open a preview; Enter confirms all entries, Esc closes it. Press `i` for the
+import history: each row shows a source title and its status, with the selected
+import's results and full title below. Use `j`/`k` to select a job, `[`/`]` to
+select a track within a playlist, PgUp/PgDn to scroll the details,
 `c` to cancel, or `r` to retry. Playback controls remain available after closing
 the overlay. Each time you open `i`, it starts at the active job shown in the
 bottom status line, or the newest job when all are finished, with item paging

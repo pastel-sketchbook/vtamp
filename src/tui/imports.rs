@@ -3,6 +3,8 @@ use crate::{
     imports::{ImportJob, ImportRequest},
     youtube::Preview,
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 #[derive(Default)]
 pub(super) struct ImportUi {
     pub enabled: bool,
@@ -12,6 +14,8 @@ pub(super) struct ImportUi {
     pub reveal_on_snapshot: bool,
     pub offset: usize,
     pub scroll: u16,
+    pub page_height: u16,
+    pub max_scroll: u16,
     pub detail_at: Option<Instant>,
     pub detail: Option<Value>,
 }
@@ -110,12 +114,19 @@ impl App {
         match key.code {
             KeyCode::PageDown => {
                 self.import_ui.reveal_on_snapshot = false;
-                self.import_ui.scroll = self.import_ui.scroll.saturating_add(4);
+                self.import_ui.scroll = self
+                    .import_ui
+                    .scroll
+                    .saturating_add(self.import_ui.page_height.max(1))
+                    .min(self.import_ui.max_scroll);
                 return true;
             }
             KeyCode::PageUp => {
                 self.import_ui.reveal_on_snapshot = false;
-                self.import_ui.scroll = self.import_ui.scroll.saturating_sub(4);
+                self.import_ui.scroll = self
+                    .import_ui
+                    .scroll
+                    .saturating_sub(self.import_ui.page_height.max(1));
                 return true;
             }
             _ => (),
@@ -190,7 +201,10 @@ impl App {
                     self.import_detail(commands);
                 }
                 KeyCode::Char('c') => {
-                    if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected) {
+                    if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected)
+                        && !job.terminal()
+                        && job.stage != "cancelling"
+                    {
                         self.send(
                             commands,
                             Command::ImportCancel {
@@ -200,7 +214,9 @@ impl App {
                     }
                 }
                 KeyCode::Char('r') => {
-                    if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected) {
+                    if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected)
+                        && retryable(job)
+                    {
                         self.send(
                             commands,
                             Command::ImportRetry {
@@ -338,7 +354,230 @@ impl App {
             s.push_str(&text);
         }
     }
-    pub(super) fn draw_imports(&self, frame: &mut Frame, area: Rect) {
+
+    fn draw_import_jobs(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
+        let selected_job = self.import_ui.jobs.get(self.import_ui.selected);
+        let mut hints = vec![if self.import_ui.jobs.len() > 1 {
+            "j/k select · Esc close"
+        } else {
+            "Esc close"
+        }];
+        if let Some(job) = selected_job {
+            hints.push(if job.total.is_some_and(|n| n > 1) {
+                "[/] tracks · PgUp/Dn details"
+            } else {
+                "PgUp/Dn details"
+            });
+            if !job.terminal() && job.stage != "cancelling" {
+                hints.push("c cancel import");
+            } else if retryable(job) {
+                hints.push("r retry unfinished tracks");
+            }
+        }
+        let hint = Paragraph::new(hints.join("\n"))
+            .style(Style::default().fg(p.muted).bg(p.panel))
+            .wrap(Wrap { trim: false });
+        let footer_height = (hint.line_count(area.width) as u16).min(area.height.saturating_sub(1));
+        let [body, footer] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(footer_height)]).areas(area);
+        frame.render_widget(hint, footer);
+        if self.import_ui.jobs.is_empty() {
+            frame.render_widget(
+                Paragraph::new(
+                    "No imports yet. Close this window and press a to add a YouTube URL.",
+                )
+                .style(Style::default().fg(p.text))
+                .wrap(Wrap { trim: false }),
+                body,
+            );
+            return;
+        }
+        // Keep navigation visible while long source titles and diagnostics scroll.
+        let rows = ((body.height.saturating_sub(4) / 2).clamp(1, 6) as usize)
+            .min(self.import_ui.jobs.len());
+        let selected = self.import_ui.selected.min(self.import_ui.jobs.len() - 1);
+        let start = selected.saturating_sub(rows - 1);
+        let [heading, list, divider, detail] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(rows as u16),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(body);
+        let count = self.import_ui.jobs.len();
+        let heading_text = if count > rows {
+            format!("Imports {}–{} of {count}", start + 1, start + rows)
+        } else {
+            format!(
+                "{count} {} · newest first",
+                if count == 1 { "import" } else { "imports" }
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(heading_text).style(Style::default().fg(p.muted)),
+            heading,
+        );
+        for (row, job) in self
+            .import_ui
+            .jobs
+            .iter()
+            .skip(start)
+            .take(rows)
+            .enumerate()
+        {
+            let active = start + row == selected;
+            let status = import_stage(&job.stage);
+            let title_width = (list.width as usize).saturating_sub(status.width() + 4);
+            let title = import_title(&job.title, title_width);
+            let padding = " ".repeat(title_width.saturating_sub(title.width()));
+            let line = Line::from(vec![
+                Span::raw(if active { "› " } else { "  " }),
+                Span::raw(title),
+                Span::raw(padding),
+                Span::raw("  "),
+                Span::styled(
+                    status,
+                    Style::default().fg(if job.failed > 0 || job.error.is_some() {
+                        p.warning
+                    } else if active {
+                        p.accent
+                    } else {
+                        p.muted
+                    }),
+                ),
+            ]);
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().fg(p.text).bg(if active {
+                    p.selection
+                } else {
+                    p.panel
+                })),
+                Rect::new(list.x, list.y + row as u16, list.width, 1),
+            );
+        }
+        frame.render_widget(
+            Paragraph::new("─".repeat(divider.width as usize)).style(Style::default().fg(p.border)),
+            divider,
+        );
+        let job = &self.import_ui.jobs[selected];
+        let mut lines = Vec::new();
+        let elapsed = job
+            .finished_at_ms
+            .unwrap_or_else(unix_ms)
+            .saturating_sub(job.started_at_ms)
+            / 1000;
+        for outcome in import_outcomes(job) {
+            lines.push(Line::styled(
+                outcome,
+                Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+            ));
+        }
+        if let Some(total) = job.total.filter(|n| *n > 1 && !job.terminal()) {
+            lines.push(Line::from(format!(
+                "Processed {} of {total} tracks",
+                job.added + job.skipped + job.failed
+            )));
+        }
+        if !job.terminal() && job.stage == "downloading" {
+            let mut transfer = Vec::new();
+            if let (Some(bytes), Some(total)) = (job.progress.bytes, job.progress.total)
+                && total > 0
+            {
+                transfer.push(format!(
+                    "{:.0}%",
+                    (bytes as f64 / total as f64 * 100.).min(100.)
+                ));
+            }
+            if let Some(bytes) = job.progress.bytes {
+                transfer.push(format!("{:.1} MiB", bytes as f64 / 1048576.));
+            }
+            if let Some(speed) = job.progress.speed.filter(|n| n.is_finite() && *n > 0.) {
+                transfer.push(format!("{:.1} MiB/s", speed / 1048576.));
+            }
+            if let Some(eta) = job.progress.eta.filter(|n| n.is_finite() && *n >= 0.) {
+                transfer.push(format!("ETA {eta:.0}s"));
+            }
+            if !transfer.is_empty() {
+                lines.push(Line::from(transfer.join(" · ")));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("YouTube: {}", job.title)));
+        if let Some(error) = &job.error {
+            lines.push(Line::styled(
+                format!("Error: {error}"),
+                Style::default().fg(p.warning),
+            ));
+        }
+        if let Some(items) = self
+            .import_ui
+            .detail
+            .as_ref()
+            .filter(|v| v["job"]["job_id"].as_str() == Some(&job.job_id))
+            .and_then(|v| v["items"].as_array())
+        {
+            for item in items {
+                let title = item["title"].as_str().unwrap_or("");
+                let status = item["status"].as_str().unwrap_or("");
+                if job.total.is_some_and(|n| n > 1) {
+                    let index = item["index"].as_u64().unwrap_or(0) + 1;
+                    lines.push(Line::from(format!(
+                        "Track {index} of {} · {}",
+                        job.total.unwrap_or(0),
+                        import_item_status(status)
+                    )));
+                    lines.push(Line::from(title.to_owned()));
+                } else if title != job.title && !title.is_empty() {
+                    lines.push(Line::from(format!(
+                        "{}: {title}",
+                        if status == "completed" {
+                            "Saved as"
+                        } else {
+                            "Track"
+                        }
+                    )));
+                }
+                for (field, label) in [
+                    (&item["error"], "Error"),
+                    (&item["metadata"]["warning"], "Note"),
+                ] {
+                    if let Some(text) = field.as_str() {
+                        lines.push(Line::styled(
+                            format!("{label}: {text}"),
+                            Style::default().fg(p.warning),
+                        ));
+                    }
+                }
+            }
+        } else if let Some(title) = &job.current_title
+            && *title != job.title
+        {
+            lines.push(Line::from(format!("Track: {title}")));
+        }
+        if job.terminal() {
+            lines.push(Line::styled(
+                format!("Finished after {elapsed}s"),
+                Style::default().fg(p.muted),
+            ));
+        }
+        let content = Paragraph::new(lines)
+            .style(Style::default().fg(p.text).bg(p.panel))
+            .wrap(Wrap { trim: false });
+        let max_scroll = content
+            .line_count(detail.width)
+            .saturating_sub(detail.height as usize)
+            .min(u16::MAX as usize) as u16;
+        self.import_ui.max_scroll = max_scroll;
+        self.import_ui.page_height = detail.height.max(1);
+        self.import_ui.scroll = self.import_ui.scroll.min(max_scroll);
+        frame.render_widget(
+            content.scroll((self.import_ui.scroll.min(max_scroll), 0)),
+            detail,
+        );
+    }
+
+    pub(super) fn draw_imports(&mut self, frame: &mut Frame, area: Rect) {
         if !self.import_ui.enabled {
             return;
         }
@@ -363,9 +602,14 @@ impl App {
                 Modal::Edit { .. } => " EDIT TRACK ",
             },
             true,
-        );
+        )
+        .style(Style::default().fg(p.text).bg(p.panel));
         let inner = border.inner(rect);
         frame.render_widget(border, rect);
+        if matches!(modal, Modal::Jobs) {
+            self.draw_import_jobs(frame, inner);
+            return;
+        }
         let mut lines = Vec::new();
         let mut focused_rows = None;
         let hint = match modal {
@@ -428,49 +672,7 @@ impl App {
                 }
                 "Tab field · Ctrl-U clear\nEnter save · Esc cancel"
             }
-            Modal::Jobs => {
-                if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected) {
-                    lines.push(
-                        Line::from(format!(
-                            "Job {}/{} · {}",
-                            self.import_ui.selected + 1,
-                            self.import_ui.jobs.len(),
-                            job.title
-                        ))
-                        .style(Style::default().fg(p.accent)),
-                    );
-                    lines.push(Line::from(job.summary()));
-                    if let Some(e) = &job.error {
-                        lines.push(Line::from(e.clone()).style(Style::default().fg(p.warning)));
-                    }
-                    if let Some(detail) = &self.import_ui.detail
-                        && detail["job"]["job_id"].as_str() == Some(&job.job_id)
-                        && let Some(items) = detail["items"].as_array()
-                    {
-                        for item in items {
-                            lines.push(Line::from(format!(
-                                "{} · {} {}",
-                                item["index"].as_u64().unwrap_or(0) + 1,
-                                item["status"].as_str().unwrap_or(""),
-                                item["title"].as_str().unwrap_or("")
-                            )));
-                            if let Some(e) = item["error"].as_str() {
-                                lines.push(
-                                    Line::from(e.to_owned()).style(Style::default().fg(p.warning)),
-                                );
-                            }
-                            if let Some(e) = item["metadata"]["warning"].as_str() {
-                                lines.push(
-                                    Line::from(e.to_owned()).style(Style::default().fg(p.warning)),
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    lines.push(Line::from("No imports yet. Press a to add a YouTube URL."));
-                }
-                "j/k jobs · [/] items\nc cancel · r retry · Esc close\nPgUp/Dn scroll"
-            }
+            Modal::Jobs => unreachable!(),
         };
         let hint = Paragraph::new(hint)
             .style(Style::default().fg(p.muted).bg(p.panel))
@@ -498,7 +700,106 @@ impl App {
                 .max(end.saturating_sub(body.height as usize))
                 .min(max_scroll as usize) as u16;
         }
+        self.import_ui.page_height = body.height.max(1);
+        self.import_ui.max_scroll = max_scroll;
+        self.import_ui.scroll = scroll;
         frame.render_widget(content.scroll((scroll, 0)), body);
         frame.render_widget(hint, footer);
     }
+}
+
+fn import_stage(stage: &str) -> &str {
+    match stage {
+        "queued" => "Queued",
+        "resolving" => "Looking up",
+        "metadata" => "Reading metadata",
+        "downloading" => "Downloading",
+        "processing" => "Processing",
+        "indexing" => "Saving",
+        "cancelling" => "Cancelling",
+        "completed" => "Completed",
+        "partial" => "Some failed",
+        "failed" => "Failed",
+        "cancelled" => "Cancelled",
+        "interrupted" => "Interrupted",
+        _ => stage,
+    }
+}
+
+fn retryable(job: &ImportJob) -> bool {
+    matches!(
+        job.status.as_str(),
+        "partial" | "failed" | "cancelled" | "interrupted"
+    )
+}
+
+fn import_outcomes(job: &ImportJob) -> Vec<String> {
+    if !job.terminal() {
+        return vec![match job.stage.as_str() {
+            "queued" => "Waiting to start…".into(),
+            "resolving" => "Looking up the YouTube source…".into(),
+            "metadata" => "Preparing track details…".into(),
+            "downloading" => "Downloading audio…".into(),
+            "processing" => "Preparing audio and artwork…".into(),
+            "indexing" => "Adding to Library…".into(),
+            "cancelling" => "Cancelling this import…".into(),
+            _ => import_stage(&job.stage).into(),
+        }];
+    }
+    let tracks = |n| format!("{n} {}", if n == 1 { "track" } else { "tracks" });
+    let mut lines = Vec::new();
+    match job.status.as_str() {
+        "cancelled" => lines.push("Import cancelled.".into()),
+        "interrupted" => lines.push("Import interrupted.".into()),
+        _ => (),
+    }
+    if job.added > 0 {
+        lines.push(format!("Added {} to Library.", tracks(job.added)));
+    }
+    if job.skipped > 0 {
+        lines.push(format!("{} already in Library.", tracks(job.skipped)));
+    }
+    if job.failed > 0 {
+        lines.push(format!("Could not import {}.", tracks(job.failed)));
+    }
+    if job.added + job.skipped + job.failed == 0 {
+        lines.push(
+            if job.status == "completed" {
+                "Import completed."
+            } else {
+                "Nothing was added to Library."
+            }
+            .into(),
+        );
+    }
+    lines
+}
+
+fn import_item_status(status: &str) -> &str {
+    match status {
+        "completed" => "Added",
+        "skipped" => "Already in library",
+        _ => import_stage(status),
+    }
+}
+
+fn import_title(title: &str, width: usize) -> String {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.width() <= width {
+        return title;
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut shortened = String::new();
+    let mut used = 0;
+    for grapheme in title.graphemes(true) {
+        if used + grapheme.width() > width - 1 {
+            break;
+        }
+        shortened.push_str(grapheme);
+        used += grapheme.width();
+    }
+    shortened.push('…');
+    shortened
 }

@@ -3158,7 +3158,11 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect();
             assert!(text.contains("Latest import"), "{text}");
-            assert!(text.contains("Job 1/2"), "{text}");
+            assert!(
+                text.contains("imports") || text.contains("Imports"),
+                "{text}"
+            );
+            assert!(!text.contains("Job 1/2"), "{text}");
         }
     }
 
@@ -3172,7 +3176,7 @@ mod tests {
         let mut selected = crate::imports::ImportJob::new(&Default::default());
         selected.started_at_ms = 100;
         selected.total = Some(9);
-        selected.finish("completed");
+        selected.finish("failed");
         app.import_ui.jobs = vec![selected.clone()];
         app.import_ui.offset = 5;
         app.import_ui.scroll = 3;
@@ -3199,12 +3203,12 @@ mod tests {
         );
         while requests.try_recv().is_ok() {}
         app.key(
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
             &commands,
         )
         .unwrap();
         assert!(
-            matches!(requests.try_recv().unwrap(), Command::ImportCancel { id } if id == selected.job_id)
+            matches!(requests.try_recv().unwrap(), Command::ImportRetry { id } if id == selected.job_id)
         );
         // Once an old selected job leaves server retention, discard its page.
         app.message(
@@ -3322,6 +3326,195 @@ mod tests {
     }
 
     #[test]
+    fn imports_show_job_list_and_keep_selection_visible_when_space_is_limited() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        for title in [
+            "Newest session",
+            "Evening collection",
+            "Earlier duet",
+            "First recording",
+        ] {
+            let mut job = crate::imports::ImportJob::new(&Default::default());
+            job.title = title.into();
+            job.total = Some(1);
+            job.added = 1;
+            job.finish("completed");
+            app.import_ui.jobs.push(job);
+        }
+        for (width, height) in [(40, 12), (72, 20), (102, 27), (120, 40)] {
+            app.import_ui.selected = 0;
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            if height >= 20 {
+                for job in &app.import_ui.jobs {
+                    assert!(text.contains(&job.title), "{text}");
+                }
+                assert!(text.contains("4 imports · newest first"), "{text}");
+                assert!(text.contains("Added 1 track to Library."), "{text}");
+                assert!(!text.contains("1/1") && !text.contains("Job 1/4"), "{text}");
+            }
+            assert!(
+                text.contains("Completed") && text.contains("Esc close"),
+                "{text}"
+            );
+            let (commands, mut requests) = mpsc::channel(16);
+            for _ in 0..3 {
+                app.key(
+                    KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                    &commands,
+                )
+                .unwrap();
+            }
+            assert_eq!(app.import_ui.selected, 3);
+            while let Ok(command) = requests.try_recv() {
+                assert!(matches!(command, Command::ImportStatus { .. }));
+            }
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("› First recording"), "{text}");
+        }
+    }
+
+    #[test]
+    fn imports_separate_source_and_saved_title_and_hide_finished_transfer_stats() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.title = "한글 공연 라이브 · 긴 영상 제목과 여러 곡의 소개가 이어지는 녹화 영상".into();
+        job.current_title = Some("Evening session".into());
+        job.total = Some(1);
+        job.status = "running".into();
+        job.stage = "downloading".into();
+        job.progress.bytes = Some(512);
+        job.progress.total = Some(1024);
+        app.import_ui.jobs.push(job.clone());
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains('…') && text.contains("Downloading"), "{text}");
+        assert!(
+            text.contains("50%") && text.contains("Track: Evening session"),
+            "{text}"
+        );
+        job.added = 1;
+        job.progress.bytes = Some(1024);
+        job.finish("completed");
+        app.import_ui.jobs[0] = job.clone();
+        app.import_ui.detail = Some(
+            serde_json::json!({"job":job,"items":[{"index":0,"status":"completed","title":"Evening session"}]}),
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("YouTube:") && text.contains("Saved as: Evening session"),
+            "{text}"
+        );
+        assert_eq!(text.matches("Evening session").count(), 1, "{text}");
+        assert!(
+            !text.contains("100%") && !text.contains("MiB") && !text.contains("Failed 0"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn imports_show_only_applicable_actions_and_paint_the_light_theme_panel() {
+        let mut app = app();
+        app.theme = Theme::CatppuccinLatte;
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.title = "Test recording".into();
+        job.total = Some(1);
+        job.added = 1;
+        job.finish("completed");
+        app.import_ui.jobs.push(job);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("Added 1 track to Library."), "{text}");
+        assert!(
+            !text.contains("cancel") && !text.contains("retry") && !text.contains("[/]"),
+            "{text}"
+        );
+        let p = app.theme.palette();
+        for y in 1..11 {
+            for x in 2..38 {
+                let bg = terminal.backend().buffer()[(x, y)].bg;
+                assert!(
+                    bg == p.panel || bg == p.selection,
+                    "unpainted panel at {x},{y}"
+                );
+            }
+        }
+        let (commands, mut requests) = mpsc::channel(16);
+        for code in [KeyCode::Char('c'), KeyCode::Char('r')] {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE), &commands)
+                .unwrap();
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "completed imports have no cancel/retry action"
+        );
+        app.import_ui.jobs[0].finish("failed");
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("r retry unfinished tracks") && !text.contains("c cancel"),
+            "{text}"
+        );
+        app.key(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::ImportRetry { .. }
+        ));
+    }
+
+    #[test]
     fn import_details_scroll_on_minimum_terminal_and_do_not_control_playback() {
         use ratatui::backend::TestBackend;
         let mut app = app();
@@ -3339,6 +3532,7 @@ mod tests {
         app.import_ui.modal = Some(imports::Modal::Jobs);
         let (commands, mut requests) = mpsc::channel(16);
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
         for _ in 0..20 {
             app.key(
                 KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
@@ -3355,6 +3549,15 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("END-OF-ERROR"), "{text}");
+        let bottom = app.import_ui.scroll;
+        let page = app.import_ui.page_height;
+        assert!(page <= 3, "minimum-size details must not skip unread rows");
+        app.key(
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(app.import_ui.scroll, bottom.saturating_sub(page));
         app.key(
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             &commands,

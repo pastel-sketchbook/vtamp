@@ -372,6 +372,10 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
   and resets item paging. Preserve an open reader's selected job by ID across
   snapshots and progress events, not by row index. Delayed list replies must not
   regress job revisions or remove jobs created after that snapshot.
+- Show Imports as a selectable history list above its details. Keep the selected
+  row and navigation hints visible at small sizes and while scrolling diagnostics.
+  Label source and saved titles; do not reuse the compact status-line summary as
+  the details layout or confuse history position with playlist progress.
 - Deduplicate library imports by video ID, never queue entries. Stage downloads
   privately, defer publication during catalog work, and transactionally register
   source, effective metadata, track and successful item report. Preserve stable

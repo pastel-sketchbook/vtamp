@@ -122,9 +122,18 @@ Album is optional: an empty value hides the album and its separator in Library
 and omits the album line in Now Playing. The editor uses Tab/Shift-Tab to change
 fields, Ctrl-U to clear, and Enter to save. Keep the active field visible even
 when earlier values wrap in a small terminal.
-Jobs show current stage, counters, transfer progress and item diagnostics; j/k
-select jobs, brackets select items, PgUp/PgDn scroll long text, c cancels and r
-retries. Opening `i` reveals the active job shown in the bottom status line, or
+Imports shows a selectable list of source titles and labeled states, newest
+first, above the selected import's details. Keep titles to one line in the list;
+show the full source title and any different saved title with explicit labels
+below. Lead details with the outcome in plain language, such as "Added 1 track
+to Library." Results omit zero counters and completed transfers omit stale
+percentages. Offer cancel only while running, retry only for unfinished imports,
+and track navigation only for multi-track imports. Successful imports need no
+repair action. Paint the full overlay with the theme's panel background.
+Keep the list and key hints visible while PgUp/PgDn scroll the details. On small
+terminals show fewer rows while keeping the selection in view. j/k selects jobs,
+brackets select tracks within a playlist, c cancels and r retries.
+Opening `i` reveals the active job shown in the bottom status line, or
 the newest job when all have finished, starting at its first item. While the
 dialog is open, retain the job the user is reading by identity as new jobs arrive.
 List replies must not roll back newer progress or erase newly observed jobs.
