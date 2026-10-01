@@ -184,8 +184,8 @@ The documents above hold the full contracts; these are the most common regressio
   `python3 scripts/capture-site.py --output /tmp/vtamp-screenshots`, then publish
   without `--output`. Keep Training Montage by Vince DiCola as the selected track
   unless asked otherwise. Never substitute text captures or mockups, and inspect
-  every PNG before committing. After new captures, rebuild the social preview
-  card with `python3 scripts/build-og.py`.
+  every PNG before committing. After new captures, rebuild both social preview
+  cards with `python3 scripts/build-og.py`.
 
 ## Git and delivery
 

@@ -10,7 +10,8 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 ORIGIN = "https://vtamp.told.me/"
-PAGES = {SITE / "index.html": ORIGIN, SITE / "ko" / "index.html": ORIGIN + "ko/"}
+# page -> (its canonical URL, its language's preview card)
+PAGES = {SITE / "index.html": (ORIGIN, "og.png"), SITE / "ko" / "index.html": (ORIGIN + "ko/", "og-ko.png")}
 SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9", "xhtml": "http://www.w3.org/1999/xhtml"}
 
 
@@ -60,7 +61,7 @@ class PageMetadataTests(unittest.TestCase):
 
     def test_each_page_declares_itself_consistently(self):
         version = crate_version()
-        for page, url in PAGES.items():
+        for page, (url, card) in PAGES.items():
             with self.subTest(page=page.relative_to(ROOT)):
                 head = self.parse(page)
                 canonical = [link["href"] for link in head.links if link.get("rel") == "canonical"]
@@ -73,8 +74,8 @@ class PageMetadataTests(unittest.TestCase):
                 self.assertEqual(head.meta["og:description"], head.meta["description"])
                 for key in ("og:title", "og:image:alt", "og:locale", "og:locale:alternate"):
                     self.assertTrue(head.meta.get(key), key)
-                self.assertEqual(head.meta["og:image"], ORIGIN + "og.png")
-                width, height = png_size(SITE / "og.png")
+                self.assertEqual(head.meta["og:image"], ORIGIN + card)
+                width, height = png_size(SITE / card)
                 self.assertEqual((width, height), (1200, 630))
                 self.assertEqual((head.meta["og:image:width"], head.meta["og:image:height"]), (str(width), str(height)))
                 self.assertEqual(len(head.json_ld), 1)
@@ -82,13 +83,14 @@ class PageMetadataTests(unittest.TestCase):
                 self.assertEqual(data["@type"], "SoftwareApplication")
                 self.assertEqual(data["url"], url)
                 self.assertEqual(data["description"], head.meta["description"])
+                self.assertEqual(data["image"], head.meta["og:image"])
                 self.assertEqual(data["softwareVersion"], version)
                 self.assertIn(f'<span class="version">v{version}</span>', page.read_text(encoding="utf-8"))
 
     def test_sitemap_and_robots_cover_both_pages(self):
         tree = ElementTree.parse(SITE / "sitemap.xml")
         urls = tree.getroot().findall("sm:url", SITEMAP_NS)
-        self.assertEqual({url.find("sm:loc", SITEMAP_NS).text for url in urls}, set(PAGES.values()))
+        self.assertEqual({url.find("sm:loc", SITEMAP_NS).text for url in urls}, {url for url, _ in PAGES.values()})
         for url in urls:
             alternates = {link.get("hreflang"): link.get("href") for link in url.findall("xhtml:link", SITEMAP_NS)}
             self.assertEqual(alternates, {"en": ORIGIN, "ko": ORIGIN + "ko/", "x-default": ORIGIN})
