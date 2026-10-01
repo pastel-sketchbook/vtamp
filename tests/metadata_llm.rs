@@ -40,13 +40,23 @@ fn configured_provider_cleans_synthetic_metadata() {
             "Cora Willow",
         ),
         (
-            "whole session rather than first song",
+            "whole episode retains its artist and normalizes its live label",
             Source {
-                original_title: "서린(SEORIN)의 달빛 라이브! - 유리 정원, 겨울 편지, 먼 바다 | 음악채널".into(),
-                description: "서린의 라이브 세션. Piano by 민결. Backing vocals by 이솔. Produced by 도하.\n00:00 유리 정원\n03:20 겨울 편지\n07:00 먼 바다".into(),
+                original_title: "서린(SEORIN)의 달빛보이스를 라이브로! - 유리 정원, 겨울 편지, 먼 바다 | 음악채널".into(),
+                description: "서린의 라이브 세션 전체 회차. Piano by 민결. Backing vocals by 이솔. Produced by 도하.\n00:00 유리 정원\n03:20 겨울 편지\n07:00 먼 바다".into(),
                 ..Default::default()
             },
-            "달빛 라이브",
+            "서린의 달빛보이스 라이브",
+            "서린",
+        ),
+        (
+            "individual song clip is not renamed as a whole episode",
+            Source {
+                original_title: "서린 - 유리 정원 [달빛보이스 라이브 클립]".into(),
+                description: "달빛보이스 서린 편에서 부른 유리 정원 한 곡.".into(),
+                ..Default::default()
+            },
+            "유리 정원 (Live)",
             "서린",
         ),
         (

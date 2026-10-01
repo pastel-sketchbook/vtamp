@@ -6,9 +6,10 @@ Trust and scope:
 - music_title and music_artist, when present, are authoritative for their respective fields. Channel names and URLs are context, not proof of who performs the recording. Never infer an artist from the channel alone.
 
 Title:
+- First distinguish a single song (including a clip from a named show) from a complete program episode, concert or multi-song session, using the supplied title and description. A show's name alone does not make a single-song clip a whole episode. Follow the appropriate title rules below; concise must still mean identifiable.
 - For a single song, return its name without the performer prefix. Remove clearly extraneous upload text: official MV/audio/video, lyrics video, subtitles, HD/4K, promotional slogans, hashtags and decorative emoji. Do not remove words or punctuation that belong to the song's name.
 - Remove surrounding quotation marks and redundant program/channel labels when the song is clearly identified. Keep the original language and spelling; do not translate or romanize. When a name is repeated in Korean and romanization, keep the Korean form once. Otherwise keep the source's primary form once, without duplicate translations.
-- Keep recording distinctions such as Live, Cover, Acoustic, Remix or Instrumental in version, not duplicated in title. Preserve a named remix's identity. Do not add Live just because the uploader is a concert channel, or Cover just because the performer differs from an artist you know.
+- For single songs, keep recording distinctions such as Live, Cover, Acoustic, Remix or Instrumental in version, not duplicated in title. Preserve a named remix's identity. Do not add Live just because the uploader is a concert channel, or Cover just because the performer differs from an artist you know.
 - The player appends version in parentheses. If the retained title already expresses the same distinction (including in another language, such as 라이브), set version to null to avoid repeating it.
 
 Artists:
@@ -18,9 +19,12 @@ Artists:
 - Return distinct primary/co-billed artists in source order. Split explicit collaborations (+, feat., with), but keep a band/group name intact; do not split every ampersand or slash blindly. A mention of "with" in a supporting credit alone is not co-billing.
 - Deduplicate equivalent names written in different scripts using the same language rule as title. A "원곡", "original by", "written by" or "composed by" credit alone is not evidence of a performer here.
 
-Multiple songs in one video:
+Complete episodes and multiple songs in one video:
 - A medley, concert, session or compilation remains ONE file. Do not pick the first song from a timestamp list, return several library entries, or mistake a list of song names for artists.
-- Prefer a concise source-backed session/program title, preserving Medley, Concert or the equivalent original-language label when supplied. Remove the trailing track list, promotional text and redundant performer prefix. If no collective title exists, retain the identifying song list; do not invent a collection name.
+- Preserve the artist's name when it identifies an artist-focused series episode or performance. It is essential episode identity, even though it also appears in artists. Do not reduce different artists' episodes to the same bare series title. Retain source-backed episode numbers, dates or event names when they distinguish the recording.
+- For a Korean episode presented as "<artist>의 <series>를 라이브로!", use "<artist>의 <series> 라이브". Retain the artist-series relationship, remove duplicate romanization and the promotional sentence ending, and set version to null because 라이브 is already in the title. If the series name already ends in 라이브, keep it only once. For other languages/formats, preserve the source's artist-series relationship naturally without inventing or translating names.
+- Remove the trailing song list, uploader suffix and promotional text while preserving this episode identity and any supplied Medley/Concert label. If no collective title exists, retain the identifying song list; do not invent a collection name. If the type is unclear, retain identifying context rather than stripping an artist from a possible episode title.
+- For an individual song clip from a series, use the single-song rules instead: return the song title, put performers in artists, and omit the program label. Do not rename the clip as if it were the entire episode.
 - Only list primary/co-billed artists credited for this recording as a whole. Do not aggregate original-artist credits from a track list or supporting musicians from the production credits.
 
 Evidence and uncertainty:
@@ -37,8 +41,11 @@ Output: {"title":"작은 등불","artists":["하린","도윤"],"version":"Live",
 Input: {"original_title":"Paper Satellites | cover by Mira Vale (original by The Glass Orchard)","description":""}
 Output: {"title":"Paper Satellites","artists":["Mira Vale"],"version":"Cover","evidence":{"title":"Paper Satellites | cover by Mira Vale","artists":"cover by Mira Vale"}}
 
-Input: {"original_title":"하린(HARIN)의 별빛 라이브! - 작은 등불, 푸른 창, 종이배 | 음악방","description":"하린의 라이브 세션. Piano by 지온. Mixed by 은재."}
-Output: {"title":"별빛 라이브","artists":["하린"],"version":null,"evidence":{"title":"별빛 라이브! - 작은 등불, 푸른 창, 종이배","artists":"하린의 라이브 세션"}}
+Input: {"original_title":"하린(HARIN)의 별빛보이스를 라이브로! - 작은 등불, 푸른 창, 종이배 | 음악방","description":"하린의 라이브 세션 전체 회차. Piano by 지온. Mixed by 은재."}
+Output: {"title":"하린의 별빛보이스 라이브","artists":["하린"],"version":null,"evidence":{"title":"하린(HARIN)의 별빛보이스를 라이브로!","artists":"하린의 라이브 세션"}}
+
+Input: {"original_title":"하린 - 작은 등불 [별빛보이스 라이브 클립]","description":"별빛보이스 하린 편에서 부른 작은 등불 한 곡."}
+Output: {"title":"작은 등불","artists":["하린"],"version":"Live","evidence":{"title":"작은 등불 [별빛보이스 라이브 클립]","artists":"하린 - 작은 등불"}}
 
 Input: {"original_title":"지온 - 작은 등불 (Solo Piano)","description":"Solo piano performance by 지온. Recorded by 은재."}
 Output: {"title":"작은 등불","artists":["지온"],"version":"Solo Piano","evidence":{"title":"작은 등불 (Solo Piano)","artists":"Solo piano performance by 지온"}}

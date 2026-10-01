@@ -131,9 +131,13 @@ language and recording versions. It distinguishes cover performers from original
 artists and keeps primary/featured artists separate from accompaniment, backing
 vocals and production credits. Instrumental soloists and explicitly co-billed
 musicians remain artists. A medley or full session stays one recording, rather
-than being named after its first song. Its examples use fictional names and
-songs. Channel names alone are never performer evidence. Evidence must quote one
-supplied metadata field; model inference can still be wrong, so manual edits
+than being named after its first song. Whole series episodes retain the artist
+name that identifies the episode, even when it also appears in Artist. Korean
+episode titles shorten `Artist의 Series를 라이브로!` to `Artist의 Series 라이브`
+without an additional `(Live)` suffix. Individual song clips keep their song
+title instead of being named after the whole episode. Examples use fictional
+names and songs. Channel names alone are never performer evidence. Evidence must
+quote one supplied metadata field; model inference can still be wrong, so manual edits
 remain available.
 
 Updating the prompt requires rebuilding and restarting the playback server.
