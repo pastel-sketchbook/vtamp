@@ -29,13 +29,13 @@ struct QueueSnapshot {
 impl QueueSnapshot {
     fn new(state: &State) -> Self {
         Self {
-            current_id: state.current_id.clone(),
+            current_id: state.queue_current_id().map(str::to_owned),
             play_next: state.play_next.clone(),
             ids: state.queue.iter().map(|i| i.id.clone()).collect(),
         }
     }
     fn changed(&self, state: &State) -> bool {
-        self.current_id != state.current_id
+        self.current_id.as_deref() != state.queue_current_id()
             || self.play_next != state.play_next
             || self.ids.iter().ne(state.queue.iter().map(|i| &i.id))
     }
@@ -83,7 +83,7 @@ impl<B: PlaybackBackend> Engine<B> {
         let existing = self
             .state
             .current()
-            .filter(|item| item.track.id == track.id)
+            .filter(|item| self.state.direct.is_none() && item.track.id == track.id)
             .or_else(|| {
                 self.state
                     .queue
@@ -100,6 +100,57 @@ impl<B: PlaybackBackend> Engine<B> {
             track: None,
             queue_item: id,
         })
+    }
+    pub fn play_direct(&mut self, track: Track) -> Result<()> {
+        let item = self
+            .state
+            .direct
+            .as_ref()
+            .filter(|item| item.track.id == track.id)
+            .map(|item| {
+                Box::new(QueueItem {
+                    id: item.id.clone(),
+                    track: track.clone(),
+                })
+            })
+            .unwrap_or_else(|| Box::new(QueueItem::new(track)));
+        let result = self.load_direct(item, 0, false);
+        self.note_queue_change();
+        result
+    }
+    fn load_direct(&mut self, item: Box<QueueItem>, position: u64, paused: bool) -> Result<()> {
+        let result = self
+            .backend
+            .load(&item.track.path, position, self.state.volume, paused);
+        if let Err(error) = &result
+            && !error.is::<OutputUnavailable>()
+        {
+            self.stop();
+            self.state.last_error = Some(format!("{}: {error:#}", item.track.title));
+            return result;
+        }
+        let output_error = result.err();
+        if output_error.is_some() {
+            self.backend.stop();
+        }
+        self.loaded = output_error.is_none();
+        self.output_retry = output_error
+            .as_ref()
+            .map(|_| Instant::now() + OUTPUT_RETRY_INTERVAL);
+        self.state.last_error =
+            output_error.map(|e| format!("Waiting for audio output; retrying: {e:#}"));
+        if self.state.direct.is_none() {
+            self.state.queue_cursor = self.state.current_id.clone();
+        }
+        self.state.current_id = Some(item.id.clone());
+        self.state.direct = Some(item);
+        self.state.position_ms = position;
+        self.state.status = if paused {
+            PlaybackStatus::Paused
+        } else {
+            PlaybackStatus::Playing
+        };
+        Ok(())
     }
     fn note_queue_change(&mut self) {
         if self.queue_snapshot.changed(&self.state) {
@@ -235,6 +286,10 @@ impl<B: PlaybackBackend> Engine<B> {
                 let current = self.state.current_id.as_ref() == Some(id);
                 let was_playing = self.state.status == PlaybackStatus::Playing;
                 self.state.queue.remove(index);
+                if self.state.queue_cursor.as_ref() == Some(id) {
+                    self.state.queue_cursor =
+                        index.checked_sub(1).map(|i| self.state.queue[i].id.clone());
+                }
                 self.upcoming.retain(|i| i != id);
                 self.state.play_next.retain(|i| i != id);
                 self.history.retain(|i| i != id);
@@ -261,9 +316,12 @@ impl<B: PlaybackBackend> Engine<B> {
                 self.state.queue.insert(*index, item);
             }
             Command::QueueClear => {
-                self.stop();
+                if self.state.direct.is_none() {
+                    self.stop();
+                    self.state.current_id = None;
+                }
                 self.state.queue.clear();
-                self.state.current_id = None;
+                self.state.queue_cursor = None;
                 self.upcoming.clear();
                 self.state.play_next.clear();
                 self.history.clear();
@@ -298,7 +356,7 @@ impl<B: PlaybackBackend> Engine<B> {
         if self.state.status == PlaybackStatus::Playing {
             return Ok(());
         }
-        if self.state.queue.is_empty() {
+        if self.state.queue.is_empty() && self.state.direct.is_none() {
             bail!("Queue is empty. Add music with vtamp queue add PATH");
         }
         if self.output_retry.is_some() {
@@ -310,6 +368,9 @@ impl<B: PlaybackBackend> Engine<B> {
             self.backend.resume();
             self.state.status = PlaybackStatus::Playing;
         } else {
+            if let Some(item) = self.state.direct.clone() {
+                return self.load_direct(item, self.state.position_ms, false);
+            }
             let index = self.state.current_index().unwrap_or(0);
             self.play_at(index, self.state.position_ms, false)?;
         }
@@ -337,7 +398,7 @@ impl<B: PlaybackBackend> Engine<B> {
         paused: bool,
     ) -> Result<()> {
         self.output_retry = None;
-        let old = self.state.current_id.clone();
+        let old = self.state.queue_current_id().map(str::to_owned);
         let mut last_error = None;
         // Every candidate is attempted at most once, even with repeat-all enabled.
         for (attempt, candidate) in candidates.into_iter().enumerate() {
@@ -363,6 +424,8 @@ impl<B: PlaybackBackend> Engine<B> {
                         self.history.push(id);
                     }
                     self.state.current_id = Some(item.id.clone());
+                    self.state.direct = None;
+                    self.state.queue_cursor = None;
                     self.upcoming.retain(|id| id != &item.id);
                     self.state.position_ms = position;
                     self.state.status = if paused {
@@ -394,7 +457,7 @@ impl<B: PlaybackBackend> Engine<B> {
             .queue
             .iter()
             .filter(|q| {
-                Some(&q.id) != self.state.current_id.as_ref()
+                Some(q.id.as_str()) != self.state.queue_current_id()
                     && !self.state.play_next.contains(&q.id)
             })
             .map(|q| q.id.clone())
@@ -403,6 +466,13 @@ impl<B: PlaybackBackend> Engine<B> {
         self.upcoming = ids.into();
     }
     fn advance(&mut self, natural: bool) -> Result<()> {
+        if natural
+            && let Some(item) = self.state.direct.clone()
+            && (self.state.repeat == Repeat::One
+                || (self.state.queue.is_empty() && self.state.repeat == Repeat::All))
+        {
+            return self.load_direct(item, 0, false);
+        }
         if self.state.queue.is_empty() {
             self.stop();
             return Ok(());
@@ -424,7 +494,7 @@ impl<B: PlaybackBackend> Engine<B> {
                 ids.push(self.state.queue[0].id.clone());
             }
         } else {
-            let start = self.state.current_index().map_or(0, |i| i + 1);
+            let start = self.state.queue_cursor_index().map_or(0, |i| i + 1);
             ids.extend(self.state.queue[start..].iter().map(|i| i.id.clone()));
             if self.state.repeat == Repeat::All {
                 ids.extend(self.state.queue[..start].iter().map(|i| i.id.clone()));
@@ -444,6 +514,9 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     fn previous(&mut self) -> Result<()> {
+        if let Some(item) = self.state.direct.clone() {
+            return self.load_direct(item, 0, false);
+        }
         if self.state.queue.is_empty() {
             return Ok(());
         }
@@ -626,6 +699,156 @@ mod tests {
             .add(vec![track("a"), track("b"), track("c")])
             .unwrap();
         engine
+    }
+    #[test]
+    fn direct_playback_preserves_queue_and_continues_from_its_cursor() {
+        for natural in [false, true] {
+            let mut e = engine();
+            e.play_track(track("b")).unwrap();
+            let queued = e.state.queue.clone();
+            let cursor = e.state.current_id.clone();
+            let revision = e.state.queue_revision;
+            let upcoming = e.upcoming.clone();
+            let history = e.history.clone();
+            for name in ["preview", "another preview", "b"] {
+                e.play_direct(track(name)).unwrap();
+                assert_eq!(e.state.current().unwrap().track.id, name);
+                assert!(e.state.current_index().is_none());
+                assert_eq!(e.state.queue_cursor, cursor);
+                assert_eq!(e.state.queue, queued);
+                assert_eq!(e.state.queue_revision, revision);
+                assert_eq!(e.upcoming, upcoming);
+                assert_eq!(e.history, history);
+                assert_eq!(e.state.now()["current_in_queue"], false);
+            }
+            e.apply(&Command::Pause).unwrap();
+            e.apply(&Command::Seek {
+                milliseconds: 12000,
+                relative: false,
+            })
+            .unwrap();
+            e.apply(&Command::Resume).unwrap();
+            assert_eq!(e.state.position_ms, 12000);
+            if natural {
+                e.backend.ended.store(true, Ordering::SeqCst);
+                assert!(e.tick());
+            } else {
+                e.apply(&Command::Next).unwrap();
+            }
+            assert_eq!(e.state.current().unwrap().track.id, "c");
+            assert!(e.state.direct.is_none());
+            assert!(e.state.queue_cursor.is_none());
+            assert_eq!(e.state.queue, queued);
+            assert_eq!(e.state.queue_revision, revision + 1);
+            assert_eq!(e.history.last(), cursor.as_ref());
+        }
+    }
+
+    #[test]
+    fn direct_playback_handles_empty_full_and_edited_queues() {
+        let mut e = Engine::new(State::default(), Fake::default());
+        e.play_direct(track("preview")).unwrap();
+        e.apply(&Command::Pause).unwrap();
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::Prev).unwrap();
+        assert_eq!(e.state.current().unwrap().track.id, "preview");
+        assert!(e.state.queue.is_empty());
+        assert_eq!(e.state.queue_revision, 0);
+        e.backend.ended.store(true, Ordering::SeqCst);
+        e.tick();
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        e.apply(&Command::Resume).unwrap();
+        assert_eq!(e.state.current().unwrap().track.id, "preview");
+
+        e.add(vec![track("a"), track("b"), track("c")]).unwrap();
+        e.play_track(track("b")).unwrap();
+        let cursor = e.state.current_id.clone().unwrap();
+        e.play_direct(track("preview")).unwrap();
+        e.apply(&Command::QueueRemove { id: cursor }).unwrap();
+        e.apply(&Command::Next).unwrap();
+        assert_eq!(e.state.current().unwrap().track.id, "c");
+        e.add((0..9998).map(|_| track("duplicate")).collect())
+            .unwrap();
+        e.play_direct(track("outside")).unwrap();
+        assert_eq!(e.state.queue.len(), 10000);
+        let id = e.state.current_id.clone();
+        let loads = e.backend.loads;
+        e.apply(&Command::QueueClear).unwrap();
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.status, PlaybackStatus::Playing);
+        assert_eq!(e.backend.loads, loads);
+        e.apply(&Command::Next).unwrap();
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+    }
+
+    #[test]
+    fn direct_playback_respects_shuffle_priority_repeat_and_stop_reservations() {
+        let mut e = engine();
+        e.play_track(track("a")).unwrap();
+        e.apply(&Command::Shuffle { enabled: true }).unwrap();
+        let next = e.state.queue[2].id.clone();
+        e.state.play_next.push(next.clone());
+        e.play_direct(track("preview")).unwrap();
+        e.apply(&Command::Repeat { mode: Repeat::One }).unwrap();
+        let id = e.state.current_id.clone();
+        e.backend.ended.store(true, Ordering::SeqCst);
+        e.tick();
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.play_next, std::slice::from_ref(&next));
+        e.apply(&Command::StopAfterCurrent).unwrap();
+        e.backend.ended.store(true, Ordering::SeqCst);
+        e.tick();
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        assert_eq!(e.state.current_id, id);
+        e.apply(&Command::Next).unwrap();
+        assert_eq!(e.state.current_id, Some(next));
+        assert!(e.state.play_next.is_empty());
+        e.play_direct(track("preview")).unwrap();
+        e.apply(&Command::SleepSet { milliseconds: 1 }).unwrap();
+        assert!(e.tick_with_clock(Instant::now(), unix_ms() + 10));
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+    }
+
+    #[test]
+    fn direct_output_recovery_preserves_identity_position_and_queue() {
+        let mut e = engine();
+        e.play_track(track("a")).unwrap();
+        e.play_direct(track("preview")).unwrap();
+        e.backend.position = 13000;
+        e.apply(&Command::Pause).unwrap();
+        let id = e.state.current_id.clone();
+        let queue = e.state.queue.clone();
+        let revision = e.state.queue_revision;
+        e.backend.output_event = Some("Output lost".into());
+        e.backend.unavailable = true;
+        let now = Instant::now();
+        e.tick_at(now);
+        e.backend.unavailable = false;
+        e.tick_at(now + OUTPUT_RETRY_INTERVAL);
+        assert_eq!(
+            e.backend.last_load,
+            Some(("preview".into(), 13000, 70, true))
+        );
+        assert_eq!(e.state.status, PlaybackStatus::Paused);
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.queue, queue);
+        assert_eq!(e.state.queue_revision, revision);
+        assert!(e.play_direct(track("bad preview")).is_err());
+        assert_eq!(e.state.queue, queue);
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        assert_eq!(e.state.current_id, id);
+    }
+
+    #[test]
+    fn queued_play_after_direct_reuses_a_real_queue_entry() {
+        let mut e = engine();
+        e.play_direct(track("a")).unwrap();
+        let direct_id = e.state.current_id.clone();
+        e.play_track(track("a")).unwrap();
+        assert_ne!(e.state.current_id, direct_id);
+        assert_eq!(e.state.current_index(), Some(0));
+        assert!(e.state.direct.is_none());
+        assert_eq!(e.state.queue.len(), 3);
     }
     #[test]
     fn output_change_restores_same_track_position_volume_and_pause_state() {

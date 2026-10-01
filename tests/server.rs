@@ -170,6 +170,87 @@ fn crash_leaves_socket_that_next_launch_recovers() {
 }
 
 #[test]
+fn direct_playback_cli_preserves_queue_and_survives_restart() {
+    let server = Server::new();
+    for args in [
+        vec!["play", "--no-queue"],
+        vec!["play", "--no-queue", "one.wav", "two.wav"],
+        vec!["play", "--no-queue", "--queue-item", "missing"],
+    ] {
+        assert!(!server.cmd(&args).status.success());
+        assert!(!server.socket().exists());
+    }
+    let music = server.home.path().join("music");
+    std::fs::create_dir(&music).unwrap();
+    // A minute of generated silence keeps the transport test independent of
+    // natural completion and does not require personal audio files.
+    let size = 8000u32 * 2 * 60;
+    let mut wave = b"RIFF".to_vec();
+    wave.extend((size + 36).to_le_bytes());
+    wave.extend(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+    wave.extend(8000u32.to_le_bytes());
+    wave.extend(16000u32.to_le_bytes());
+    wave.extend(b"\x02\0\x10\0data");
+    wave.extend(size.to_le_bytes());
+    wave.resize(44 + size as usize, 0);
+    for name in ["A.wav", "B.wav", "Preview.wav"] {
+        std::fs::write(music.join(name), &wave).unwrap();
+    }
+    server.ok(&["library", "add", music.to_str().unwrap(), "--wait"]);
+    let tracks = server.ok(&["library", "list"]);
+    let ids: Vec<_> = tracks["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    server.ok(&["volume", "0"]);
+    server.ok(&["queue", "add", "--tracks", ids[0], ids[1]]);
+    server.ok(&["play", "--track", ids[0]]);
+    let before = server.ok(&["status"]);
+    let direct = server.ok(&["play", "--no-queue", "--track", ids[2]]);
+    assert_eq!(direct["queue"], before["queue"]);
+    assert_eq!(direct["queue_revision"], before["queue_revision"]);
+    assert_eq!(direct["queue_cursor"], before["current_id"]);
+    assert_eq!(direct["direct"]["track"]["id"], ids[2]);
+    assert_eq!(server.ok(&["now"])["current_in_queue"], false);
+    server.ok(&["pause"]);
+    server.ok(&["seek", "2"]);
+    server.ok(&["server", "stop"]);
+    server.ok(&["server", "start"]);
+    let restored = server.ok(&["status"]);
+    assert_eq!(restored["status"], "paused");
+    assert_eq!(restored["position_ms"], 2000);
+    assert_eq!(restored["direct"], direct["direct"]);
+    assert_eq!(restored["queue_cursor"], direct["queue_cursor"]);
+    assert_eq!(restored["queue"], before["queue"]);
+    let resumed = server.ok(&["next"]);
+    assert!(resumed["direct"].is_null());
+    assert_eq!(resumed["current_id"], before["queue"][1]["id"]);
+    let file = music.join("Preview.wav");
+    server.ok(&["play", "--no-queue", file.to_str().unwrap()]);
+    let current = server.ok(&["now"])["current"].clone();
+    let cleared = server.ok(&["queue", "clear"]);
+    assert_eq!(cleared["queue"], json!([]));
+    assert_eq!(cleared["status"], "playing");
+    assert_eq!(server.ok(&["now"])["current"], current);
+    server.ok(&["stop", "--after-current"]);
+    let mut stream = UnixStream::connect(server.socket()).unwrap();
+    send(
+        &mut stream,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"play_direct","track":ids[0],"path":file}}),
+    );
+    assert_eq!(receive(&mut stream)["error"]["code"], "invalid_arguments");
+    assert!(
+        !server
+            .cmd(&["play", "--no-queue", music.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(server.ok(&["now"])["current"], current);
+}
+
+#[test]
 fn agent_cli_search_scan_queue_and_timer_contracts() {
     let server = Server::new();
     for args in [

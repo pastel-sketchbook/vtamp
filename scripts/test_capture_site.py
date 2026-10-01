@@ -46,6 +46,17 @@ class CaptureTests(unittest.TestCase):
             self.assertIsNone(copied["last_error"])
             self.assertEqual(before, (source / "state.db").read_bytes())
 
+            direct = {"id": "direct", "track": {"cover": str(cover)}}
+            live.update(queue=[], direct=direct, current_id="direct")
+            with patch.object(capture, "run", side_effect=response):
+                capture.snapshot("vtamp", destination)
+            with sqlite3.connect(destination / "state.db") as database:
+                copied = json.loads(database.execute("SELECT json FROM session").fetchone()[0])
+            self.assertEqual(copied["direct"], direct)
+            self.assertEqual(copied["queue"], [])
+            self.assertEqual(copied["status"], "paused")
+            self.assertEqual(before, (source / "state.db").read_bytes())
+
     def test_failed_publish_restores_all_existing_images(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

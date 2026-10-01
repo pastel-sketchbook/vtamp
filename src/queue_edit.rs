@@ -33,7 +33,7 @@ pub fn prepare(state: &State, edit: &QueueEdit, store: &Store) -> Result<(State,
                     );
                 }
                 let index = if *after_current {
-                    next.current_index().map_or(0, |i| i + 1)
+                    next.queue_cursor_index().map_or(0, |i| i + 1)
                 } else {
                     index.unwrap_or(next.queue.len())
                 };
@@ -75,6 +75,9 @@ pub fn prepare(state: &State, edit: &QueueEdit, store: &Store) -> Result<(State,
                     }
                     let index = locate(&next, id)?;
                     next.queue.remove(index);
+                    if next.queue_cursor.as_ref() == Some(id) {
+                        next.queue_cursor = index.checked_sub(1).map(|i| next.queue[i].id.clone());
+                    }
                     next.play_next.retain(|queued| queued != id);
                 }
                 changes.push(json!({"op":"remove", "queue_item_ids":queue_item_ids}));

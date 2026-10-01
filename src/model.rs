@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
@@ -72,6 +72,9 @@ pub enum Repeat {
 pub struct State {
     pub queue: Vec<QueueItem>,
     pub current_id: Option<String>,
+    pub direct: Option<Box<QueueItem>>,
+    /// Last queue entry while a separate item is playing.
+    pub queue_cursor: Option<String>,
     pub status: PlaybackStatus,
     pub position_ms: u64,
     pub volume: u8,
@@ -90,6 +93,8 @@ impl Default for State {
         Self {
             queue: vec![],
             current_id: None,
+            direct: None,
+            queue_cursor: None,
             status: PlaybackStatus::Stopped,
             position_ms: 0,
             volume: 70,
@@ -112,7 +117,22 @@ impl State {
             .position(|q| Some(&q.id) == self.current_id.as_ref())
     }
     pub fn current(&self) -> Option<&QueueItem> {
-        self.current_index().map(|i| &self.queue[i])
+        self.direct
+            .as_deref()
+            .filter(|item| Some(&item.id) == self.current_id.as_ref())
+            .or_else(|| self.current_index().map(|i| &self.queue[i]))
+    }
+    pub fn queue_current_id(&self) -> Option<&str> {
+        if self.direct.is_some() {
+            self.queue_cursor.as_deref()
+        } else {
+            self.current_id.as_deref()
+        }
+    }
+    pub fn queue_cursor_index(&self) -> Option<usize> {
+        self.queue
+            .iter()
+            .position(|item| Some(item.id.as_str()) == self.queue_current_id())
     }
 }
 
@@ -187,6 +207,10 @@ pub enum Command {
         paths: Vec<PathBuf>,
         track: Option<String>,
         queue_item: Option<String>,
+    },
+    PlayDirect {
+        path: Option<PathBuf>,
+        track: Option<String>,
     },
     Pause,
     Resume,
@@ -408,12 +432,13 @@ impl State {
             "remaining_ms": duration_ms.saturating_sub(self.position_ms),
             "volume": self.volume, "shuffle": self.shuffle, "repeat": self.repeat,
             "queue_length": self.queue.len(), "revision": self.revision,
+            "current_in_queue": self.current_index().is_some(),
             "queue_revision": self.queue_revision, "scheduled_stop": self.scheduled_stop,
             "last_error": self.last_error
         })
     }
     pub fn queue_changed_since(&self, old: &Self) -> bool {
-        self.current_id != old.current_id
+        self.queue_current_id() != old.queue_current_id()
             || self.play_next != old.play_next
             || self
                 .queue

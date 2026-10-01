@@ -24,6 +24,11 @@ use tokio::{
 };
 
 type Answer = oneshot::Sender<Reply>;
+enum ImportPlayback {
+    Enqueue,
+    Play,
+    Direct,
+}
 struct Observers {
     events: broadcast::Sender<Event>,
     media: crate::media_controls::Controls,
@@ -43,7 +48,7 @@ enum Work {
     },
     Imported {
         scan: Scan,
-        play: bool,
+        playback: ImportPlayback,
         answer: Answer,
     },
 }
@@ -331,6 +336,51 @@ fn worker(
                     )));
                 } else {
                     match command {
+                        Command::PlayDirect { path, track } => {
+                            if path.is_some() == track.is_some() {
+                                let _ = answer.send(Reply::failure(ApiError::new(
+                                    "invalid_arguments",
+                                    "Provide exactly one path or library track",
+                                )));
+                                continue;
+                            }
+                            if let Some(id) = track {
+                                let result = (|| -> Result<()> {
+                                    let track = store.track(&id)?.ok_or_else(|| {
+                                        ApiError::new("track_not_found", "Library track not found")
+                                    })?;
+                                    engine.play_direct(track)
+                                })();
+                                finish_command(result, answer, &mut engine, &store, events)?;
+                            } else if let Some(path) = path {
+                                if !path.is_absolute() || !path.is_file() {
+                                    let _ = answer.send(Reply::failure(ApiError::new(
+                                        "invalid_arguments",
+                                        "Direct playback requires one absolute file path",
+                                    )));
+                                    continue;
+                                }
+                                if imports >= 4 {
+                                    let _ = answer.send(Reply::failure(ApiError::new(
+                                        "server_busy",
+                                        "Too many imports in progress",
+                                    )));
+                                    continue;
+                                }
+                                let old = store.records()?;
+                                let cache = paths.cache.clone();
+                                let tx = tx.clone();
+                                imports += 1;
+                                std::thread::spawn(move || {
+                                    let scan = library::scan(&[path], &old, &cache);
+                                    let _ = tx.send(Work::Imported {
+                                        scan,
+                                        playback: ImportPlayback::Direct,
+                                        answer,
+                                    });
+                                });
+                            }
+                        }
                         Command::Shutdown => {
                             store.save(&engine.state)?;
                             engine.stop();
@@ -603,14 +653,22 @@ fn worker(
                                 continue;
                             }
                             let inputs = input_paths.clone();
-                            let play = matches!(command, Command::Play { .. });
+                            let playback = if matches!(command, Command::Play { .. }) {
+                                ImportPlayback::Play
+                            } else {
+                                ImportPlayback::Enqueue
+                            };
                             let cache = paths.cache.clone();
                             let old = store.records()?;
                             let tx = tx.clone();
                             imports += 1;
                             std::thread::spawn(move || {
                                 let scan = library::scan(&inputs, &old, &cache);
-                                let _ = tx.send(Work::Imported { scan, play, answer });
+                                let _ = tx.send(Work::Imported {
+                                    scan,
+                                    playback,
+                                    answer,
+                                });
                             });
                         }
                         Command::QueueAdd {
@@ -672,7 +730,11 @@ fn worker(
                 let _ = events.send(Event::ScanCompleted(job));
                 changed = true;
             }
-            Ok(Work::Imported { scan, play, answer }) => {
+            Ok(Work::Imported {
+                scan,
+                playback,
+                answer,
+            }) => {
                 imports = imports.saturating_sub(1);
                 let result = (|| -> Result<()> {
                     if scan.records.is_empty() {
@@ -681,8 +743,15 @@ fn worker(
                     if !scan.warnings.is_empty() {
                         engine.state.last_error = Some(scan.warnings.join("; "));
                     }
-                    let id = engine.add(scan.records.into_iter().map(|r| r.track).collect())?;
-                    if play {
+                    let tracks: Vec<_> = scan.records.into_iter().map(|r| r.track).collect();
+                    if matches!(playback, ImportPlayback::Direct) {
+                        if tracks.len() != 1 {
+                            anyhow::bail!("Direct playback requires one audio file");
+                        }
+                        return engine.play_direct(tracks.into_iter().next().unwrap());
+                    }
+                    let id = engine.add(tracks)?;
+                    if matches!(playback, ImportPlayback::Play) {
                         engine.apply(&Command::Play {
                             paths: vec![],
                             track: None,
@@ -889,6 +958,32 @@ mod agent_tests {
             }],
         }
     }
+    #[test]
+    fn batch_edits_preserve_direct_output_and_continue_after_a_removed_cursor() {
+        let (_home, mut store, mut engine) = setup();
+        let cursor = engine.state.current_id.clone().unwrap();
+        let direct = QueueItem::new(engine.state.queue[0].track.clone());
+        engine.state.current_id = Some(direct.id.clone());
+        engine.state.direct = Some(Box::new(direct.clone()));
+        engine.state.queue_cursor = Some(cursor.clone());
+        let position = engine.state.position_ms;
+        edit_queue(&mut engine, &mut store, &add(), false, Some(0), None).unwrap();
+        assert_eq!(engine.state.queue[0].id, cursor);
+        let pending = engine.state.play_next.clone();
+        let removal = QueueEdit {
+            operations: vec![QueueOperation::Remove {
+                queue_item_ids: vec![cursor],
+            }],
+        };
+        edit_queue(&mut engine, &mut store, &removal, false, None, None).unwrap();
+        assert!(engine.state.queue_cursor.is_none());
+        assert_eq!(engine.state.current(), Some(&direct));
+        assert_eq!(engine.state.position_ms, position);
+        assert_eq!(engine.state.status, PlaybackStatus::Playing);
+        assert_eq!(engine.state.play_next, pending);
+        assert_eq!(store.restore().unwrap().current(), Some(&direct));
+    }
+
     #[test]
     fn batch_replay_precedes_revision_check_and_survives_restart() {
         let (home, mut store, mut engine) = setup();

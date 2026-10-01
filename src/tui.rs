@@ -38,7 +38,7 @@ use tokio::sync::{mpsc, watch};
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nv       Toggle spectrum\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -159,6 +159,11 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = crossterm::execute!(std::io::stdout(), event::DisableBracketedPaste);
+        if std::env::var_os("TMUX").is_some() {
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[>4;0m"));
+        } else {
+            let _ = crossterm::execute!(std::io::stdout(), event::PopKeyboardEnhancementFlags);
+        }
         ratatui::restore();
     }
 }
@@ -189,6 +194,17 @@ pub async fn run(
     let _guard = TerminalGuard;
     crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)?;
     let (artwork, _passthrough) = Artwork::detect(art);
+    // Request distinct modified Enter events without changing tmux configuration.
+    if std::env::var_os("TMUX").is_some() {
+        crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[>4;2m"))?;
+    } else {
+        crossterm::execute!(
+            std::io::stdout(),
+            event::PushKeyboardEnhancementFlags(
+                event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )?;
+    }
     let (messages, mut incoming) = mpsc::unbounded_channel();
     let (commands, mut requests) = mpsc::channel::<Command>(64);
     let (resize_tx, resize_rx) = sync_mpsc::channel::<ResizeRequest>();
@@ -1176,18 +1192,24 @@ impl App {
                     .and_then(|i| self.tracks.get(i))
                 {
                     let id = track.id.clone();
-                    let command = if key.code == KeyCode::Enter {
-                        Command::Play {
-                            paths: vec![],
-                            track: Some(id),
-                            queue_item: None,
-                        }
-                    } else {
-                        Command::QueueAdd {
-                            paths: vec![],
-                            track: Some(id),
-                        }
-                    };
+                    let command =
+                        if key.code == KeyCode::Enter && key.modifiers == KeyModifiers::CONTROL {
+                            Command::PlayDirect {
+                                path: None,
+                                track: Some(id),
+                            }
+                        } else if key.code == KeyCode::Enter {
+                            Command::Play {
+                                paths: vec![],
+                                track: Some(id),
+                                queue_item: None,
+                            }
+                        } else {
+                            Command::QueueAdd {
+                                paths: vec![],
+                                track: Some(id),
+                            }
+                        };
                     self.send(commands, command);
                 }
             }
@@ -1480,7 +1502,15 @@ impl App {
     }
     fn now_playing(&mut self, frame: &mut Frame, area: Rect, spectrum: bool) {
         let p = self.theme.palette();
-        let panel = block(p, " NOW PLAYING ", false);
+        let panel = block(
+            p,
+            if self.state.direct.is_some() {
+                " NOW PLAYING · NO QUEUE "
+            } else {
+                " NOW PLAYING "
+            },
+            false,
+        );
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
         let (cover, info) = if spectrum {
@@ -1880,6 +1910,63 @@ mod tests {
         app.library_selection.select(Some(0));
         app.queue_selection.select(Some(0));
         app
+    }
+
+    #[test]
+    fn direct_play_requires_ctrl_enter_in_library_and_does_not_focus_queue() {
+        let mut app = navigation_app(3);
+        let (commands, mut requests) = mpsc::channel(16);
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        app.key(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(requests.try_recv().is_err());
+        app.key(key, &commands).unwrap();
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::PlayDirect { track: Some(id), path: None } if id == "0")
+        );
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::Play { track: Some(_), .. }
+        ));
+        app.viewport = Rect::new(0, 0, 100, 24);
+        app.spectrum.enabled = true;
+        app.key(key, &commands).unwrap();
+        assert!(requests.try_recv().is_err());
+        app.spectrum.enabled = false;
+        app.help = true;
+        app.key(key, &commands).unwrap();
+        assert!(requests.try_recv().is_err());
+        app.help = false;
+        app.library_jump = Some(ListEdge::Last);
+        app.tracks.clear();
+        app.key(key, &commands).unwrap();
+        assert!(requests.try_recv().is_err());
+
+        let mut state = app.state.clone();
+        let item = QueueItem::new(state.queue[1].track.clone());
+        state.current_id = Some(item.id.clone());
+        state.direct = Some(Box::new(item));
+        state.queue_cursor = Some(state.queue[1].id.clone());
+        state.status = PlaybackStatus::Playing;
+        let (messages, _incoming) = mpsc::unbounded_channel();
+        app.message(Message::Connected(state), &messages, &commands);
+        assert!(app.focus == Focus::Library);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("NOW PLAYING · NO QUEUE"));
+        assert!(text.contains("Track 1"));
     }
 
     #[test]

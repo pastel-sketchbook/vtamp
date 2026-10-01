@@ -59,7 +59,10 @@ def snapshot(binary, home):
             state = json.loads(row[0]) if row else {}
             if doctor["server_reachable"]:
                 state = json.loads(run([binary, "status", "--json"]))["data"]
-            current = next((item for item in state.get("queue", [])
+            candidates = list(state.get("queue", []))
+            if state.get("direct"):
+                candidates.append(state["direct"])
+            current = next((item for item in candidates
                             if item["id"] == state.get("current_id")), None)
             if not current or not Path(current["track"].get("cover") or "").is_file():
                 raise RuntimeError("Select a track with album art in vtamp before capturing.")

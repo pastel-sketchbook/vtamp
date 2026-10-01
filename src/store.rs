@@ -17,7 +17,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
         if version == 0 {
@@ -63,6 +63,10 @@ impl Store {
             imports::migrate_albums(&tx)?;
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
+        }
+        if version < 5 {
+            // Older binaries cannot restore a current item outside the queue.
+            db.execute_batch("BEGIN; PRAGMA user_version = 5; COMMIT;")?;
         }
         Ok(Self { db })
     }
@@ -218,7 +222,11 @@ impl Store {
             .optional()?;
         match row {
             Some((previous, reply)) if previous == payload => {
-                Ok(Some(serde_json::from_str(&reply)?))
+                let mut reply: Reply = serde_json::from_str(&reply)?;
+                // The result is historical, but its envelope uses this server's
+                // protocol even when the receipt predates a database upgrade.
+                reply.version = crate::model::PROTOCOL_VERSION;
+                Ok(Some(reply))
             }
             Some(_) => Err(ApiError::new(
                 "request_id_conflict",
@@ -342,6 +350,61 @@ mod tests {
     use super::*;
     use crate::model::QueueItem;
     #[test]
+    fn old_receipt_replays_with_current_protocol_without_losing_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let db = Store::open(&path).unwrap();
+        let mut reply = Reply::success(serde_json::json!({"queue_revision": 7}));
+        reply.version = 4;
+        db.db
+            .execute(
+                "INSERT INTO requests VALUES(?1,?2,?3,?4)",
+                params![
+                    "receipt",
+                    "payload",
+                    serde_json::to_string(&reply).unwrap(),
+                    1000
+                ],
+            )
+            .unwrap();
+        db.db.pragma_update(None, "user_version", 4).unwrap();
+        drop(db);
+        let db = Store::open(&path).unwrap();
+        let replay = db.replay("receipt", "payload", 500).unwrap().unwrap();
+        assert_eq!(replay.version, crate::model::PROTOCOL_VERSION);
+        assert_eq!(replay.data, reply.data);
+        assert!(db.replay("receipt", "changed", 500).is_err());
+    }
+
+    #[test]
+    fn direct_session_restores_paused_with_its_queue_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let db = Store::open(&path).unwrap();
+        let queued = QueueItem::new(record("queued", "Queued", "Artist", "").track);
+        let direct = QueueItem::new(record("direct", "Direct", "Artist", "").track);
+        let state = State {
+            current_id: Some(direct.id.clone()),
+            direct: Some(Box::new(direct.clone())),
+            queue_cursor: Some(queued.id.clone()),
+            queue: vec![queued.clone()],
+            status: PlaybackStatus::Playing,
+            position_ms: 500,
+            volume: 12,
+            ..State::default()
+        };
+        db.save(&state).unwrap();
+        drop(db);
+        let restored = Store::open(&path).unwrap().restore().unwrap();
+        assert_eq!(restored.current(), Some(&direct));
+        assert_eq!(restored.queue, std::slice::from_ref(&queued));
+        assert_eq!(restored.queue_current_id(), Some(queued.id.as_str()));
+        assert_eq!(restored.status, PlaybackStatus::Paused);
+        assert_eq!(restored.position_ms, 500);
+        assert_eq!(restored.volume, 12);
+    }
+
+    #[test]
     fn persisted_playback_restores_paused() {
         let dir = tempfile::tempdir().unwrap();
         let db = Store::open(&dir.path().join("test.db")).unwrap();
@@ -420,7 +483,7 @@ mod tests {
                 .db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            4
+            5
         );
         let filter = SearchFilter {
             exclude: vec!["LIVE".into()],

@@ -45,6 +45,10 @@ without yt-dlp; connection tests send only a generic acknowledgement request.
 Users retain source links and can edit title/artist/album.
 Albums are optional; absent or cleared albums are omitted from the TUI.
 
+Library Ctrl+Enter and CLI `play --no-queue` play one track outside the queue,
+then continue the existing queue. Queue contents and the previous playback cursor
+remain intact. Direct tracks also survive a server restart, restored paused.
+
 ## Brand Commitments
 
 Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.

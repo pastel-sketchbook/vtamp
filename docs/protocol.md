@@ -1,4 +1,4 @@
-# Local protocol, version 4
+# Local protocol, version 5
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":4,"request":{"command":"pause"}}
+{"version":5,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":4,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":5,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -26,18 +26,35 @@ The server has one state/SQLite owner and serializes received commands. Independ
 
 `play` with a library `track` ID reuses the current queue entry if its track matches, otherwise the first matching entry in queue order. It appends only when no match exists. The server resolves this against its current state, so repeated requests do not create duplicates. `queue_add` always appends and permits duplicates; existing duplicates are never removed automatically.
 
+`play_direct` accepts exactly one of `track` (library ID) or `path` (one absolute
+audio file, not a directory). It starts playback without changing queue contents
+or its cursor. State has nullable `direct`, with the same `{id, track}` shape as a
+queue item, and nullable `queue_cursor`, remembering the last queued entry while
+direct playback is active. `current_id` identifies either `direct` or a queued
+item. `now.current` resolves either source, and `now.current_in_queue` distinguishes
+them. Direct playback IDs are not valid queue-edit targets.
+
+Natural completion and manual next continue after `queue_cursor`, with normal
+play-next/shuffle priority; no cursor means start at the front. Repeat-one repeats
+the direct track. Repeat-all wraps the queue, or repeats the direct track if the
+queue is empty. Previous restarts a direct track. Queue clearing leaves direct
+playback running. Removing the remembered cursor moves it to the preceding entry
+(or null), preserving the next position. Direct-to-direct changes do not advance
+`queue_revision`; the saved queue cursor remains part of queue revision checks.
+After-current reservations bind to the playback ID, including direct playback.
+
 At most four direct imports and one catalog scan run at a time. There are bounded connection/command/event limits. Busy errors are recoverable; retry after backoff and inspection as appropriate.
 
 ## Watch
 
-Send `{"version":4,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":5,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":4,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null}}}
+{"version":5,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null}}}
 ```
 
 ```json
-{"version":4,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":5,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -46,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":4,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":5,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -141,9 +158,11 @@ client disconnects do not.
 
 ## Compatibility and storage
 
-All envelopes advertise protocol 4. Clients must report `version_mismatch` when
+All envelopes advertise protocol 5. Clients must report `version_mismatch` when
 connected to older versions; restart with matching binaries and reattach clients.
-Database version 4 adds a nullable album override and replaces legacy missing-album
+Database version 5 protects saved direct-playback items and queue cursors from
+older binaries; previous sessions load with both fields null. Direct playback also
+restores paused at its saved position. Database version 4 adds a nullable album override and replaces legacy missing-album
 placeholders with empty strings in the catalog, search index, and saved queue.
 Structured source albums are applied when available. Version 3 first adds import
 jobs/items and metadata/source records; version 2 adds normalized field columns,

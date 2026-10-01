@@ -301,7 +301,12 @@ pub(super) fn update_queue_metadata(
     events: &broadcast::Sender<Event>,
 ) -> Result<()> {
     let mut changed = false;
-    for item in &mut engine.state.queue {
+    for item in engine
+        .state
+        .queue
+        .iter_mut()
+        .chain(engine.state.direct.as_deref_mut())
+    {
         if item.track.id == track.id {
             item.track = track.clone();
             changed = true;

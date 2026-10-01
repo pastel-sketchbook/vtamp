@@ -52,13 +52,18 @@ Tab, Ctrl-W w, and Ctrl-W Ctrl-W switch Library/Queue. Both Ctrl-W sequences
 follow Tab's behavior when returning from the spectrum, and do not switch panels
 inside prompts or overlays. Any other intervening key cancels the prefix.
 
+Library Ctrl+Enter plays outside the queue; Enter retains its existing queue
+behavior. Mark direct playback with `NO QUEUE` in the Now Playing border and keep
+Library focus on attachment. Do not mark a queued copy as currently playing.
+Preserve the help dialog's line count when documenting the alternate play action.
+
 The website is a Persuade surface. Lead with “Music stays. Your terminal moves on.” and a full-width gallery of the real terminal interface. Follow with the detachable lifecycle, executable CLI examples, and source installation instructions. The headline and introduction share a row above the gallery. Show Wide, Compact Library, and Compact Queue in a fixed image area without cropping; provide full-resolution links. Named layout controls and a pause button accompany a six-second rotation. Hover, keyboard focus, and offscreen state pause rotation; reduced motion disables automatic rotation and fading. Without JavaScript, the first screenshot remains visible.
 
 The lifecycle section also introduces the optional tmux status-bar plugin with a labeled text example, a copyable status format, and a link to installation instructions. The example places music after the pane title without a clock or date; on narrow screens, the title truncates while playback times remain visible.
 
 A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard reference. These are labeled keys, not clickable playback controls. Match the neighboring tmux feature’s spacing and stack copy above the keys on mobile.
 
-The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-4 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
+The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-5 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
 
 ## Audio spectrum
 

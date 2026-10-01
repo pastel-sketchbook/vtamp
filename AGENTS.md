@@ -149,8 +149,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
 
 ## Agent CLI contracts
 
-- Protocol and database versions are 4. New server startup migrates v1/v2/v3 databases
-  with transactional migration steps, preserving IDs; old binaries reject v4. Do not restart the listener
+- Protocol and database versions are 5. New server startup migrates v1/v2/v3/v4 databases
+  with transactional migration steps, preserving IDs; old binaries reject v5. Do not restart the listener
   just to upgrade during an active user listening session.
 - `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
   status are read-only and never auto-start a server. Dry-run edits also must not
@@ -194,6 +194,10 @@ missing-art cases, but their presence is not a portable test prerequisite.
 - Queue entry IDs differ from library track IDs. Library Enter / `play --track`
   reuses the current matching entry, then the first match, and appends only if
   absent. Explicit enqueue permits duplicates. Never silently deduplicate a queue.
+- Library Ctrl+Enter / `play --no-queue` plays a separate item, preserving queue
+  contents, cursor, shuffle pool, and play-next entries. On completion/next, continue
+  from that cursor; previous restarts the direct track. Queue clear must not stop
+  direct playback. Persist and restore it paused. Direct IDs are not queue IDs.
 - Shuffle changes playback order, not visible queue order. New entries must be
   mixed into the remaining unplayed pool without reintroducing visited entries.
   Test both manual next and natural endings. Repeat-one applies only to natural
@@ -210,7 +214,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   Use bounded lossy storage and latest-value streams; no subscribers means no FFT.
   Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
   pause/resume, track changes, and output recovery. SpectrumWatch is an optional
-  protocol-4 stream separate from State/Event, without database or revision writes.
+  protocol-5 stream separate from State/Event, without database or revision writes.
   `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
   Tab returns to the previous list and slash opens Library search. Theme saves and
   spectrum toggles must preserve each other's stored preference.

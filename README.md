@@ -170,6 +170,7 @@ the desktop integration cannot initialize.
 | `r` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |
 | `Enter` | Play a library track, reusing a queue entry if present; or play the selected queue entry |
+| `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `x` / `d` | Remove the selected queue entry |
 | `J` / `K` | Move the selected queue entry down / up |
@@ -184,7 +185,22 @@ when everything fits, only the close hint is shown.
 
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
-Attaching during playback focuses Queue and scrolls to the current entry. Paused or stopped sessions open on Library. Later playback updates and automatic reconnections preserve your navigation. If the saved spectrum view would hide Queue, it starts hidden for this attachment without changing `ui.json`; press `v` to show it.
+**Ctrl+Enter** in Library plays a track without adding it to Queue. Now Playing
+shows **NO QUEUE**. Queue contents, its playback cursor, and pending play-next
+entries stay intact. When the track finishes, or you press `n`, playback continues
+with the next queued entry after the saved cursor; with no cursor, it starts at the
+front. Explicit play-next entries and shuffle retain their usual priority. If
+there is no next entry, playback stops. Repeat-one repeats the direct track;
+repeat-all cycles the queue, or the direct track when the queue is empty. `b`
+restarts the direct track. Clearing Queue does not stop a direct track.
+
+Ctrl+Enter requires a terminal that reports modified Enter separately. vtamp
+requests this mode from Ghostty/Kitty or tmux without changing saved terminal
+settings. Terminals that send plain Enter retain the ordinary Enter behavior;
+the CLI option below is available independently of keyboard support.
+Inside tmux, `extended-keys` must be enabled for Ctrl+Enter to reach the app.
+
+Attaching during queued playback focuses Queue and scrolls to the current entry. Direct playback, paused, or stopped sessions open on Library. Later playback updates and automatic reconnections preserve your navigation. If the saved spectrum view would hide Queue, it starts hidden for this attachment without changing `ui.json`; press `v` to show it.
 
 Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
 
@@ -334,6 +350,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | --- | --- |
 | `play [PATH...]` | Resume, or append paths and play the first new entry |
 | `play --track ID` | Play a library track, reusing a queue entry if present; append only if absent |
+| `play --no-queue --track ID`, `play --no-queue FILE` | Play one library track or audio file outside Queue, then continue the existing queue |
 | `play --queue-item ID` | Play an existing queue entry |
 | `pause`, `resume`, `toggle` | Playback state controls; pause/resume are idempotent |
 | `stop`, `stop --after-current` | Stop now or when the selected track ends |
@@ -385,11 +402,11 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":4,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":5,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":4,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":5,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
 `status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
@@ -399,7 +416,7 @@ Every JSON response has a protocol version and `ok`. Successful responses have `
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":4,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":5,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -547,9 +564,9 @@ cancelling, or restarting the server clears the reservation. Closing the CLI or
 TUI does not. `scheduled_stop` is null or an object with `kind: "after_current"`
 and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds).
 
-### Updating from protocol 1, 2, or 3
+### Updating from protocol 1, 2, 3, or 4
 
-This build uses **protocol 4** and migrates the library to **database version 4**
+This build uses **protocol 5** and migrates the library to **database version 5**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,

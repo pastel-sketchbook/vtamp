@@ -83,6 +83,9 @@ pub enum Action {
         track: Option<String>,
         #[arg(long)]
         queue_item: Option<String>,
+        /// Play one library track or file without adding it to the queue.
+        #[arg(long, conflicts_with = "queue_item")]
+        no_queue: bool,
     },
     /// Pause playback (idempotent).
     Pause,
@@ -707,11 +710,24 @@ pub async fn run(args: Args) -> Result<()> {
             paths,
             track,
             queue_item,
-        } => Command::Play {
-            paths: absolute_paths(paths)?,
-            track,
-            queue_item,
-        },
+            no_queue,
+        } => {
+            if no_queue {
+                if paths.len() + usize::from(track.is_some()) != 1 {
+                    bail!("--no-queue requires exactly one file or --track ID");
+                }
+                Command::PlayDirect {
+                    path: absolute_paths(paths)?.into_iter().next(),
+                    track,
+                }
+            } else {
+                Command::Play {
+                    paths: absolute_paths(paths)?,
+                    track,
+                    queue_item,
+                }
+            }
+        }
         Action::Pause => Command::Pause,
         Action::Resume => Command::Resume,
         Action::Toggle => Command::Toggle,
