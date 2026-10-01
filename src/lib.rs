@@ -8,6 +8,7 @@ pub mod engine;
 pub mod import_config;
 pub mod imports;
 pub mod library;
+pub mod llm;
 pub mod media_controls;
 pub mod metadata;
 pub mod model;

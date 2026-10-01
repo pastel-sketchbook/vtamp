@@ -52,7 +52,7 @@ pub enum Switch {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
-    /// Configure optional metadata inference (does not start playback).
+    /// Configure an optional LLM provider (does not start playback).
     Llm {
         #[command(subcommand)]
         command: IntegrationAction,
@@ -148,8 +148,11 @@ pub enum Action {
 
 #[derive(Debug, Subcommand)]
 pub enum IntegrationAction {
+    /// Save a provider, model, reasoning effort, and credential references.
     Setup,
+    /// Show configuration and selected CLI availability without contacting a model.
     Status,
+    /// Send a short connection test to the configured provider.
     Test,
 }
 #[derive(Debug, Subcommand)]
@@ -408,12 +411,12 @@ pub async fn run(args: Args) -> Result<()> {
             }
             let data = tokio::task::spawn_blocking(move || -> Result<Value> {
                 match command {
-                    IntegrationAction::Setup => crate::import_config::setup(&paths, true),
-                    IntegrationAction::Status => Ok(crate::import_config::capabilities(
-                        &crate::import_config::Config::load(&paths)?,
-                    )),
+                    IntegrationAction::Setup => crate::llm::setup(&paths),
+                    IntegrationAction::Status => {
+                        crate::llm::status(&crate::llm::Config::load(&paths)?, &paths)
+                    }
                     IntegrationAction::Test => {
-                        crate::metadata::test(&crate::import_config::Config::load(&paths)?, &paths)
+                        crate::llm::test(&crate::llm::Config::load(&paths)?, &paths)
                     }
                 }
             })
@@ -431,9 +434,9 @@ pub async fn run(args: Args) -> Result<()> {
             }
             let data = tokio::task::spawn_blocking(move || -> Result<Value> {
                 match command {
-                    YoutubeAction::Setup => crate::import_config::setup(&paths, false),
+                    YoutubeAction::Setup => crate::import_config::setup(&paths),
                     YoutubeAction::Status => Ok(crate::import_config::capabilities(
-                        &crate::import_config::Config::load(&paths)?,
+                        &crate::import_config::YoutubeConfig::load(&paths)?,
                     )),
                 }
             })
@@ -600,7 +603,7 @@ pub async fn run(args: Args) -> Result<()> {
                         Err(_) => {
                             let p = paths.clone();
                             tokio::task::spawn_blocking(move || {
-                                crate::import_config::Config::load(&p)
+                                crate::import_config::YoutubeConfig::load(&p)
                                     .map(|c| crate::import_config::capabilities(&c))
                             })
                             .await??
@@ -1284,7 +1287,6 @@ pub fn command_with_features(available: bool) -> clap::Command {
     if !available {
         command = command
             .mut_subcommand("youtube", |c| c.hide(true))
-            .mut_subcommand("llm", |c| c.hide(true))
             .mut_subcommand("library", |mut c| {
                 for name in [
                     "imports",
@@ -1313,6 +1315,20 @@ pub fn parse_args() -> std::result::Result<Args, clap::Error> {
         .is_some_and(|p| crate::import_config::youtube_available(&p));
     let matches = command_with_features(available).try_get_matches()?;
     Args::from_arg_matches(&matches)
+}
+
+pub(crate) fn prompt(label: &str, default: &str) -> Result<String> {
+    print!("{label} [{default}]: ");
+    io::stdout().flush()?;
+    let mut s = String::new();
+    if io::stdin().read_line(&mut s)? == 0 {
+        bail!("Setup cancelled: input closed");
+    }
+    Ok(if s.trim().is_empty() {
+        default.into()
+    } else {
+        s.trim().into()
+    })
 }
 
 #[cfg(test)]

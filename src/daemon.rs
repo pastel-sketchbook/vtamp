@@ -359,11 +359,14 @@ fn worker(
                         Command::ImportCapabilities => {
                             let paths = paths.clone();
                             youtube.spawn_task(move |stop| {
-                                let result = crate::import_config::Config::load(&paths).map(|c| {
-                                    Reply::success(crate::import_config::capabilities_with_cancel(
-                                        &c, &stop,
-                                    ))
-                                });
+                                let result =
+                                    crate::import_config::YoutubeConfig::load(&paths).map(|c| {
+                                        Reply::success(
+                                            crate::import_config::capabilities_with_cancel(
+                                                &c, &stop,
+                                            ),
+                                        )
+                                    });
                                 let _ = answer.send(result.unwrap_or_else(failure));
                             });
                         }

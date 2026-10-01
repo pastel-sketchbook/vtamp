@@ -161,7 +161,7 @@ automatically. See [configuration and workflows](imports.md).
 | Command | Request fields | Successful data |
 | --- | --- | --- |
 | `import_available` | none | `available` boolean; no subprocesses |
-| `import_capabilities` | none | Tool paths/versions, configuration, `authentication_tested: false` |
+| `import_capabilities` | none | Import tool paths/versions, YouTube configuration, `authentication_tested: false` |
 | `import_preview` | `request` | `preview` with normalized URL, title, playlist flag, entries |
 | `import_lookup` | `video_ids` (up to 10,000) | IDs already present with existing files |
 | `import_start` | `request` | `job_id`, `status: queued` |

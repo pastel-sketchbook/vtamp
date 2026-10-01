@@ -31,7 +31,8 @@ playing when a TUI exits or a tmux client detaches.
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
 | `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
 | `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs` | Optional installed-tool imports, staging, progress, bounded/cancellable child processes |
-| `src/import_config.rs`, `src/metadata.rs` | Import configuration, Keychain references, metadata rules and optional LLM adapters |
+| `src/import_config.rs`, `src/metadata.rs` | Import configuration snapshots, metadata rules and inference validation |
+| `src/llm.rs`, `src/llm/config.rs` | Shared LLM requests, generic connection tests, independent configuration and Keychain references |
 | `src/daemon/imports.rs`, `src/store/imports.rs`, `src/tui/imports.rs` | Import ownership, transactional reports/overrides, optional TUI overlays |
 | `src/platform.rs` | Paths, instance isolation, private runtime directories |
 | `src/cli.rs`, `src/main.rs` | CLI parsing, command dispatch, output and process entry point |
@@ -353,10 +354,13 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
 - Albums are optional. Prefer structured source albums, then audio tags, and do
   not guess missing names. Empty album overrides must survive scans and retagging.
   Omit missing albums and their separators in the TUI; title/artist stay required.
-- Config lives in imports.json. Unconfigured metadata cleanup uses `rules`;
-  explicit `llm setup` defaults to `api`. Only the selected backend may run.
-  API credentials use Keychain or an environment name,
-  never plaintext config. Chrome cookies are opt-in via yt-dlp itself.
+- Import options live in imports.json; shared LLM settings live in llm.json.
+  `llm setup/status/test` work without yt-dlp. The LLM defaults to `none`, while
+  explicit setup defaults to `api`; imports use code rules when it is disabled.
+  Connection tests send only a generic JSON acknowledgement request, never song
+  examples or library data. Only the selected provider may run. API credentials
+  use Keychain or an environment name, never plaintext config. Chrome cookies
+  are opt-in via yt-dlp itself.
 - `tests/imports.rs` uses fake installed tools and isolated servers. Metadata tests
   use local mock HTTP/CLI backends. Real extraction and graphics checks are
   separate; never test against the user's active session or authenticated browser

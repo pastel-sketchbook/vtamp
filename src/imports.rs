@@ -1,6 +1,6 @@
 //! Persistent import jobs. Worker messages are committed by the playback owner.
 use crate::{
-    import_config::{self, Config},
+    import_config::Config,
     library::{self, Record},
     metadata::{self, Metadata},
     model::unix_ms,
@@ -258,9 +258,9 @@ fn work(
     send: &impl Fn(Message) -> bool,
 ) -> Result<()> {
     // Fail only this optional feature when tools are missing. No installation side effects.
-    import_config::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp")?;
-    import_config::executable(config.youtube.ffmpeg.as_deref(), "ffmpeg")?;
-    import_config::executable(config.youtube.ffprobe.as_deref(), "ffprobe")?;
+    subprocess::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp")?;
+    subprocess::executable(config.youtube.ffmpeg.as_deref(), "ffmpeg")?;
+    subprocess::executable(config.youtube.ffprobe.as_deref(), "ffprobe")?;
     job.status = "running".into();
     update(job, "resolving", send);
     let preview = if let Some(ids) = &request.video_ids {
@@ -382,7 +382,7 @@ fn work(
                     artist_override: request.artist.clone(),
                 }
             };
-            import_config::atomic_json(&stage.join("source.json"), &manifest)?;
+            crate::platform::atomic_json(&stage.join("source.json"), &manifest)?;
             let audio = stage.join("audio.m4a");
             let mut track = library::read_track(&audio, manifest.track_id.clone(), &paths.cache)?;
             track.title = manifest

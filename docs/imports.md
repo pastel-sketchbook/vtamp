@@ -105,41 +105,22 @@ Completed files live under the data directory's `imports/youtube/VIDEO_ID/` with
 catalog changes; retry can recover a completed directory after a failed database
 commit. Library deduplication does not remove intentional queue duplicates.
 
-## Optional LLM cleanup
+## Optional LLM inference
 
-`vtamp llm setup` offers `api`, `codex`, `claude`, and `rules`, with `api` selected
-by default in the setup prompt. Choose `rules` to disable LLM cleanup and use
-built-in metadata rules. Without setup, vtamp continues to use `rules` and never
-selects an LLM automatically.
-`vtamp llm status` reports configuration and tool availability;
-`vtamp llm test` explicitly tests the selected provider with bundled sample
-metadata. Missing tools, authentication failures, timeouts, invalid JSON or
-unsupported options fall back to code rules with an item warning. No model or
-reasoning effort is guessed. Structured title/artist fields remain authoritative.
+Imports use conservative built-in rules by default. If a provider is configured
+in the shared `llm.json`, they can use it to extract title and artist information.
+See [LLM configuration and connection tests](llm.md) for setup, credentials, API,
+and installed CLI options. Setup and connection tests are independent of imports.
 
-The API adapter uses an OpenAI-compatible **Chat Completions** base URL, a model
-ID, and optional reasoning effort. Enter `default` to omit reasoning effort. It
-requests JSON Schema output and retries once without the schema parameter if the
-endpoint rejects that parameter. Only bounded metadata is sent, never audio,
-browser cookies, or local file paths. API calls have a 60-second deadline and
-can be cancelled with the job. Model output must supply evidence from the input;
-unsupported fields fall back independently to code rules.
+Structured title/artist fields remain authoritative. Only bounded source metadata
+is sent for inference, never audio, browser cookies, or local file paths. Model
+output must supply evidence from the input; unsupported fields fall back
+independently to built-in rules. Missing tools, authentication failures, timeouts,
+invalid JSON, and unsupported options produce an item warning and use the rules.
+Requests can be cancelled with the import job. Each new job captures both import
+and LLM configuration, so changing settings does not affect queued/running jobs.
 
-API keys can be stored in macOS Keychain (`vtamp.metadata`, scoped to the data
-directory), referenced by an environment variable, or omitted for an unauthenticated
-local endpoint. Environment variables must exist in the **server process** when
-it starts; changing your shell does not change an already running server.
-`imports.json` contains references, never the API key. Configuration is captured
-for each new job; changing it does not change jobs already queued or running.
-
-The CLI adapters use the installed tool's own login, an isolated temporary working
-directory, structured JSON output, and restricted tool/settings options. vtamp
-does not copy their tokens or configuration. Codex must support `exec` with
-`--output-schema`, `--ephemeral`, and `--ignore-user-config`; Claude must support
-`--safe-mode`, `--json-schema`, and `--tools`. Older versions fall back to code
-rules. The selected tool may use its normal subscription or API billing.
-
-For automation, edit the private `imports.json` in the data directory. For example:
+Import options remain separate in `imports.json`. For automation, for example:
 
 ```json
 {
@@ -148,19 +129,9 @@ For automation, edit the private `imports.json` in the data directory. For examp
     "ffmpeg": "/opt/homebrew/bin/ffmpeg",
     "ffprobe": "/opt/homebrew/bin/ffprobe",
     "chrome_cookies": false
-  },
-  "llm": {
-    "provider": "api",
-    "endpoint": "http://localhost:1234/v1",
-    "model": "your-model-id",
-    "effort": null,
-    "key_env": "VTAMP_LLM_API_KEY"
   }
 }
 ```
-
-Remove `key_env` for an endpoint without authentication. Set `provider` to `rules`
-to disable LLM requests. Client preferences remain separate in `ui.json`.
 
 ## Optional Chrome cookies
 

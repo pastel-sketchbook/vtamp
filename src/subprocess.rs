@@ -2,7 +2,8 @@
 use anyhow::{Context, Result, bail};
 use std::{
     io::{Read, Write},
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         Arc,
@@ -25,7 +26,7 @@ pub fn run(
     mut line: impl FnMut(&str),
 ) -> Result<Vec<u8>> {
     if stop.load(Ordering::Relaxed) {
-        bail!("Import cancelled");
+        bail!("Request cancelled");
     }
     command
         .stdin(if input.is_some() {
@@ -81,7 +82,7 @@ pub fn run(
     let status = loop {
         if stop.load(Ordering::Relaxed) || started.elapsed() > timeout {
             failure = Some(if stop.load(Ordering::Relaxed) {
-                "Import cancelled"
+                "Request cancelled"
             } else {
                 "External tool timed out"
             });
@@ -147,6 +148,29 @@ pub fn run(
         bail!("External tool failed: {}", message.trim());
     }
     Ok(output)
+}
+
+pub fn executable(explicit: Option<&Path>, name: &str) -> Result<PathBuf> {
+    let valid = |p: &Path| {
+        p.is_file()
+            && p.metadata()
+                .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    };
+    if let Some(p) = explicit {
+        if p.is_absolute() && valid(p) {
+            return Ok(p.to_owned());
+        }
+        bail!("{name} path must be an absolute executable file");
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path).filter(|p| p.is_absolute()) {
+            let p = dir.join(name);
+            if valid(&p) {
+                return Ok(p);
+            }
+        }
+    }
+    bail!("{name} is not installed or not on PATH")
 }
 
 #[cfg(test)]

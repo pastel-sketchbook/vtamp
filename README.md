@@ -558,7 +558,7 @@ open the migrated database.
 
 On macOS, persistent data lives under `~/Library/Application Support/vtamp/`; cover thumbnails are under `~/Library/Caches/vtamp/covers/`. The control socket is `/tmp/vtamp-<uid>/control.sock`. Directories are private to the current user. A held advisory lock ensures one server, and a later launch recovers stale sockets left by crashes.
 
-`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library, session, metadata overrides, and background job reports. Optional integration settings live in `imports.json`, separate from `ui.json`. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
+`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library, session, metadata overrides, and background job reports. Installed-tool import settings live in `imports.json`; shared LLM settings live in `llm.json`. Use `vtamp llm setup`, `llm status`, or `llm test` to configure and check an optional provider, even without yt-dlp; see [LLM configuration](docs/llm.md). `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
 
 For isolated development or independent test instances, set an absolute, short `VTAMP_HOME`:
 

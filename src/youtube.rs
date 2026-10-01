@@ -1,5 +1,5 @@
 use crate::{
-    import_config::{self, Config},
+    import_config::Config,
     subprocess::{self, Cancel},
 };
 use anyhow::{Context, Result, bail};
@@ -159,7 +159,7 @@ pub fn source(v: &Value) -> Result<Source> {
     })
 }
 pub fn command(config: &Config) -> Result<Command> {
-    let path = import_config::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp")?;
+    let path = subprocess::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp")?;
     let mut cmd = Command::new(path);
     cmd.args([
         "--ignore-config",
@@ -171,7 +171,7 @@ pub fn command(config: &Config) -> Result<Command> {
         "--retries",
         "2",
     ]);
-    if let Ok(deno) = import_config::executable(config.youtube.deno.as_deref(), "deno") {
+    if let Ok(deno) = subprocess::executable(config.youtube.deno.as_deref(), "deno") {
         cmd.arg("--js-runtimes")
             .arg(format!("deno:{}", deno.display()));
     } else if config.youtube.deno.is_some() {
@@ -275,7 +275,7 @@ pub fn download(
         ("ffmpeg", config.youtube.ffmpeg.as_deref()),
         ("ffprobe", config.youtube.ffprobe.as_deref()),
     ] {
-        let executable = import_config::executable(path, name)?;
+        let executable = subprocess::executable(path, name)?;
         std::os::unix::fs::symlink(executable, bin.join(name))?;
     }
     let mut cmd = command(config)?;
@@ -341,7 +341,7 @@ pub fn cover(stage: &Path, config: &Config, stop: &Cancel) -> Result<()> {
         })
         .context("Video has no thumbnail")?;
     let converted = stage.join("thumbnail.png");
-    let ffmpeg = import_config::executable(config.youtube.ffmpeg.as_deref(), "ffmpeg")?;
+    let ffmpeg = subprocess::executable(config.youtube.ffmpeg.as_deref(), "ffmpeg")?;
     subprocess::run(
         Command::new(ffmpeg)
             .args(["-nostdin", "-v", "error", "-y", "-i"])

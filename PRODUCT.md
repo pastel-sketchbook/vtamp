@@ -40,7 +40,9 @@ An installed `yt-dlp` enables optional audio imports. Without it, the interface,
 help, and diagnostics show no integration controls or prompts. Imports run in the
 server with visible progress, per-item failures, cancellation, and retry. Metadata
 uses deterministic rules by default; users can opt into an API or installed CLI
-for metadata cleanup. Users retain source links and can edit title/artist/album.
+for metadata cleanup. LLM configuration is shared across features and available
+without yt-dlp; connection tests send only a generic acknowledgement request.
+Users retain source links and can edit title/artist/album.
 Albums are optional; absent or cleared albums are omitted from the TUI.
 
 ## Brand Commitments

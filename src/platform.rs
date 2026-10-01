@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
+use serde::Serialize;
 use std::{
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    io::Write,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -83,4 +85,24 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
     } else {
         std::env::current_dir()?.join(path)
     })
+}
+
+pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let temp = path.with_file_name(format!(".vtamp-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        serde_json::to_writer_pretty(&mut f, value)?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result
 }

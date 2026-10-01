@@ -128,14 +128,12 @@ impl Runtime {
     ) -> Result<Reply> {
         request.validate()?;
         let config = crate::import_config::Config::load(paths)?;
-        crate::import_config::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp").map_err(
-            |e| {
-                ApiError::new("feature_unavailable", {
-                    let _ = e;
-                    "This optional import feature is unavailable"
-                })
-            },
-        )?;
+        crate::subprocess::executable(config.youtube.yt_dlp.as_deref(), "yt-dlp").map_err(|e| {
+            ApiError::new("feature_unavailable", {
+                let _ = e;
+                "This optional import feature is unavailable"
+            })
+        })?;
         let job = ImportJob::new(&request);
         store.create_import(&job, &request)?;
         self.configs.insert(job.job_id.clone(), config);

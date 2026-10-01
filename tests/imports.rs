@@ -215,7 +215,6 @@ fn absent_downloader_keeps_optional_features_out_of_help() {
             "yt-dlp",
             "playlist",
             "clipboard",
-            "llm",
             "import-status",
         ] {
             assert!(!text.contains(word), "{word}: {text}");
@@ -225,6 +224,28 @@ fn absent_downloader_keeps_optional_features_out_of_help() {
     h.ok(&["server", "start"]);
     let doctor = h.ok(&["doctor"]);
     assert!(doctor.get("imports").is_none());
+}
+
+#[test]
+fn imports_use_shared_llm_settings_and_keep_rule_fallback() {
+    let h = Harness::new();
+    fs::write(
+        h.home.path().join("llm.json"),
+        serde_json::to_vec(&json!({
+            "provider":"api", "endpoint":"invalid-endpoint", "model":"test-model"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let result = h.ok(&["library", "add", URL, "--wait"]);
+    assert_eq!(result["job"]["added"], 1);
+    assert!(
+        result["items"][0]["metadata"]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("LLM unavailable")
+    );
+    assert_eq!(result["items"][0]["metadata"]["method"], "rules");
 }
 
 #[test]
@@ -407,6 +428,11 @@ fn queued_jobs_use_the_configuration_captured_when_submitted() {
     fs::write(
         h.home.path().join("imports.json"),
         b"invalid changed settings",
+    )
+    .unwrap();
+    fs::write(
+        h.home.path().join("llm.json"),
+        b"invalid changed LLM settings",
     )
     .unwrap();
     fs::remove_file(h.home.path().join("bin/slow")).unwrap();
