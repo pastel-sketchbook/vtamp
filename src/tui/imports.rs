@@ -502,7 +502,30 @@ impl App {
             _ => None,
         }
     }
-    pub(super) fn open_source(&mut self, channel: bool) {
+    pub(super) fn open_source(&mut self, channel: bool, commands: &mpsc::Sender<Command>) {
+        self.open_source_with(channel, commands, |url| {
+            let mut child = std::process::Command::new("/usr/bin/open")
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        });
+    }
+    /// Opens the selected track's video page, or its channel page when
+    /// `channel` is set, through `open`. A video page starts playing on its
+    /// own, so a playing track is paused once the browser launch succeeds; a
+    /// channel page plays nothing and leaves playback alone.
+    pub(super) fn open_source_with(
+        &mut self,
+        channel: bool,
+        commands: &mpsc::Sender<Command>,
+        open: impl FnOnce(&str) -> std::io::Result<()>,
+    ) {
         let url = self
             .selected_track()
             .and_then(|t| t.source.as_ref())
@@ -523,20 +546,19 @@ impl App {
             self.notice("Invalid source URL");
             return;
         }
-        match std::process::Command::new("/usr/bin/open")
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                self.notice("Opened YouTube in your browser.");
-            }
-            Err(e) => self.notice(format!("Cannot open browser: {e}")),
+        if let Err(e) = open(&url) {
+            self.notice(format!("Cannot open browser: {e}"));
+            return;
+        }
+        let pause = !channel && self.state.status == PlaybackStatus::Playing;
+        self.notice(if pause {
+            "Opened YouTube in your browser; playback paused."
+        } else {
+            "Opened YouTube in your browser."
+        });
+        if pause {
+            // A failed send replaces the notice with its own reason.
+            self.send(commands, Command::Pause);
         }
     }
     pub(super) fn import_paste(&mut self, text: &str) {

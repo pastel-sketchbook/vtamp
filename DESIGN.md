@@ -117,7 +117,8 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 Show these only after server-side detection of an installed yt-dlp. The existing
 `a` bottom prompt accepts a folder or URL; a playlist opens a preview with an
 explicit Enter confirmation. Single videos start without a mandatory metadata
-form. `i` opens jobs, `m` edits title/artist/album, and `o`/`O` open video/channel links.
+form. `i` opens jobs, `m` edits title/artist/album, and `o`/`O` open video/channel
+links; `o` also pauses a playing track, since the video page plays on its own.
 Album is optional: an empty value hides the album and its separator in Library
 and omits the album line in Now Playing. The editor uses Tab/Shift-Tab to change
 fields, Ctrl-U to clear, and Enter to save. Keep the active field visible even

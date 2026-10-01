@@ -124,7 +124,9 @@ Older `Unknown album` placeholders are cleared automatically on server upgrade.
 
 Imported tracks retain their original title, video ID/URL, channel identity and
 link, bounded description, and any structured music metadata. Press `o` for the
-selected track's video or `O` for its channel in the system browser. Track JSON
+selected track's video or `O` for its channel in the system browser. A video
+page starts playing by itself, so `o` pauses a playing track once the browser
+launches; `O` leaves playback alone, and neither key resumes anything. Track JSON
 contains this information in `source` (`provider: youtube`).
 
 Downloads select audio only, preferring m4a; FFmpeg extracts/converts to m4a when

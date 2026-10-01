@@ -617,7 +617,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video (pauses playback) / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -1290,7 +1290,7 @@ impl App {
                 }
             }
             KeyCode::Char('o' | 'O') if self.import_ui.enabled => {
-                self.open_source(key.code == KeyCode::Char('O'))
+                self.open_source(key.code == KeyCode::Char('O'), commands)
             }
             KeyCode::Char('r') => self.send(commands, Command::LibraryScan),
             KeyCode::Char(' ') => self.send(commands, Command::Toggle),
@@ -3503,6 +3503,95 @@ mod tests {
         assert!(text.contains("stream URL"));
         assert!(!text.to_lowercase().contains("youtube"));
         assert!(text.contains("folder"));
+    }
+
+    /// An app with the import UI enabled and one YouTube-sourced track selected.
+    fn youtube_app(status: PlaybackStatus) -> App {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.tracks = vec![Track {
+            id: "track".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/example.m4a".into(),
+            },
+            title: "Song".into(),
+            artist: "Singer".into(),
+            album: String::new(),
+            track_number: 1,
+            duration_ms: Some(180_000),
+            cover: None,
+            source: Some(crate::youtube::Source {
+                video_id: "abc123".into(),
+                channel_url: Some("https://www.youtube.com/channel/UCtest".into()),
+                ..Default::default()
+            }),
+        }];
+        app.total = 1;
+        app.library_selection.select(Some(0));
+        app.state.status = status;
+        app
+    }
+
+    #[test]
+    fn opening_the_video_pauses_a_playing_track() {
+        let mut app = youtube_app(PlaybackStatus::Playing);
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut opened = None;
+        app.open_source_with(false, &commands, |url| {
+            opened = Some(url.to_owned());
+            Ok(())
+        });
+        assert_eq!(
+            opened.as_deref(),
+            Some("https://www.youtube.com/watch?v=abc123")
+        );
+        assert!(matches!(requests.try_recv(), Ok(Command::Pause)));
+        assert!(requests.try_recv().is_err());
+        assert!(app.notice.contains("paused"), "{}", app.notice);
+    }
+
+    #[test]
+    fn opening_the_channel_or_a_paused_video_leaves_playback_alone() {
+        let mut app = youtube_app(PlaybackStatus::Playing);
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut opened = None;
+        app.open_source_with(true, &commands, |url| {
+            opened = Some(url.to_owned());
+            Ok(())
+        });
+        assert_eq!(
+            opened.as_deref(),
+            Some("https://www.youtube.com/channel/UCtest")
+        );
+        assert!(requests.try_recv().is_err());
+        assert!(!app.notice.contains("paused"), "{}", app.notice);
+        for status in [PlaybackStatus::Paused, PlaybackStatus::Stopped] {
+            let mut app = youtube_app(status);
+            app.open_source_with(false, &commands, |_| Ok(()));
+            assert!(requests.try_recv().is_err());
+            assert!(!app.notice.contains("paused"), "{}", app.notice);
+        }
+    }
+
+    #[test]
+    fn a_failed_browser_launch_does_not_pause() {
+        let mut app = youtube_app(PlaybackStatus::Playing);
+        let (commands, mut requests) = mpsc::channel(16);
+        app.open_source_with(false, &commands, |_| {
+            Err(std::io::Error::other("no browser"))
+        });
+        assert!(requests.try_recv().is_err());
+        assert!(app.notice.contains("Cannot open browser"), "{}", app.notice);
+        // Without a source link nothing is launched and nothing is paused.
+        app.tracks[0].source = None;
+        let mut launched = false;
+        app.open_source_with(false, &commands, |_| {
+            launched = true;
+            Ok(())
+        });
+        assert!(!launched);
+        assert!(requests.try_recv().is_err());
+        assert_eq!(app.state.status, PlaybackStatus::Playing);
     }
 
     #[test]
