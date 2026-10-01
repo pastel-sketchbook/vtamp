@@ -155,7 +155,7 @@ impl Store {
                     path: PathBuf::new(),
                     title: m.metadata.title,
                     artist: m.metadata.artist,
-                    album: "Unknown album".into(),
+                    album: m.source.music_album.clone().unwrap_or_default(),
                     duration_ms: 0,
                     track_number: 0,
                     cover: None,
@@ -182,13 +182,19 @@ impl Store {
         id: &str,
         title: Option<String>,
         artist: Option<String>,
+        album: Option<String>,
         automatic: Option<Metadata>,
     ) -> Result<Track> {
-        if title.is_none() && artist.is_none() && automatic.is_none() {
-            bail!("Specify a title or artist to edit");
+        if title.is_none() && artist.is_none() && album.is_none() && automatic.is_none() {
+            bail!("Specify a title, artist or album to edit");
         }
         for s in [&title, &artist].into_iter().flatten() {
             crate::imports::validate_text(s)?;
+        }
+        if let Some(s) = &album
+            && (s.len() > 2048 || s.chars().any(char::is_control))
+        {
+            bail!("Album must be at most 2048 bytes and contain no control characters");
         }
         let s: String = self
             .db
@@ -208,7 +214,7 @@ impl Store {
             "INSERT OR IGNORE INTO track_metadata(id,metadata) VALUES(?1,?2)",
             params![id, serde_json::to_string(&metadata)?],
         )?;
-        if title.is_none() && artist.is_none() {
+        if title.is_none() && artist.is_none() && album.is_none() {
             tx.execute(
                 "UPDATE track_metadata SET metadata=?2 WHERE id=?1",
                 params![id, serde_json::to_string(&metadata)?],
@@ -223,6 +229,12 @@ impl Store {
         if let Some(a) = artist {
             tx.execute(
                 "UPDATE track_metadata SET artist_override=?2 WHERE id=?1",
+                params![id, a.trim()],
+            )?;
+        }
+        if let Some(a) = album {
+            tx.execute(
+                "UPDATE track_metadata SET album_override=?2 WHERE id=?1",
                 params![id, a.trim()],
             )?;
         }
@@ -248,9 +260,15 @@ fn save_item(tx: &rusqlite::Transaction<'_>, job: &str, item: &ImportItem) -> Re
     Ok(())
 }
 pub(super) fn apply_metadata(tx: &rusqlite::Transaction<'_>, track: &mut Track) -> Result<()> {
-    type Saved = (String, Option<String>, Option<String>, Option<String>);
-    let row:Option<Saved>=tx.query_row("SELECT metadata,title_override,artist_override,manifest FROM track_metadata WHERE id=?1",[&track.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-    if let Some((json, title, artist, manifest)) = row {
+    type Saved = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row:Option<Saved>=tx.query_row("SELECT metadata,title_override,artist_override,manifest,album_override FROM track_metadata WHERE id=?1",[&track.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    if let Some((json, title, artist, manifest, album)) = row {
         let m: Metadata = serde_json::from_str(&json)?;
         track.title = title.unwrap_or(m.title);
         track.artist = artist.unwrap_or(m.artist);
@@ -258,11 +276,16 @@ pub(super) fn apply_metadata(tx: &rusqlite::Transaction<'_>, track: &mut Track) 
             let m: crate::imports::Manifest = serde_json::from_str(&s)?;
             track.source = Some(m.source);
         }
+        track.apply_source_album();
+        if let Some(album) = album {
+            track.album = album;
+        }
     } else if track.source.is_some()
         && let Some(parent) = track.path.parent()
         && let Ok(m) = crate::imports::read_manifest(parent)
     {
         tx.execute("INSERT OR IGNORE INTO track_metadata(id,video_id,manifest,metadata,title_override,artist_override) VALUES(?1,?2,?3,?4,?5,?6)",params![track.id,m.source.video_id,serde_json::to_string(&m)?,serde_json::to_string(&m.metadata)?,m.title_override,m.artist_override])?;
+        track.apply_source_album();
     }
     Ok(())
 }
@@ -272,9 +295,138 @@ pub(super) fn write_record(tx: &rusqlite::Transaction<'_>, record: &Record) -> R
     Ok(())
 }
 
+pub(super) fn migrate_albums(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let rows = tx
+        .prepare("SELECT json FROM tracks")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut albums = std::collections::HashMap::new();
+    for json in rows {
+        let mut record: Record = serde_json::from_str(&json)?;
+        apply_metadata(tx, &mut record.track)?;
+        record.track.album = record.track.album_name().unwrap_or_default().to_owned();
+        write_record(tx, &record)?;
+        albums.insert(record.track.id, record.track.album);
+    }
+    let saved: Option<String> = tx
+        .query_row("SELECT json FROM session WHERE id=1", [], |r| r.get(0))
+        .optional()?;
+    if let Some(json) = saved {
+        let mut state: State = serde_json::from_str(&json)?;
+        for item in &mut state.queue {
+            if let Some(album) = albums.get(&item.track.id) {
+                item.track.album = album.clone();
+            } else {
+                item.track.apply_source_album();
+            }
+        }
+        tx.execute(
+            "UPDATE session SET json=?1 WHERE id=1",
+            [serde_json::to_string(&state)?],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn v3_migration_cleans_albums_and_preserves_queue_and_overrides() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.db");
+        let mut original = Store::open(&path).unwrap();
+        let mut state = State {
+            volume: 37,
+            position_ms: 1234,
+            queue_revision: 9,
+            ..Default::default()
+        };
+        let tx = original.db.transaction().unwrap();
+        for (id, album, source_album) in [
+            ("missing", "Unknown album", None),
+            ("structured", "Unknown album", Some("Source album")),
+            ("tagged", "File album", None),
+        ] {
+            let source = crate::youtube::Source {
+                video_id: id.into(),
+                music_album: source_album.map(str::to_owned),
+                ..Default::default()
+            };
+            let record = Record {
+                track: Track {
+                    id: id.into(),
+                    path: format!("/{id}.m4a").into(),
+                    title: "Manual title".into(),
+                    artist: "Artist".into(),
+                    album: album.into(),
+                    track_number: 0,
+                    duration_ms: 180_000,
+                    cover: None,
+                    source: Some(source.clone()),
+                },
+                modified: 0,
+                bytes: 1,
+            };
+            write_record(&tx, &record).unwrap();
+            let metadata = Metadata {
+                title: "Automatic title".into(),
+                artist: "Artist".into(),
+                method: "code".into(),
+                warning: None,
+            };
+            let manifest = crate::imports::Manifest {
+                track_id: id.into(),
+                source,
+                metadata: metadata.clone(),
+                title_override: None,
+                artist_override: None,
+            };
+            tx.execute("INSERT INTO track_metadata(id,video_id,manifest,metadata,title_override) VALUES(?1,?1,?2,?3,'Manual title')",
+                params![id, serde_json::to_string(&manifest).unwrap(), serde_json::to_string(&metadata).unwrap()]).unwrap();
+            state.queue.push(crate::model::QueueItem::new(record.track));
+        }
+        tx.commit().unwrap();
+        state.current_id = Some(state.queue[0].id.clone());
+        state.play_next = vec![state.queue[2].id.clone()];
+        original.save(&state).unwrap();
+        original
+            .db
+            .execute_batch(
+                "ALTER TABLE track_metadata DROP COLUMN album_override; PRAGMA user_version=3;",
+            )
+            .unwrap();
+        drop(original);
+
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.track("missing").unwrap().unwrap().album, "");
+        assert_eq!(
+            store.track("structured").unwrap().unwrap().album,
+            "Source album"
+        );
+        assert_eq!(store.track("tagged").unwrap().unwrap().album, "File album");
+        assert_eq!(
+            store.track("structured").unwrap().unwrap().title,
+            "Manual title"
+        );
+        assert_eq!(store.search("Unknown album", 0, 10).unwrap().1, 0);
+        assert_eq!(store.search("Source album", 0, 10).unwrap().1, 1);
+        let restored = store.restore().unwrap();
+        assert_eq!(restored.volume, state.volume);
+        assert_eq!(restored.position_ms, state.position_ms);
+        assert_eq!(restored.current_id, state.current_id);
+        assert_eq!(restored.play_next, state.play_next);
+        assert_eq!(restored.queue_revision, state.queue_revision);
+        for (i, album) in ["", "Source album", "File album"].into_iter().enumerate() {
+            assert_eq!(restored.queue[i].id, state.queue[i].id);
+            assert_eq!(restored.queue[i].track.album, album);
+        }
+        store
+            .edit_metadata("structured", None, None, Some(String::new()), None)
+            .unwrap();
+        assert_eq!(store.track("structured").unwrap().unwrap().album, "");
+    }
+
     #[test]
     fn v2_migration_preserves_session_and_import_history_is_bounded() {
         let directory = tempfile::tempdir().unwrap();

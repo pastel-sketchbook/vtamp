@@ -131,6 +131,7 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
                             track.artist =
                                 manifest.artist_override.unwrap_or(manifest.metadata.artist);
                             track.source = Some(manifest.source);
+                            track.apply_source_album();
                         }
                         Ok(Some(Record {
                             track,
@@ -209,7 +210,7 @@ pub fn read_track(path: &Path, id: String, cache: &Path) -> Result<Track> {
     let album = tag
         .and_then(|t| t.album())
         .map(|s| clean(&s))
-        .unwrap_or_else(|| "Unknown album".into());
+        .unwrap_or_default();
     let track_number = tag.and_then(|t| t.track()).unwrap_or(0);
     let mut cover = None;
     if let Some(picture) = tag.and_then(|t| {
@@ -296,10 +297,7 @@ fn read_mp4(path: &Path, id: String, cache: &Path) -> Result<Track> {
             .artist()
             .map(clean)
             .unwrap_or_else(|| "Unknown artist".into()),
-        album: tag
-            .album()
-            .map(clean)
-            .unwrap_or_else(|| "Unknown album".into()),
+        album: tag.album().map(clean).unwrap_or_default(),
         track_number: tag.track_number().unwrap_or(0).into(),
         duration_ms: tag.duration().as_millis() as u64,
         cover,

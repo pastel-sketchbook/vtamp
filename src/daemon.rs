@@ -309,7 +309,7 @@ fn worker(
             }
             Ok(Work::Retag { id, result, answer }) => {
                 let result = store
-                    .edit_metadata(&id, None, None, Some(result))
+                    .edit_metadata(&id, None, None, None, Some(result))
                     .and_then(|track| {
                         imports::update_queue_metadata(&track, &mut engine, &store, events)?;
                         Ok(Reply::success(track))
@@ -367,19 +367,23 @@ fn worker(
                                 let _ = answer.send(result.unwrap_or_else(failure));
                             });
                         }
-                        Command::LibraryEdit { id, title, artist } => {
-                            let result =
-                                store
-                                    .edit_metadata(&id, title, artist, None)
-                                    .and_then(|track| {
-                                        imports::update_queue_metadata(
-                                            &track,
-                                            &mut engine,
-                                            &store,
-                                            events,
-                                        )?;
-                                        Ok(Reply::success(track))
-                                    });
+                        Command::LibraryEdit {
+                            id,
+                            title,
+                            artist,
+                            album,
+                        } => {
+                            let result = store
+                                .edit_metadata(&id, title, artist, album, None)
+                                .and_then(|track| {
+                                    imports::update_queue_metadata(
+                                        &track,
+                                        &mut engine,
+                                        &store,
+                                        events,
+                                    )?;
+                                    Ok(Reply::success(track))
+                                });
                             let _ = answer.send(result.unwrap_or_else(failure));
                         }
                         Command::LibraryRetag { id } => {

@@ -339,6 +339,9 @@ pub enum Library {
         title: Option<String>,
         #[arg(long)]
         artist: Option<String>,
+        /// Set the album; pass an empty string to clear it.
+        #[arg(long)]
+        album: Option<String>,
     },
     Retag {
         id: String,
@@ -798,13 +801,25 @@ pub async fn run(args: Args) -> Result<()> {
             },
             Library::ImportCancel { id } => Command::ImportCancel { id },
             Library::ImportRetry { id } => Command::ImportRetry { id },
-            Library::Edit { id, title, artist } => {
-                if title.is_none() && artist.is_none() {
-                    return Err(
-                        ApiError::new("invalid_arguments", "Specify --title or --artist").into(),
-                    );
+            Library::Edit {
+                id,
+                title,
+                artist,
+                album,
+            } => {
+                if title.is_none() && artist.is_none() && album.is_none() {
+                    return Err(ApiError::new(
+                        "invalid_arguments",
+                        "Specify --title, --artist or --album",
+                    )
+                    .into());
                 }
-                Command::LibraryEdit { id, title, artist }
+                Command::LibraryEdit {
+                    id,
+                    title,
+                    artist,
+                    album,
+                }
             }
             Library::Retag { id } => Command::LibraryRetag { id },
             Library::Remove { path, .. } => Command::LibraryRemove {

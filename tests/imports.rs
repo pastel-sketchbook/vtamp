@@ -39,7 +39,7 @@ if '--flat-playlist' in args:
 if video=='FAILED00001' and not (base/'repair').exists():
  print('Video unavailable',file=sys.stderr);sys.exit(1)
 if '--dump-single-json' in args:
- print(json.dumps({{'id':video,'title':"이승환 + 정준일 '어떻게 사랑이 그래요'",'channel':'이승환 LEE SEUNG HWAN','channel_id':'UCtest','live_status':'not_live'}}));sys.exit(0)
+ print(json.dumps({{'id':video,'title':"이승환 + 정준일 '어떻게 사랑이 그래요'",'channel':'이승환 LEE SEUNG HWAN','channel_id':'UCtest','live_status':'not_live','album':(base/'album').read_text() if (base/'album').exists() else None}}));sys.exit(0)
 assert '-f' in args and args[args.index('-f')+1]=='bestaudio[ext=m4a]/bestaudio'
 assert '--cookies-from-browser' not in args
 out=pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','m4a'))
@@ -119,6 +119,7 @@ fn single_import_metadata_cover_dedup_edits_and_rescan() {
     let id = t["id"].as_str().unwrap();
     assert_eq!(t["title"], "어떻게 사랑이 그래요");
     assert_eq!(t["artist"], "이승환, 정준일");
+    assert_eq!(t["album"], "Generated fixtures"); // Fall back to the embedded album.
     assert_eq!(t["source"]["video_id"], "lO3lG-qXU14");
     let cover = image::open(t["cover"].as_str().unwrap()).unwrap();
     assert_eq!((cover.width(), cover.height()), (512, 512));
@@ -281,9 +282,12 @@ fn shutdown_interrupts_jobs_and_restart_requires_explicit_retry() {
 #[test]
 fn missing_managed_file_is_repaired_with_same_track_identity_and_overrides() {
     let h = Harness::new();
+    fs::write(h.home.path().join("bin/album"), "Source album").unwrap();
     h.ok(&["library", "add", URL, "--wait", "--title", "Remember me"]);
     let tracks = h.ok(&["library", "list"]);
     let t = &tracks["tracks"][0];
+    assert_eq!(t["album"], "Source album");
+    h.ok(&["library", "edit", t["id"].as_str().unwrap(), "--album", ""]);
     fs::remove_file(t["path"].as_str().unwrap()).unwrap();
     h.ok(&["library", "scan", "--wait"]);
     assert_eq!(h.ok(&["library", "list"])["total"], 0);
@@ -291,6 +295,63 @@ fn missing_managed_file_is_repaired_with_same_track_identity_and_overrides() {
     let repaired = h.ok(&["library", "list"]);
     assert_eq!(repaired["tracks"][0]["id"], t["id"]);
     assert_eq!(repaired["tracks"][0]["title"], "Remember me");
+    assert_eq!(repaired["tracks"][0]["album"], "");
+}
+
+#[test]
+fn album_override_and_clear_survive_rescans_retagging_and_restart() {
+    let h = Harness::new();
+    fs::write(h.home.path().join("bin/album"), "Source album").unwrap();
+    h.ok(&["library", "add", URL, "--wait"]);
+    let tracks = h.ok(&["library", "list"]);
+    let track = &tracks["tracks"][0];
+    let id = track["id"].as_str().unwrap();
+    assert_eq!(track["album"], "Source album");
+    h.ok(&["queue", "add", "--track", id]);
+    let before = h.ok(&["status"]);
+    for (input, expected) in [("  My album  ", "My album"), ("   ", "")] {
+        h.ok(&["library", "edit", id, "--album", input]);
+        // Change mtime so the scan must re-read the file and source manifest.
+        fs::File::options()
+            .write(true)
+            .open(track["path"].as_str().unwrap())
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::now()))
+            .unwrap();
+        h.ok(&["library", "scan", "--wait"]);
+        h.ok(&["library", "retag", id]);
+        assert_eq!(h.ok(&["library", "track", id])["album"], expected);
+        let after = h.ok(&["status"]);
+        assert_eq!(after["queue"][0]["track"]["album"], expected);
+        for field in [
+            "queue_revision",
+            "current_id",
+            "position_ms",
+            "status",
+            "volume",
+        ] {
+            assert_eq!(after[field], before[field]);
+        }
+        assert_eq!(after["queue"][0]["id"], before["queue"][0]["id"]);
+        if expected.is_empty() {
+            assert_eq!(
+                h.ok(&["library", "search", "--album", "My album", "--exact"])["total"],
+                0
+            );
+        } else {
+            assert_eq!(
+                h.ok(&["library", "search", "--album", expected, "--exact"])["total"],
+                1
+            );
+        }
+    }
+    let invalid = h.cmd(&["library", "edit", id, "--album", "bad\nvalue"]);
+    assert!(!invalid.status.success());
+    assert_eq!(h.ok(&["library", "track", id])["album"], "");
+    h.ok(&["server", "stop"]);
+    h.ok(&["server", "start"]);
+    assert_eq!(h.ok(&["library", "track", id])["album"], "");
+    assert_eq!(h.ok(&["status"])["queue"][0]["track"]["album"], "");
 }
 
 #[tokio::test]

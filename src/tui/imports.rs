@@ -24,7 +24,8 @@ pub(super) enum Modal {
         id: String,
         title: String,
         artist: String,
-        field: bool,
+        album: String,
+        field: usize,
     },
 }
 impl App {
@@ -65,41 +66,39 @@ impl App {
                 id,
                 title,
                 artist,
+                album,
                 field,
-            } => match key.code {
-                KeyCode::Tab | KeyCode::BackTab => *field = !*field,
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if *field {
-                        artist.push(c);
-                    } else {
-                        title.push(c);
+            } => {
+                let value = match *field {
+                    0 => &mut *title,
+                    1 => &mut *artist,
+                    _ => &mut *album,
+                };
+                match key.code {
+                    KeyCode::Tab => *field = (*field + 1) % 3,
+                    KeyCode::BackTab => *field = (*field + 2) % 3,
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        value.push(c);
                     }
-                }
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if *field {
-                        artist.clear();
-                    } else {
-                        title.clear();
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        value.clear();
                     }
-                }
-                KeyCode::Backspace => {
-                    if *field {
-                        artist.pop();
-                    } else {
-                        title.pop();
+                    KeyCode::Backspace => {
+                        value.pop();
                     }
+                    KeyCode::Enter => {
+                        let command = Command::LibraryEdit {
+                            id: id.clone(),
+                            title: Some(title.clone()),
+                            artist: Some(artist.clone()),
+                            album: Some(album.clone()),
+                        };
+                        self.import_ui.modal = None;
+                        self.send(commands, command);
+                    }
+                    _ => (),
                 }
-                KeyCode::Enter => {
-                    let command = Command::LibraryEdit {
-                        id: id.clone(),
-                        title: Some(title.clone()),
-                        artist: Some(artist.clone()),
-                    };
-                    self.import_ui.modal = None;
-                    self.send(commands, command);
-                }
-                _ => (),
-            },
+            }
             Modal::Jobs => match key.code {
                 KeyCode::Char('q' | 'i') => self.import_ui.modal = None,
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -242,15 +241,12 @@ impl App {
         if let Some(Modal::Edit {
             title,
             artist,
+            album,
             field,
             ..
         }) = &mut self.import_ui.modal
         {
-            if *field {
-                artist.push_str(&text);
-            } else {
-                title.push_str(&text);
-            }
+            [title, artist, album][*field].push_str(&text);
         } else if let Some(Input::Search(s) | Input::Folder(s)) = &mut self.input {
             s.push_str(&text);
         }
@@ -284,6 +280,7 @@ impl App {
         let inner = border.inner(rect);
         frame.render_widget(border, rect);
         let mut lines = Vec::new();
+        let mut focused_rows = None;
         let hint = match modal {
             Modal::Preview { result, .. } => {
                 if let Some(v) = result {
@@ -311,20 +308,37 @@ impl App {
             Modal::Edit {
                 title,
                 artist,
+                album,
                 field,
                 ..
             } => {
-                lines.push(
-                    Line::from(format!("{} Title", if !field { "›" } else { " " }))
-                        .style(Style::default().fg(p.accent)),
-                );
-                lines.push(Line::from(title.clone()));
-                lines.push(Line::from(""));
-                lines.push(
-                    Line::from(format!("{} Artist", if *field { "›" } else { " " }))
-                        .style(Style::default().fg(p.accent)),
-                );
-                lines.push(Line::from(artist.clone()));
+                for (i, (label, value)) in [
+                    ("Title", title),
+                    ("Artist", artist),
+                    ("Album (optional)", album),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let start = Paragraph::new(lines.clone())
+                        .wrap(Wrap { trim: false })
+                        .line_count(inner.width);
+                    lines.push(
+                        Line::from(format!("{} {label}", if *field == i { "›" } else { " " }))
+                            .style(Style::default().fg(p.accent)),
+                    );
+                    lines.push(if i == 2 && value.is_empty() {
+                        Line::styled("Leave blank to hide", Style::default().fg(p.muted))
+                    } else {
+                        Line::from(value.clone())
+                    });
+                    if *field == i {
+                        let end = Paragraph::new(lines.clone())
+                            .wrap(Wrap { trim: false })
+                            .line_count(inner.width);
+                        focused_rows = Some((start, end));
+                    }
+                }
                 "Tab field · Ctrl-U clear\nEnter save · Esc cancel"
             }
             Modal::Jobs => {
@@ -390,10 +404,14 @@ impl App {
             .line_count(body.width)
             .saturating_sub(body.height as usize)
             .min(u16::MAX as usize) as u16;
-        frame.render_widget(
-            content.scroll((self.import_ui.scroll.min(max_scroll), 0)),
-            body,
-        );
+        let mut scroll = self.import_ui.scroll.min(max_scroll);
+        if let Some((start, end)) = focused_rows {
+            scroll = (scroll as usize)
+                .min(start)
+                .max(end.saturating_sub(body.height as usize))
+                .min(max_scroll as usize) as u16;
+        }
+        frame.render_widget(content.scroll((scroll, 0)), body);
         frame.render_widget(hint, footer);
     }
 }

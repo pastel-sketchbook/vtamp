@@ -394,6 +394,7 @@ fn work(
                 .clone()
                 .unwrap_or_else(|| manifest.metadata.artist.clone());
             track.source = Some(manifest.source.clone());
+            track.apply_source_album();
             let file = audio.metadata()?;
             let record = Record {
                 track,

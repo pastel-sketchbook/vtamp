@@ -17,7 +17,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
         if version == 0 {
@@ -56,6 +56,13 @@ impl Store {
                 CREATE TABLE track_metadata(id TEXT PRIMARY KEY,video_id TEXT UNIQUE,manifest TEXT,metadata TEXT NOT NULL,title_override TEXT,artist_override TEXT);
                 PRAGMA user_version = 3;
                 COMMIT;")?;
+        }
+        if version < 4 {
+            let tx = db.transaction()?;
+            tx.execute_batch("ALTER TABLE track_metadata ADD COLUMN album_override TEXT;")?;
+            imports::migrate_albums(&tx)?;
+            tx.pragma_update(None, "user_version", 4)?;
+            tx.commit()?;
         }
         Ok(Self { db })
     }
@@ -413,7 +420,7 @@ mod tests {
                 .db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         let filter = SearchFilter {
             exclude: vec!["LIVE".into()],

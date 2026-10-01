@@ -383,11 +383,11 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":3,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":4,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":3,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":4,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
 `status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
@@ -397,7 +397,7 @@ Every JSON response has a protocol version and `ok`. Successful responses have `
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":3,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":4,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -545,9 +545,9 @@ cancelling, or restarting the server clears the reservation. Closing the CLI or
 TUI does not. `scheduled_stop` is null or an object with `kind: "after_current"`
 and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds).
 
-### Updating from protocol 1 or 2
+### Updating from protocol 1, 2, or 3
 
-This build uses **protocol 3** and migrates the library to **database version 3**
+This build uses **protocol 4** and migrates the library to **database version 4**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,

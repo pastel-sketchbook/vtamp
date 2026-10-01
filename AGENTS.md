@@ -148,8 +148,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
 
 ## Agent CLI contracts
 
-- Protocol and database versions are 3. New server startup migrates v1/v2 databases
-  with transactional migration steps, preserving IDs; old binaries reject v3. Do not restart the listener
+- Protocol and database versions are 4. New server startup migrates v1/v2/v3 databases
+  with transactional migration steps, preserving IDs; old binaries reject v4. Do not restart the listener
   just to upgrade during an active user listening session.
 - `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
   status are read-only and never auto-start a server. Dry-run edits also must not
@@ -209,7 +209,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   Use bounded lossy storage and latest-value streams; no subscribers means no FFT.
   Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
   pause/resume, track changes, and output recovery. SpectrumWatch is an optional
-  protocol-3 stream separate from State/Event, without database or revision writes.
+  protocol-4 stream separate from State/Event, without database or revision writes.
   `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
   Tab returns to the previous list and slash opens Library search. Theme saves and
   spectrum toggles must preserve each other's stored preference.
@@ -350,6 +350,9 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
   privately, defer publication during catalog work, and transactionally register
   source, effective metadata, track and successful item report. Preserve stable
   IDs and manual overrides across rescans, retagging, missing files, and retries.
+- Albums are optional. Prefer structured source albums, then audio tags, and do
+  not guess missing names. Empty album overrides must survive scans and retagging.
+  Omit missing albums and their separators in the TUI; title/artist stay required.
 - Config lives in imports.json. LLM defaults to deterministic code; only the
   selected backend may run. API credentials use Keychain or an environment name,
   never plaintext config. Chrome cookies are opt-in via yt-dlp itself.

@@ -521,7 +521,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nm   Edit track title and artist\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nm   Edit title / artist / album\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -1071,7 +1071,8 @@ impl App {
                         id: t.id.clone(),
                         title: t.title.clone(),
                         artist: t.artist.clone(),
-                        field: false,
+                        album: t.album_name().unwrap_or_default().to_owned(),
+                        field: 0,
                     });
                 }
             }
@@ -1530,8 +1531,8 @@ impl App {
         let artist = item.map_or("Press a to add a music folder, then Enter to play.", |q| {
             q.track.artist.as_str()
         });
-        let album = item.map_or("Local files. No account. No permanent pane.", |q| {
-            q.track.album.as_str()
+        let album = item.map_or(Some("Local files. No account. No permanent pane."), |q| {
+            q.track.album_name()
         });
         let label = if !self.connected {
             "DISCONNECTED"
@@ -1558,7 +1559,9 @@ impl App {
             ),
             Line::styled(artist, Style::default().fg(p.text)),
         ];
-        if names.height > 2 {
+        if names.height > 2
+            && let Some(album) = album
+        {
             lines.push(Line::styled(album, Style::default().fg(p.muted)));
         }
         if names.height > 4 && !compact_controls {
@@ -1628,7 +1631,10 @@ impl App {
                     ListItem::new(vec![
                         Line::from(t.title.clone()),
                         Line::styled(
-                            format!("{} · {}", t.artist, t.album),
+                            t.album_name().map_or_else(
+                                || t.artist.clone(),
+                                |album| format!("{} · {album}", t.artist),
+                            ),
                             Style::default().fg(p.muted),
                         ),
                     ])
@@ -2596,7 +2602,8 @@ mod tests {
             id: "track".into(),
             title: "Song".into(),
             artist: "Singer".into(),
-            field: false,
+            album: String::new(),
+            field: 0,
         });
         let (messages, _) = mpsc::unbounded_channel();
         let (commands, _) = mpsc::channel(8);
@@ -2616,6 +2623,131 @@ mod tests {
             Some(imports::Modal::Edit { .. })
         ));
         assert!(app.notice.is_empty());
+    }
+
+    #[test]
+    fn absent_albums_hide_in_player_and_library_and_edit_can_clear_them() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        app.import_ui.enabled = true;
+        let track = Track {
+            id: "track".into(),
+            path: "/example.m4a".into(),
+            title: "Song".into(),
+            artist: "Singer".into(),
+            album: String::new(),
+            track_number: 0,
+            duration_ms: 180_000,
+            cover: None,
+            source: None,
+        };
+        app.tracks = vec![track.clone()];
+        app.total = 1;
+        app.state.queue.push(QueueItem::new(track));
+        app.state.current_id = Some(app.state.queue[0].id.clone());
+        app.library_selection.select(Some(0));
+        let (commands, mut requests) = mpsc::channel(16);
+        for (width, height) in [(40, 12), (80, 24), (120, 36)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for album in ["", "   ", "Unknown album", "Known album"] {
+                app.tracks[0].album = album.into();
+                app.state.queue[0].track.album = album.into();
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect();
+                assert!(!text.contains("Unknown album"));
+                if width >= 80 {
+                    assert_eq!(
+                        text.matches("Known album").count(),
+                        if album == "Known album" { 2 } else { 0 }
+                    );
+                }
+                terminal.draw(|f| app.library(f, f.area())).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect();
+                assert_eq!(text.contains("Singer ·"), album == "Known album");
+            }
+            app.key(
+                KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+                &commands,
+            )
+            .unwrap();
+            // Shift-Tab from Title wraps directly to Album.
+            app.key(
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+                &commands,
+            )
+            .unwrap();
+            app.key(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                &commands,
+            )
+            .unwrap();
+            app.import_paste("New album\n");
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("› Album (optional)"));
+            assert!(text.contains("New album"));
+            assert!(text.contains("Enter save"));
+            app.key(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                &commands,
+            )
+            .unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Leave blank to hide"));
+            app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+                .unwrap();
+            assert!(
+                matches!(requests.try_recv().unwrap(), Command::LibraryEdit { album: Some(a), .. } if a.is_empty())
+            );
+            assert!(app.import_ui.modal.is_none());
+        }
+        // Long earlier fields must not push the active Album field out of view.
+        app.tracks[0].title = "Long title ".repeat(20);
+        app.key(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        for _ in 0..2 {
+            app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+                .unwrap();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("› Album (optional)"));
+        assert!(text.contains("Known album"));
     }
 
     #[test]

@@ -70,10 +70,13 @@ Ambiguous titles stay intact; the uploader is not automatically treated as the
 performer.
 
 Single-video imports accept `--title` and `--artist`. To correct an existing
-track, press `m` in the TUI (Tab switches fields, Ctrl-U clears a field), or run:
+track, press `m` in the TUI to edit Title, Artist, and Album (Tab/Shift-Tab switches
+fields, Ctrl-U clears a field, Enter saves), or run:
 
 ```sh
 vtamp library edit TRACK_ID --title 'Song title' --artist 'Performers'
+vtamp library edit TRACK_ID --album 'Album title'
+vtamp library edit TRACK_ID --album ''
 vtamp library retag TRACK_ID
 ```
 
@@ -81,6 +84,12 @@ Edits are database overrides, preserved by rescans and retagging. They do not
 rewrite audio files. Retag reruns the configured automatic cleanup against saved
 source metadata while retaining overrides. Queued copies update without changing
 their order, identities, playback position, or queue revision.
+
+Albums are optional. Imports use the source's structured album when available,
+otherwise the audio file's album tag; no album name is guessed. Leave Album blank
+to hide it in Now Playing and Library, including the separator after the artist.
+Clearing an album is a saved override, so rescans and retagging keep it empty.
+Older `Unknown album` placeholders are cleared automatically on server upgrade.
 
 Imported tracks retain their original title, video ID/URL, channel identity and
 link, bounded description, and any structured music metadata. Press `o` for the

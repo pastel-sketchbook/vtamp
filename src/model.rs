@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
@@ -16,6 +16,22 @@ pub struct Track {
     pub cover: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::youtube::Source>,
+}
+
+impl Track {
+    pub fn album_name(&self) -> Option<&str> {
+        let album = self.album.trim();
+        (!album.is_empty() && !album.eq_ignore_ascii_case("Unknown album")).then_some(album)
+    }
+
+    pub(crate) fn apply_source_album(&mut self) {
+        if let Some(album) = self.source.as_ref().and_then(|s| s.music_album.as_ref())
+            && !album.trim().is_empty()
+        {
+            self.album = album.clone();
+        }
+        self.album = self.album_name().unwrap_or_default().to_owned();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +144,7 @@ pub enum Command {
         id: String,
         title: Option<String>,
         artist: Option<String>,
+        album: Option<String>,
     },
     LibraryRetag {
         id: String,

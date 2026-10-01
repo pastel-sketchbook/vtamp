@@ -49,7 +49,7 @@ The lifecycle section also introduces the optional tmux status-bar plugin with a
 
 A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard reference. These are labeled keys, not clickable playback controls. Match the neighboring tmux feature’s spacing and stack copy above the keys on mobile.
 
-The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-3 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
+The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-4 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
 
 ## Audio spectrum
 
@@ -103,7 +103,11 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 Show these only after server-side detection of an installed yt-dlp. The existing
 `a` bottom prompt accepts a folder or URL; a playlist opens a preview with an
 explicit Enter confirmation. Single videos start without a mandatory metadata
-form. `i` opens jobs, `m` edits title/artist, and `o`/`O` open video/channel links.
+form. `i` opens jobs, `m` edits title/artist/album, and `o`/`O` open video/channel links.
+Album is optional: an empty value hides the album and its separator in Library
+and omits the album line in Now Playing. The editor uses Tab/Shift-Tab to change
+fields, Ctrl-U to clear, and Enter to save. Keep the active field visible even
+when earlier values wrap in a small terminal.
 Jobs show current stage, counters, transfer progress and item diagnostics; j/k
 select jobs, brackets select items, PgUp/PgDn scroll long text, c cancels and r
 retries. Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
