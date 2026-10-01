@@ -59,7 +59,10 @@ In the TUI, press `a` and paste a URL into the existing add prompt. Playlist URL
 open a preview; Enter confirms all entries, Esc closes it. Press `i` for job
 progress, `j`/`k` to select a job, `[`/`]` to select an item, PgUp/PgDn to scroll,
 `c` to cancel, or `r` to retry. Playback controls remain available after closing
-the overlay. Detaching the TUI leaves the job running.
+the overlay. Each time you open `i`, it starts at the active job shown in the
+bottom status line, or the newest job when all are finished, with item paging
+reset. New arrivals preserve the job you are reading while the dialog is open.
+Detaching the TUI leaves the job running.
 
 ## Metadata and source links
 

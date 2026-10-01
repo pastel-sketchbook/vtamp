@@ -9,6 +9,7 @@ pub(super) struct ImportUi {
     pub jobs: Vec<ImportJob>,
     pub modal: Option<Modal>,
     pub selected: usize,
+    pub reveal_on_snapshot: bool,
     pub offset: usize,
     pub scroll: u16,
     pub detail_at: Option<Instant>,
@@ -29,20 +30,91 @@ pub(super) enum Modal {
     },
 }
 impl App {
+    pub(super) fn open_imports(&mut self, commands: &mpsc::Sender<Command>) {
+        self.import_ui.modal = Some(Modal::Jobs);
+        self.import_ui.reveal_on_snapshot = true;
+        self.import_selection(None);
+        self.clear_import_detail();
+        self.send(commands, Command::Imports);
+    }
+
+    fn clear_import_detail(&mut self) {
+        self.import_ui.offset = 0;
+        self.import_ui.scroll = 0;
+        self.import_ui.detail = None;
+        self.import_ui.detail_at = None;
+    }
+
+    fn selected_import(&self) -> Option<String> {
+        self.import_ui
+            .jobs
+            .get(self.import_ui.selected)
+            .map(|j| j.job_id.clone())
+    }
+
+    /// Preserve an open reader's job identity, not its shifting row number.
+    /// Opening/reopening reveals the status-line job, or the newest finished job.
+    fn import_selection(&mut self, previous: Option<String>) -> bool {
+        let preserve =
+            matches!(self.import_ui.modal, Some(Modal::Jobs)) && !self.import_ui.reveal_on_snapshot;
+        self.import_ui.selected = previous
+            .as_ref()
+            .filter(|_| preserve)
+            .and_then(|id| self.import_ui.jobs.iter().position(|j| j.job_id == *id))
+            .unwrap_or_else(|| {
+                self.import_ui
+                    .jobs
+                    .iter()
+                    .position(|j| !j.terminal())
+                    .unwrap_or(0)
+            });
+        let changed = previous != self.selected_import();
+        if changed {
+            self.clear_import_detail();
+        }
+        changed
+    }
+
+    pub(super) fn import_snapshot(&mut self, mut jobs: Vec<ImportJob>) {
+        let previous = self.selected_import();
+        let newest = jobs.iter().map(|j| j.started_at_ms).max();
+        let mut added_since = Vec::new();
+        for known in std::mem::take(&mut self.import_ui.jobs) {
+            if let Some(incoming) = jobs.iter_mut().find(|j| j.job_id == known.job_id) {
+                // Watch events and command replies arrive over separate sockets.
+                if known.revision > incoming.revision {
+                    *incoming = known;
+                }
+            } else if newest.is_none_or(|time| known.started_at_ms >= time) {
+                // A list read before a newly observed job was created must not
+                // erase that job. Older absent jobs have left server retention.
+                added_since.push(known);
+            }
+        }
+        added_since.extend(jobs);
+        added_since.sort_by_key(|j| std::cmp::Reverse(j.started_at_ms));
+        added_since.truncate(132);
+        self.import_ui.jobs = added_since;
+        self.import_selection(previous);
+    }
+
     pub(super) fn import_key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> bool {
         let Some(modal) = self.import_ui.modal.as_mut() else {
             return false;
         };
         if matches!(key.code, KeyCode::Esc) {
             self.import_ui.modal = None;
+            self.import_ui.reveal_on_snapshot = false;
             return true;
         }
         match key.code {
             KeyCode::PageDown => {
+                self.import_ui.reveal_on_snapshot = false;
                 self.import_ui.scroll = self.import_ui.scroll.saturating_add(4);
                 return true;
             }
             KeyCode::PageUp => {
+                self.import_ui.reveal_on_snapshot = false;
                 self.import_ui.scroll = self.import_ui.scroll.saturating_sub(4);
                 return true;
             }
@@ -100,18 +172,21 @@ impl App {
                 }
             }
             Modal::Jobs => match key.code {
-                KeyCode::Char('q' | 'i') => self.import_ui.modal = None,
+                KeyCode::Char('q' | 'i') => {
+                    self.import_ui.modal = None;
+                    self.import_ui.reveal_on_snapshot = false;
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
+                    self.import_ui.reveal_on_snapshot = false;
                     self.import_ui.selected = (self.import_ui.selected + 1)
                         .min(self.import_ui.jobs.len().saturating_sub(1));
-                    self.import_ui.offset = 0;
-                    self.import_ui.scroll = 0;
+                    self.clear_import_detail();
                     self.import_detail(commands);
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
+                    self.import_ui.reveal_on_snapshot = false;
                     self.import_ui.selected = self.import_ui.selected.saturating_sub(1);
-                    self.import_ui.offset = 0;
-                    self.import_ui.scroll = 0;
+                    self.clear_import_detail();
                     self.import_detail(commands);
                 }
                 KeyCode::Char('c') => {
@@ -135,16 +210,20 @@ impl App {
                     }
                 }
                 KeyCode::Char(']') => {
+                    self.import_ui.reveal_on_snapshot = false;
                     if let Some(j) = self.import_ui.jobs.get(self.import_ui.selected)
                         && self.import_ui.offset + 1 < j.total.unwrap_or(0)
                     {
                         self.import_ui.offset += 1;
+                        self.import_ui.detail = None;
                         self.import_ui.scroll = 0;
                         self.import_detail(commands);
                     }
                 }
                 KeyCode::Char('[') => {
+                    self.import_ui.reveal_on_snapshot = false;
                     self.import_ui.offset = self.import_ui.offset.saturating_sub(1);
+                    self.import_ui.detail = None;
                     self.import_ui.scroll = 0;
                     self.import_detail(commands);
                 }
@@ -154,16 +233,20 @@ impl App {
         true
     }
     pub(super) fn import_detail(&mut self, commands: &mpsc::Sender<Command>) {
-        if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected) {
-            let _ = commands.try_send(Command::ImportStatus {
-                id: job.job_id.clone(),
-                offset: self.import_ui.offset,
-                limit: 1,
-            });
+        if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected)
+            && commands
+                .try_send(Command::ImportStatus {
+                    id: job.job_id.clone(),
+                    offset: self.import_ui.offset,
+                    limit: 1,
+                })
+                .is_ok()
+        {
             self.import_ui.detail_at = Some(Instant::now());
         }
     }
-    pub(super) fn import_update(&mut self, job: ImportJob) {
+    pub(super) fn import_update(&mut self, job: ImportJob) -> bool {
+        let previous = self.selected_import();
         if let Some(old) = self
             .import_ui
             .jobs
@@ -176,7 +259,11 @@ impl App {
         } else {
             self.import_ui.jobs.insert(0, job);
         }
+        self.import_ui
+            .jobs
+            .sort_by_key(|j| std::cmp::Reverse(j.started_at_ms));
         self.import_ui.jobs.truncate(132);
+        self.import_selection(previous)
     }
     pub(super) fn selected_track(&self) -> Option<&Track> {
         if self.spectrum_replaces_list() {

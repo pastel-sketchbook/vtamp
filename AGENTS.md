@@ -368,6 +368,10 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
   child processes off playback/input loops; cancel their process groups and reap.
   Wait timeouts and client detachment do not cancel jobs. Restart marks unfinished
   jobs interrupted; no automatic resume. Retain 100 terminal reports.
+- Opening TUI Imports reveals the status-line job, or the newest finished job,
+  and resets item paging. Preserve an open reader's selected job by ID across
+  snapshots and progress events, not by row index. Delayed list replies must not
+  regress job revisions or remove jobs created after that snapshot.
 - Deduplicate library imports by video ID, never queue entries. Stage downloads
   privately, defer publication during catalog work, and transactionally register
   source, effective metadata, track and successful item report. Preserve stable

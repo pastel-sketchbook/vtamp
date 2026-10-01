@@ -842,20 +842,7 @@ impl App {
             }
             Message::Event(Event::LibraryChanged) => self.refresh(commands),
             Message::Event(Event::Imports(jobs)) => {
-                let selected = self
-                    .import_ui
-                    .jobs
-                    .get(self.import_ui.selected)
-                    .map(|j| j.job_id.clone());
-                self.import_ui.jobs = jobs;
-                if let Some(id) = selected {
-                    self.import_ui.selected = self
-                        .import_ui
-                        .jobs
-                        .iter()
-                        .position(|j| j.job_id == id)
-                        .unwrap_or(0);
-                }
+                self.import_snapshot(jobs);
                 if matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
                     self.import_detail(commands);
                 }
@@ -866,15 +853,17 @@ impl App {
                         .import_ui
                         .detail_at
                         .is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
-                self.import_update(job);
-                if refresh && matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
+                let selection_changed = self.import_update(job);
+                if (refresh || selection_changed)
+                    && matches!(self.import_ui.modal, Some(imports::Modal::Jobs))
+                {
                     self.import_detail(commands);
                 }
             }
             Message::Reply(command, result) => match result {
                 Err(error) => {
                     if matches!(command, Command::LibraryList { ref query, offset, .. }
-                        if *query == self.query && offset == self.offset)
+                    if *query == self.query && offset == self.offset)
                     {
                         self.library_jump = None;
                     }
@@ -898,8 +887,15 @@ impl App {
                             return;
                         }
                         Command::Imports => {
-                            self.import_ui.jobs = serde_json::from_value(value).unwrap_or_default();
-                            self.import_detail(commands);
+                            if let Ok(jobs) = serde_json::from_value(value) {
+                                self.import_snapshot(jobs);
+                                self.import_ui.reveal_on_snapshot = false;
+                                if matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
+                                    self.import_detail(commands);
+                                }
+                            } else {
+                                self.notice("Cannot read imports. Close and reopen to retry.");
+                            }
                             return;
                         }
                         Command::ImportStatus { id, offset, .. } => {
@@ -1117,9 +1113,7 @@ impl App {
             }
             KeyCode::Char('a') => self.input = Some(Input::Folder(String::new())),
             KeyCode::Char('i') if self.import_ui.enabled => {
-                self.import_ui.scroll = 0;
-                self.import_ui.modal = Some(imports::Modal::Jobs);
-                self.send(commands, Command::Imports);
+                self.open_imports(commands);
             }
             KeyCode::Char('m') if self.import_ui.enabled => {
                 self.import_ui.scroll = 0;
@@ -3086,6 +3080,245 @@ mod tests {
             .collect();
         assert!(text.contains("› Album (optional)"));
         assert!(text.contains("Known album"));
+    }
+
+    #[test]
+    fn imports_reopen_reveals_new_job_and_resets_the_previous_item_page() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(32);
+        let mut old = crate::imports::ImportJob::new(&Default::default());
+        old.title = "Previous import".into();
+        old.started_at_ms = 100;
+        old.total = Some(10);
+        old.finish("completed");
+        app.import_ui.jobs = vec![old.clone()];
+        app.import_ui.offset = 8;
+        app.import_ui.detail = Some(serde_json::json!({"job":old,"items":[]}));
+        let mut new = crate::imports::ImportJob::new(&Default::default());
+        new.title = "Latest import".into();
+        new.started_at_ms = 200;
+        new.total = Some(1);
+        app.message(
+            Message::Event(Event::Imports(vec![new.clone(), old.clone()])),
+            &messages,
+            &commands,
+        );
+        app.key(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            new.job_id
+        );
+        assert_eq!(app.import_ui.offset, 0);
+        assert!(app.import_ui.detail.is_none());
+        assert!(matches!(requests.try_recv().unwrap(), Command::Imports));
+        app.message(
+            Message::Reply(Command::Imports, Ok(serde_json::json!([new, old]))),
+            &messages,
+            &commands,
+        );
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::ImportStatus { id, offset: 0, .. } if id == new.job_id)
+        );
+        new.finish("completed");
+        app.message(
+            Message::Event(Event::ImportProgress(new.clone())),
+            &messages,
+            &commands,
+        );
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+            .unwrap();
+        app.key(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            new.job_id
+        );
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].status,
+            "completed"
+        );
+        for (width, height) in [(40, 12), (102, 27)] {
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(text.contains("Latest import"), "{text}");
+            assert!(text.contains("Job 1/2"), "{text}");
+        }
+    }
+
+    #[test]
+    fn imports_keep_open_job_identity_across_list_replies_and_progress_insertions() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(32);
+        let mut selected = crate::imports::ImportJob::new(&Default::default());
+        selected.started_at_ms = 100;
+        selected.total = Some(9);
+        selected.finish("completed");
+        app.import_ui.jobs = vec![selected.clone()];
+        app.import_ui.offset = 5;
+        app.import_ui.scroll = 3;
+        app.import_ui.detail = Some(serde_json::json!({"job":selected,"items":[]}));
+        let mut newer = crate::imports::ImportJob::new(&Default::default());
+        newer.started_at_ms = 200;
+        app.message(
+            Message::Event(Event::ImportProgress(newer.clone())),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.import_ui.selected, 1);
+        assert_eq!(app.import_ui.offset, 5);
+        assert_eq!(app.import_ui.scroll, 3);
+        assert!(app.import_ui.detail.is_some());
+        app.message(
+            Message::Reply(Command::Imports, Ok(serde_json::json!([newer, selected]))),
+            &messages,
+            &commands,
+        );
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            selected.job_id
+        );
+        while requests.try_recv().is_ok() {}
+        app.key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::ImportCancel { id } if id == selected.job_id)
+        );
+        // Once an old selected job leaves server retention, discard its page.
+        app.message(
+            Message::Event(Event::Imports(vec![newer.clone()])),
+            &messages,
+            &commands,
+        );
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            newer.job_id
+        );
+        assert_eq!(app.import_ui.offset, 0);
+        assert!(app.import_ui.detail.is_none());
+    }
+
+    #[test]
+    fn imports_open_reveals_fresh_jobs_but_late_replies_do_not_undo_navigation() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, _) = mpsc::channel(32);
+        let mut old = crate::imports::ImportJob::new(&Default::default());
+        old.started_at_ms = 100;
+        old.finish("completed");
+        app.import_ui.jobs = vec![old.clone()];
+        app.key(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        let mut running = crate::imports::ImportJob::new(&Default::default());
+        running.started_at_ms = 200;
+        let mut newest = crate::imports::ImportJob::new(&Default::default());
+        newest.started_at_ms = 300;
+        newest.finish("completed");
+        app.message(
+            Message::Reply(
+                Command::Imports,
+                Ok(serde_json::json!([newest, running, old])),
+            ),
+            &messages,
+            &commands,
+        );
+        // Match the active job shown in the bottom status line, even when a
+        // newer completed job appears above it in creation order.
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            running.job_id
+        );
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+            .unwrap();
+        app.key(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        app.key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            old.job_id
+        );
+        app.message(
+            Message::Reply(
+                Command::Imports,
+                Ok(serde_json::json!([newest, running, old])),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(
+            app.import_ui.jobs[app.import_ui.selected].job_id,
+            old.job_id
+        );
+    }
+
+    #[test]
+    fn imports_stale_snapshots_cannot_erase_new_jobs_or_roll_back_completion() {
+        let mut app = app();
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, _) = mpsc::channel(32);
+        let mut old = crate::imports::ImportJob::new(&Default::default());
+        old.started_at_ms = 100;
+        app.import_ui.jobs = vec![old.clone()];
+        let mut new = crate::imports::ImportJob::new(&Default::default());
+        new.started_at_ms = 200;
+        let stale_new = new.clone();
+        new.revision = 10;
+        new.finish("completed");
+        old.revision = 20;
+        old.finish("completed");
+        app.message(
+            Message::Event(Event::Imports(vec![new.clone(), old.clone()])),
+            &messages,
+            &commands,
+        );
+        old.status = "running".into();
+        old.revision = 1;
+        app.message(
+            Message::Reply(Command::Imports, Ok(serde_json::json!([old]))),
+            &messages,
+            &commands,
+        );
+        app.message(
+            Message::Event(Event::ImportProgress(stale_new)),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.import_ui.jobs.len(), 2);
+        assert_eq!(app.import_ui.jobs[0].job_id, new.job_id);
+        assert!(app.import_ui.jobs.iter().all(|j| j.status == "completed"));
     }
 
     #[test]

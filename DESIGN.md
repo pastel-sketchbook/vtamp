@@ -124,7 +124,11 @@ fields, Ctrl-U to clear, and Enter to save. Keep the active field visible even
 when earlier values wrap in a small terminal.
 Jobs show current stage, counters, transfer progress and item diagnostics; j/k
 select jobs, brackets select items, PgUp/PgDn scroll long text, c cancels and r
-retries. Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
+retries. Opening `i` reveals the active job shown in the bottom status line, or
+the newest job when all have finished, starting at its first item. While the
+dialog is open, retain the job the user is reading by identity as new jobs arrive.
+List replies must not roll back newer progress or erase newly observed jobs.
+Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
 covers and restore them on close; the bottom add prompt keeps the cover visible.
 Use existing semantic palette roles and English copy. No installation prompts,
 integration placeholders, or related help are shown when yt-dlp is absent.
