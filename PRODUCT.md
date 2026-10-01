@@ -28,6 +28,8 @@ Virtual terminal meets Winamp: a local music player with the lifecycle of a deta
 
 Folder-based local library, search, queue editing, album art, machine-readable CLI, persistent session. A server restart restores the session paused. No streaming, account, login service, or permanent pane required. English-only first release. macOS is the supported platform; isolate platform dependencies for later Linux support.
 
+Agents can inspect compact playback state, search individual metadata fields, schedule the next tracks, and apply atomic queue edits that protect the current song. Successful keyed batch edits can be retried for 24 hours across server restarts. Scan jobs expose completion reports; server-owned stop reservations survive client exit and clear on server restart.
+
 The macOS server integrates with media keys and Now Playing, including track metadata and artwork in Control Center. Controls remain available after the TUI detaches; macOS chooses the active media player.
 
 ## Brand Commitments

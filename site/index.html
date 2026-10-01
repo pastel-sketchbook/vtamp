@@ -96,21 +96,22 @@
 </div>
 </section>
 <section id="commands" class="commands wrap" aria-labelledby="commands-heading">
-<div class="commands-copy"><h2 id="commands-heading">Good with keys.<br>Great with commands.</h2><p>Skip a track without opening the player. Let a script pause the music. Give your agent a straightforward command, with a straightforward JSON reply.</p><p class="aside">Local files. A local socket. No account, API key, or cloud in the middle.</p></div>
+<div class="commands-copy"><h2 id="commands-heading">Good with keys.<br>Great with commands.</h2><p>Agents can find tracks, line up what plays next, and edit the queue without interrupting the current song.</p><p>Preview a batch edit before applying it. Set a sleep timer and let the server handle the rest.</p><a class="feature-guide" href="https://github.com/rath/vtamp#for-scripts-and-agents">Explore the agent CLI</a><p class="aside">Local files. A local socket. No account, API key, or cloud in the middle.</p></div>
 <div class="command-sheet">
-<div class="sheet-heading"><span>THE EVERYDAY CONTROLS</span><span>CLI</span></div>
-<div class="command-row"><code>vtamp next</code><span>Change the mood.</span><button class="copy-icon" data-copy="vtamp next" aria-label="Copy vtamp next"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
-<div class="command-row"><code>vtamp pause</code><span>A moment of quiet.</span><button class="copy-icon" data-copy="vtamp pause" aria-label="Copy vtamp pause"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
-<div class="command-row"><code>vtamp volume 35</code><span>Room to think.</span><button class="copy-icon" data-copy="vtamp volume 35" aria-label="Copy vtamp volume 35"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
-<div class="json-example"><code>$ vtamp status --json</code><pre aria-label="Abbreviated example JSON response">{
-  <span>"version"</span>: 1,
+<div class="sheet-heading"><span>FOR YOU AND YOUR AGENT</span><span>CLI</span></div>
+<div class="command-row"><code>vtamp now --json</code><span>See what’s playing.</span><button class="copy-icon" data-copy="vtamp now --json" aria-label="Copy vtamp now --json"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp library search --artist &quot;DAY6&quot; --json</code><span>Find the right tracks.</span><button class="copy-icon" data-copy="vtamp library search --artist &quot;DAY6&quot; --json" aria-label="Copy vtamp library search --artist &quot;DAY6&quot; --json"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp sleep set 30m</code><span>Stop in 30 minutes.</span><button class="copy-icon" data-copy="vtamp sleep set 30m" aria-label="Copy vtamp sleep set 30m"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="json-example"><code>$ vtamp now --json</code><pre aria-label="Abbreviated example JSON response">{
+  <span>"version"</span>: 2,
   <span>"ok"</span>: true,
   <span>"data"</span>: {
     <span>"status"</span>: <b>"playing"</b>,
     <span>"position_ms"</span>: 102000,
-    <span>"volume"</span>: 35
+    <span>"remaining_ms"</span>: 117000,
+    <span>"queue_revision"</span>: 42
   }
-}</pre><small>Response excerpt · full state includes the queue and current track.</small></div>
+}</pre><small>Response excerpt · current track and settings, without the full queue.</small></div>
 </div>
 </section>
 <section id="install" class="install wrap" aria-labelledby="install-heading">
