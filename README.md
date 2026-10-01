@@ -5,6 +5,12 @@
   <p>Local files and live radio. One persistent playback server, any number of terminal clients, and a JSON CLI for scripts and agents. Rust. macOS first.</p>
 </div>
 
+<p align="center">
+  <a href="site/screenshots/compact-queue.png">
+    <img src="site/screenshots/compact-queue.png" width="866" alt="vtamp in Catppuccin Mocha, with album art and playback controls on the left and the queue on the right.">
+  </a>
+</p>
+
 There used to be a little player on the corner of your desktop. A playlist, an album cover, a green display. It did one thing, and it felt like yours.
 
 These days, a lot of us live in a terminal. We still want that player. We just don't want it to own a tmux pane for the rest of the day.
