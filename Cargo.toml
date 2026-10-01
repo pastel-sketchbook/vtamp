@@ -29,8 +29,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 rpassword = "7"
 tempfile = "3"
 url = "2"
-# Count wrapped help rows to bound scrolling at every pane width.
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+# Count wrapped help rows to bound scrolling at every pane width. Default
+# features minus underline-color: that feature's weak termina/termwiz
+# references drag unused optional backends into Cargo.lock.
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets", "crossterm", "layout-cache", "macros", "unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-isomp4", "symphonia-alac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
