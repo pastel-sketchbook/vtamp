@@ -1,4 +1,4 @@
-# Local protocol, version 5
+# Local protocol, version 6
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":5,"request":{"command":"pause"}}
+{"version":6,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":5,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":6,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -47,14 +47,14 @@ At most four direct imports and one catalog scan run at a time. There are bounde
 
 ## Watch
 
-Send `{"version":5,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":6,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":5,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null}}}
+{"version":6,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
 ```
 
 ```json
-{"version":5,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":6,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -63,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":5,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":6,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -168,9 +168,59 @@ are checked even while paused or recovering output. Both stop/reset position and
 keep the queue. Explicit stops, cancellation, and server restart clear reservations;
 client disconnects do not.
 
+## Live radio (version 6)
+
+Tracks contain either a local `path` or an HTTP(S) `url`, represented internally
+by `PlaybackSource`. File JSON retains its existing shape and numeric
+`duration_ms`. Live tracks have `url`, `duration_ms: null`, and empty artist/album
+fields; their registration name is the title. YouTube import provenance remains
+in the independent `source` field. Library lookup, field search, pagination,
+anchors, direct playback, and queue edits accept stream track IDs.
+
+| Command | Request fields | Successful data |
+| --- | --- | --- |
+| `stream_add` | `entries`: array of `{url,name}` | `added`, `existing`, newly added `tracks` |
+| `stream_remove` | `id` | `removed` ID |
+| `stream_preview` | absolute local `path` | array of validated `{url,name}` entries |
+
+Registration validates all entries before one database transaction. Up to 1000
+entries are accepted. URLs must be HTTP(S) without embedded credentials; their
+fragments are removed and URL parsing normalizes them. An already registered URL
+keeps its identity and name. This is registration deduplication, not keyed request
+receipt replay. Queue additions still allow duplicates. Successful registration
+and removal emit `library_changed`, without changing queue revisions or playback.
+Unregistering leaves saved queue/direct copies intact.
+
+`stream_preview` reads a UTF-8 M3U/PLS regular file off the owner thread (1 MiB,
+1000 entries maximum); it writes nothing. The CLI `--preview` does the same work
+locally and never starts the server. Invalid entries fail the complete operation;
+HLS manifests with `#EXT-X-` tags must instead be registered by their stream URL.
+
+State adds nullable `stream_status`: `connecting`, `buffering`, `live`, or
+`reconnecting`. It is null for files, paused/stopped radio, and restored sessions.
+`status: playing` indicates playback intent; `stream_status: live` confirms native
+playback has advanced. `now` also includes `is_live`. Radio position remains zero;
+`duration_ms` and `remaining_ms` in `now` are null. Connection-state changes update
+the ordinary state revision, never queue revision. Unchanged radio sessions do
+not write periodic position checkpoints.
+
+Pause/stop release native playback and cancel retries. Resume and reconnect use
+the registered URL, resolving redirects again. Native stalls get a 20-second
+watchdog and capped exponential reconnect backoff. Unsupported/missing resources
+pause with `last_error`. Network endings never trigger natural queue advancement.
+Seek is unsupported, as is `stop_after_current`; deadline sleep timers still work.
+SpectrumWatch remains available but radio provides inactive frames. System Now
+Playing marks live media and disables timeline seeking.
+
+Database version 6 adds a separate stream registry and a combined catalog view.
+File scans only replace file records. Existing IDs, file JSON, sessions, and
+request receipts are preserved; old binaries reject this schema. Radio restores
+paused with zero position and without network activity. Native stream playback
+requires macOS, including when `VTAMP_MEDIA_KEYS=0`.
+
 ## Compatibility and storage
 
-All envelopes advertise protocol 5. Clients must report `version_mismatch` when
+All envelopes advertise protocol 6. Clients must report `version_mismatch` when
 connected to older versions; restart with matching binaries and reattach clients.
 Database version 5 protects saved direct-playback items and queue cursors from
 older binaries; previous sessions load with both fields null. Direct playback also

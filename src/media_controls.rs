@@ -37,6 +37,9 @@ pub fn enabled() -> bool {
 pub fn run(task: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
     #[cfg(target_os = "macos")]
     {
+        if !enabled() {
+            return crate::audio::radio::run(task);
+        }
         // Do this before AppKit (or any worker thread) starts. A signed bundle
         // gives Now Playing a resolvable application icon, even for Cargo installs.
         if let Err(error) = app_bundle::enter() {
@@ -66,19 +69,26 @@ impl Snapshot {
         } else {
             0
         };
-        self.position_ms
-            .saturating_add(progress)
-            .min(self.track.as_ref().map_or(0, |t| t.duration_ms))
+        self.position_ms.saturating_add(progress).min(
+            self.track
+                .as_ref()
+                .map_or(0, |t| t.duration_ms.unwrap_or(0)),
+        )
     }
 }
 
 #[derive(Default)]
 struct Publication {
     started: bool,
+    current_id: Option<String>,
 }
 impl Publication {
     fn snapshot(&mut self, state: &State, waiting: bool) -> Snapshot {
-        if state.status == PlaybackStatus::Playing {
+        if self.current_id != state.current_id {
+            self.current_id = state.current_id.clone();
+            self.started = false;
+        }
+        if state.status == PlaybackStatus::Playing && !waiting {
             self.started = true;
         } else if state.status == PlaybackStatus::Stopped {
             self.started = false;
@@ -90,7 +100,7 @@ impl Publication {
         Snapshot {
             position_ms: state
                 .position_ms
-                .min(track.as_ref().map_or(0, |t| t.duration_ms)),
+                .min(track.as_ref().map_or(0, |t| t.duration_ms.unwrap_or(0))),
             track,
             status: state.status,
             waiting,
@@ -227,12 +237,14 @@ mod tests {
     fn state() -> State {
         let track = Track {
             id: "track".into(),
-            path: "/test.m4a".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/test.m4a".into(),
+            },
             title: "Test".into(),
             artist: "Artist".into(),
             album: "Album".into(),
             track_number: 1,
-            duration_ms: 60_000,
+            duration_ms: Some(60_000),
             cover: None,
             source: None,
         };
@@ -244,6 +256,29 @@ mod tests {
             position_ms: 12_000,
             ..State::default()
         }
+    }
+    #[test]
+    fn live_publication_waits_for_audio_and_resets_on_station_change() {
+        let mut publication = Publication::default();
+        let mut state = state();
+        state.status = PlaybackStatus::Playing;
+        state.queue[0].track = crate::streams::Entry {
+            name: "Radio".into(),
+            url: "https://example.com/live".into(),
+        }
+        .track();
+        assert!(publication.snapshot(&state, true).track.is_none());
+        assert!(publication.snapshot(&state, false).track.is_some());
+        // A reconnect retains an already published station, frozen at zero.
+        let waiting = publication.snapshot(&state, true);
+        assert!(waiting.track.is_some());
+        assert_eq!(
+            waiting.position_at(Instant::now() + Duration::from_secs(10)),
+            0
+        );
+        state.queue[0].id = "next-station".into();
+        state.current_id = Some("next-station".into());
+        assert!(publication.snapshot(&state, true).track.is_none());
     }
     #[test]
     fn media_preferences_isolate_tests_and_allow_explicit_override() {

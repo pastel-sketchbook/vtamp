@@ -87,7 +87,10 @@ pub fn supported(path: &Path) -> bool {
 }
 
 pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
-    let previous: HashMap<_, _> = old.iter().map(|r| (r.track.path.clone(), r)).collect();
+    let previous: HashMap<_, _> = old
+        .iter()
+        .filter_map(|r| r.track.playback.file().map(|path| (path.to_path_buf(), r)))
+        .collect();
     let mut seen = HashSet::new();
     let mut result = Scan::default();
     for root in paths {
@@ -157,8 +160,13 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
                     result.warn(error.path().map(Path::to_path_buf), error.to_string());
                     // A disconnected volume must not erase its catalog.
                     if let Some(path) = error.path() {
-                        for record in old.iter().filter(|r| r.track.path.starts_with(path)) {
-                            if seen.insert(record.track.path.clone()) {
+                        for record in old.iter().filter(|r| {
+                            r.track
+                                .playback
+                                .file()
+                                .is_some_and(|file| file.starts_with(path))
+                        }) {
+                            if seen.insert(record.track.playback.file().unwrap().to_path_buf()) {
                                 result.records.push(record.clone());
                             }
                         }
@@ -173,13 +181,13 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
             &a.track.artist,
             &a.track.album,
             a.track.track_number,
-            &a.track.path,
+            a.track.playback.file(),
         )
             .cmp(&(
                 &b.track.artist,
                 &b.track.album,
                 b.track.track_number,
-                &b.track.path,
+                b.track.playback.file(),
             ))
     });
     result
@@ -246,12 +254,12 @@ pub fn read_track(path: &Path, id: String, cache: &Path) -> Result<Track> {
     }
     Ok(Track {
         id,
-        path: path.into(),
+        playback: crate::model::PlaybackSource::File { path: path.into() },
         title,
         artist,
         album,
         track_number,
-        duration_ms: tagged.properties().duration().as_millis() as u64,
+        duration_ms: Some(tagged.properties().duration().as_millis() as u64),
         cover,
         source: None,
     })
@@ -287,7 +295,7 @@ fn read_mp4(path: &Path, id: String, cache: &Path) -> Result<Track> {
     }
     Ok(Track {
         id,
-        path: path.into(),
+        playback: crate::model::PlaybackSource::File { path: path.into() },
         title: tag
             .title()
             .map(clean)
@@ -299,7 +307,7 @@ fn read_mp4(path: &Path, id: String, cache: &Path) -> Result<Track> {
             .unwrap_or_else(|| "Unknown artist".into()),
         album: tag.album().map(clean).unwrap_or_default(),
         track_number: tag.track_number().unwrap_or(0).into(),
-        duration_ms: tag.duration().as_millis() as u64,
+        duration_ms: Some(tag.duration().as_millis() as u64),
         cover,
         source: None,
     })

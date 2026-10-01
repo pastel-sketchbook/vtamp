@@ -48,9 +48,10 @@ pub(super) fn run(
         && !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory)
     {
         eprintln!("vtamp: Cannot initialize background macOS application; media controls disabled");
-        return task();
+        return crate::audio::radio::run(task);
     }
     RUNNING.store(true, Ordering::Release);
+    crate::audio::radio::runtime_ready();
     let worker = std::thread::Builder::new().name("vtamp-server".into()).spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
         DispatchQueue::main().exec_async(|| {
@@ -287,6 +288,15 @@ impl Native {
             for (command, _) in &self.handlers {
                 command.setEnabled(available);
             }
+            MPRemoteCommandCenter::sharedCommandCenter()
+                .changePlaybackPositionCommand()
+                .setEnabled(
+                    available
+                        && snapshot
+                            .track
+                            .as_ref()
+                            .is_some_and(|track| !track.is_live()),
+                );
         }
         self.current = Some(snapshot);
         if needs_publish {
@@ -305,8 +315,6 @@ impl Native {
                     MPMediaItemPropertyTitle,
                     MPMediaItemPropertyArtist,
                     MPMediaItemPropertyAlbumTitle,
-                    MPMediaItemPropertyPlaybackDuration,
-                    MPNowPlayingInfoPropertyElapsedPlaybackTime,
                     MPNowPlayingInfoPropertyPlaybackRate,
                     MPNowPlayingInfoPropertyMediaType,
                 ];
@@ -319,11 +327,22 @@ impl Native {
                     NSString::from_str(&track.title).into(),
                     NSString::from_str(&track.artist).into(),
                     NSString::from_str(&track.album).into(),
-                    NSNumber::new_f64(track.duration_ms as f64 / 1000.0).into(),
-                    NSNumber::new_f64(snapshot.position_at(Instant::now()) as f64 / 1000.0).into(),
                     NSNumber::new_f64(rate).into(),
                     NSNumber::new_usize(MPNowPlayingInfoMediaType::Audio.0).into(),
                 ];
+                keys.push(MPNowPlayingInfoPropertyIsLiveStream);
+                values.push(NSNumber::new_bool(track.is_live()).into());
+                if let Some(duration) = track.duration_ms {
+                    keys.extend([
+                        MPMediaItemPropertyPlaybackDuration,
+                        MPNowPlayingInfoPropertyElapsedPlaybackTime,
+                    ]);
+                    values.extend([
+                        NSNumber::new_f64(duration as f64 / 1000.0).into(),
+                        NSNumber::new_f64(snapshot.position_at(Instant::now()) as f64 / 1000.0)
+                            .into(),
+                    ]);
+                }
                 if let Some(art) = &self.artwork.value {
                     keys.push(MPMediaItemPropertyArtwork);
                     values.push(art.clone().into());

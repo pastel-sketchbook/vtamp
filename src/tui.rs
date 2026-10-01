@@ -1,4 +1,5 @@
 mod imports;
+mod streams;
 use crate::{
     artwork::Artwork,
     cli::Art,
@@ -40,7 +41,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nEsc     Clear search      Ctrl-U  Clear typed text\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -186,6 +187,7 @@ struct ThemePicker {
 
 struct App {
     import_ui: imports::ImportUi,
+    stream_dialog: Option<streams::Dialog>,
     spectrum: SpectrumView,
     viewport: Rect,
     theme: Theme,
@@ -290,6 +292,7 @@ pub async fn run(
     let size = terminal.size()?;
     let mut app = App {
         import_ui: imports::ImportUi::default(),
+        stream_dialog: None,
         spectrum: SpectrumView::new(saved_spectrum),
         viewport: Rect::new(0, 0, size.width, size.height),
         theme,
@@ -517,7 +520,7 @@ pub async fn run(
                 app.caret
             })?;
             last_draw = Instant::now();
-            let wanted = app.spectrum_visible() && app.connected;
+            let wanted = app.spectrum_visible() && app.connected && !app.state.current().is_some_and(|item| item.track.is_live());
             spectrum_enabled.send_if_modified(|value| {
                 if *value == wanted { false } else { *value = wanted; true }
             });
@@ -651,7 +654,12 @@ impl App {
     }
 
     fn next_redraw(&self, last_draw: Instant) -> Option<Instant> {
-        let playing = self.connected && self.state.status == PlaybackStatus::Playing;
+        let playing = self.connected
+            && self.state.status == PlaybackStatus::Playing
+            && !self
+                .state
+                .current()
+                .is_some_and(|item| item.track.is_live());
         let animation = if self.spectrum_visible() && self.spectrum.needs_animation(playing) {
             Some(last_draw + Duration::from_millis(50))
         } else if playing && self.viewport.width >= 40 && self.viewport.height >= 12 {
@@ -682,7 +690,12 @@ impl App {
     fn cover_hidden(&self) -> bool {
         // The theme picker stays in the browser area, away from album art.
         // Help and import dialogs can overlap the player and must hide pixels.
-        self.help || self.import_ui.modal.is_some()
+        self.help
+            || self.import_ui.modal.is_some()
+            || matches!(
+                self.stream_dialog,
+                Some(streams::Dialog::Preview { .. } | streams::Dialog::Remove { .. })
+            )
     }
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
@@ -961,6 +974,16 @@ impl App {
             ) => {
                 self.import_reveal_reply(&id, &query, result);
             }
+            Message::Reply(command, result)
+                if matches!(
+                    command,
+                    Command::StreamPreview { .. }
+                        | Command::StreamAdd { .. }
+                        | Command::StreamRemove { .. }
+                ) =>
+            {
+                self.stream_reply(command, result, commands)
+            }
             Message::Reply(command, result) => match result {
                 Err(error) => {
                     if matches!(command, Command::LibraryList { ref query, offset, .. }
@@ -1094,6 +1117,9 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
+        if self.stream_key(key, commands) {
+            return Ok(false);
+        }
         if self.import_key(key, commands) {
             return Ok(false);
         }
@@ -1117,6 +1143,9 @@ impl App {
                 KeyCode::Enter => match self.input.take().unwrap() {
                     Input::Search(query) => self.apply_search(query, commands),
                     Input::Folder(path) if !path.trim().is_empty() => {
+                        if self.stream_input(&path, commands) {
+                            return Ok(false);
+                        }
                         if self.import_ui.enabled
                             && (path.trim().starts_with("https://")
                                 || path.trim().starts_with("http://"))
@@ -1236,7 +1265,7 @@ impl App {
             }
             KeyCode::Char('m') if self.import_ui.enabled => {
                 self.import_ui.scroll = 0;
-                if let Some(t) = self.selected_track() {
+                if let Some(t) = self.selected_track().filter(|t| !t.is_live()) {
                     self.import_ui.modal = Some(imports::Modal::Edit {
                         id: t.id.clone(),
                         title: t.title.clone(),
@@ -1269,6 +1298,14 @@ impl App {
                     },
                 },
             ),
+            KeyCode::Left | KeyCode::Right
+                if self
+                    .state
+                    .current()
+                    .is_some_and(|item| item.track.is_live()) =>
+            {
+                self.notice("Live radio cannot seek. Resume reconnects to the current broadcast.")
+            }
             KeyCode::Left => self.send(
                 commands,
                 Command::Seek {
@@ -1351,6 +1388,14 @@ impl App {
                             queue_item: Some(item.id.clone()),
                         },
                     );
+                }
+            }
+            KeyCode::Char('d') if self.focus == Focus::Library => {
+                if let Some(t) = self.selected_track().filter(|t| t.is_live()) {
+                    self.stream_dialog = Some(streams::Dialog::Remove {
+                        id: t.id.clone(),
+                        name: t.title.clone(),
+                    });
                 }
             }
             KeyCode::Char('x' | 'd') if self.focus == Focus::Queue => {
@@ -1453,7 +1498,10 @@ impl App {
         } else {
             0
         };
-        let duration = self.state.current().map_or(0, |q| q.track.duration_ms);
+        let duration = self
+            .state
+            .current()
+            .map_or(0, |q| q.track.duration_ms.unwrap_or(0));
         (self.state.position_ms + elapsed).min(duration)
     }
     fn draw(&mut self, frame: &mut Frame) {
@@ -1534,13 +1582,7 @@ impl App {
         self.now_playing(frame, now, embedded_spectrum);
         if self.spectrum_replaces_list() {
             if self.spectrum_visible() {
-                self.spectrum.draw(
-                    frame,
-                    content,
-                    p,
-                    true,
-                    self.connected && self.state.status == PlaybackStatus::Playing,
-                );
+                self.draw_spectrum(frame, content, true);
             }
         } else if !side_by_side && area.width >= 100 {
             let [library, queue] =
@@ -1591,7 +1633,15 @@ impl App {
             status,
         );
         let keys = if area.width >= 100 {
-            " Space play  n/b skip  ←/→ seek  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
+            if self
+                .state
+                .current()
+                .is_some_and(|item| item.track.is_live())
+            {
+                " Space play  n/b skip  a add  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
+            } else {
+                " Space play  n/b skip  ←/→ seek  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
+            }
         } else if area.width >= 52 {
             " Space play  Tab list  v spectrum  ? help  q detach"
         } else {
@@ -1609,9 +1659,9 @@ impl App {
                 ),
                 Input::Folder(s) => (
                     if self.import_ui.enabled {
-                        " Add folder or YouTube URL · Enter adds · Esc cancels "
+                        " Add folder / URL / M3U / PLS · Enter adds · Esc cancels "
                     } else {
-                        " Add music folder · Enter scans · Esc cancels "
+                        " Add folder / stream URL / playlist · Enter · Esc "
                     },
                     s,
                 ),
@@ -1637,6 +1687,7 @@ impl App {
             }
         }
         self.draw_imports(frame, area);
+        self.draw_stream_dialog(frame, area);
         if self.help {
             self.caret = None;
             self.draw_help(frame, area);
@@ -1664,13 +1715,7 @@ impl App {
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(inner);
             if self.spectrum_visible() {
-                self.spectrum.draw(
-                    frame,
-                    right,
-                    p,
-                    false,
-                    self.connected && self.state.status == PlaybackStatus::Playing,
-                );
+                self.draw_spectrum(frame, right, false);
             }
             if self.show_art && left.width >= 28 {
                 let cover_width = (left.width.saturating_sub(22)).min(inner.height * 2);
@@ -1726,7 +1771,7 @@ impl App {
                         Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                     ),
                     Line::styled(
-                        format!("{:?} · VOL {}%", self.state.status, self.state.volume),
+                        format!("{} · VOL {}%", self.playback_label(), self.state.volume),
                         Style::default().fg(p.muted),
                     ),
                 ]),
@@ -1734,8 +1779,12 @@ impl App {
             );
             return;
         }
-        let artist = item.map_or("Press a to add a music folder, then Enter to play.", |q| {
-            q.track.artist.as_str()
+        let artist = item.map_or("Press a to add music or radio, then Enter to play.", |q| {
+            if q.track.is_live() {
+                "Live radio"
+            } else {
+                q.track.artist.as_str()
+            }
         });
         let album = item.map_or(Some("Local files. No account. No permanent pane."), |q| {
             q.track.album_name()
@@ -1749,7 +1798,7 @@ impl App {
                 PlaybackStatus::Stopped => "STOPPED",
             }
         };
-        let duration = item.map_or(0, |q| q.track.duration_ms);
+        let duration = item.map_or(0, |q| q.track.duration_ms.unwrap_or(0));
         let pos = self.position();
         let compact_controls = info.width < 52;
         let [names, progress, controls] = Layout::vertical([
@@ -1780,17 +1829,24 @@ impl App {
         } else {
             (pos as f64 / duration as f64).clamp(0.0, 1.0)
         };
-        frame.render_widget(
-            Gauge::default()
-                .ratio(ratio)
-                .gauge_style(Style::default().fg(p.accent).bg(p.panel))
-                .label(format!(
-                    "{} / {}",
-                    display_time(pos),
-                    display_time(duration)
-                )),
-            progress,
-        );
+        if item.is_some_and(|item| item.track.is_live()) {
+            frame.render_widget(
+                Paragraph::new(self.playback_label()).style(Style::default().fg(p.accent)),
+                progress,
+            );
+        } else {
+            frame.render_widget(
+                Gauge::default()
+                    .ratio(ratio)
+                    .gauge_style(Style::default().fg(p.accent).bg(p.panel))
+                    .label(format!(
+                        "{} / {}",
+                        display_time(pos),
+                        display_time(duration)
+                    )),
+                progress,
+            );
+        }
         let shuffle = if self.state.shuffle { "ON" } else { "OFF" };
         let repeat = match self.state.repeat {
             Repeat::Off => "OFF",
@@ -1828,17 +1884,27 @@ impl App {
         );
         let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press r to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
                 .iter()
                 .map(|t| {
                     ListItem::new(vec![
-                        Line::from(t.title.clone()),
+                        Line::from(if t.is_live() {
+                            format!("{} · LIVE", t.title)
+                        } else {
+                            t.title.clone()
+                        }),
                         Line::styled(
                             t.album_name().map_or_else(
-                                || t.artist.clone(),
+                                || {
+                                    if let PlaybackSource::Stream { url } = &t.playback {
+                                        url.clone()
+                                    } else {
+                                        t.artist.clone()
+                                    }
+                                },
                                 |album| format!("{} · {album}", t.artist),
                             ),
                             Style::default().fg(p.muted),
@@ -1885,16 +1951,20 @@ impl App {
                                 "{} {:02}  {}",
                                 if current { "▶" } else { " " },
                                 i + 1,
-                                q.track.title
+                                if q.track.is_live() {
+                                    format!("{} · LIVE", q.track.title)
+                                } else {
+                                    q.track.title.clone()
+                                }
                             ),
                             Style::default().fg(if current { p.accent } else { p.text }),
                         ),
                         Line::styled(
-                            format!(
-                                "       {} · {}",
-                                q.track.artist,
-                                display_time(q.track.duration_ms)
-                            ),
+                            if q.track.is_live() {
+                                "       Live radio".into()
+                            } else {
+                                format!("       {} · {}", q.track.artist, q.track.time_label())
+                            },
                             Style::default().fg(p.muted),
                         ),
                     ])
@@ -1985,6 +2055,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn radio_prompts_work_without_downloader_and_keep_keys_local() {
+        use ratatui::backend::TestBackend;
+        let mut app = navigation_app(2);
+        let (commands, mut requests) = mpsc::channel(16);
+        assert!(app.stream_input("https://example.com/live.m3u8", &commands));
+        for c in "한국 라디오".chars() {
+            app.key(
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                &commands,
+            )
+            .unwrap();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(72, 20)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(app.caret.is_some());
+        assert!(!app.cover_hidden());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+            .unwrap();
+        let Command::StreamAdd { entries } = requests.try_recv().unwrap() else {
+            panic!("Expected registration");
+        };
+        assert_eq!(entries[0].name, "한국 라디오");
+        assert!(requests.try_recv().is_err());
+        app.stream_dialog = Some(streams::Dialog::Preview {
+            path: "/tmp/list.m3u".into(),
+            entries: Some(vec![entries[0].clone(); 100]),
+            error: None,
+            scroll: 0,
+        });
+        for (width, height) in [(40, 12), (72, 20), (120, 36)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &commands)
+                .unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("Enter add all"));
+            assert!(app.cover_hidden());
+            assert!(requests.try_recv().is_err());
+        }
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(app.stream_dialog.is_none());
+    }
+
+    #[test]
+    fn live_view_has_no_timeline_seek_or_animation_timer() {
+        use ratatui::backend::TestBackend;
+        let mut app = navigation_app(1);
+        app.state.queue[0].track = crate::streams::Entry {
+            name: "Radio".into(),
+            url: "https://example.com/live".into(),
+        }
+        .track();
+        app.state.current_id = Some(app.state.queue[0].id.clone());
+        app.state.status = PlaybackStatus::Playing;
+        app.state.stream_status = Some(StreamStatus::Reconnecting);
+        app.notice_at = Instant::now() - Duration::from_secs(10);
+        let (commands, mut requests) = mpsc::channel(8);
+        for (width, height) in [(40, 12), (72, 20), (120, 36)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("Reconnecting"));
+            assert!(!text.contains("0:00 /"));
+            assert!(app.next_redraw(Instant::now()).is_none());
+        }
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
     fn spectrum_layout_and_hidden_list_keys_preserve_selection() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = navigation_app(10);
@@ -2041,12 +2195,14 @@ mod tests {
         app.tracks = (0..count)
             .map(|i| Track {
                 id: i.to_string(),
-                path: format!("/{i}.m4a").into(),
+                playback: crate::model::PlaybackSource::File {
+                    path: format!("/{i}.m4a").into(),
+                },
                 title: format!("Track {i}"),
                 artist: "Artist".into(),
                 album: "Album".into(),
                 track_number: i as u32,
-                duration_ms: 180_000,
+                duration_ms: Some(180_000),
                 cover: None,
                 source: None,
             })
@@ -2471,12 +2627,14 @@ mod tests {
         app.tracks = (0..25)
             .map(|i| Track {
                 id: i.to_string(),
-                path: format!("/{i}.m4a").into(),
+                playback: crate::model::PlaybackSource::File {
+                    path: format!("/{i}.m4a").into(),
+                },
                 title: format!("Track {i}"),
                 artist: "Artist".into(),
                 album: "Album".into(),
                 track_number: i,
-                duration_ms: 180_000,
+                duration_ms: Some(180_000),
                 cover: None,
                 source: None,
             })
@@ -2968,12 +3126,14 @@ mod tests {
         let mut app = app();
         let track = Track {
             id: "track".into(),
-            path: "/example.m4a".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/example.m4a".into(),
+            },
             title: "음악 · After Hours".into(),
             artist: "The Night Shift".into(),
             album: "Terminal Sessions".into(),
             track_number: 1,
-            duration_ms: 180_000,
+            duration_ms: Some(180_000),
             cover: None,
             source: None,
         };
@@ -3126,6 +3286,7 @@ mod tests {
         let (tx, _rx) = sync_mpsc::channel();
         App {
             import_ui: imports::ImportUi::default(),
+            stream_dialog: None,
             spectrum: SpectrumView::new(false),
             viewport: Rect::default(),
             theme: Theme::default(),
@@ -3200,7 +3361,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(!text.contains("URL"));
+        assert!(text.contains("stream URL"));
+        assert!(!text.to_lowercase().contains("youtube"));
         assert!(text.contains("folder"));
     }
 
@@ -3242,12 +3404,14 @@ mod tests {
         app.import_ui.enabled = true;
         let track = Track {
             id: "track".into(),
-            path: "/example.m4a".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/example.m4a".into(),
+            },
             title: "Song".into(),
             artist: "Singer".into(),
             album: String::new(),
             track_number: 0,
-            duration_ms: 180_000,
+            duration_ms: Some(180_000),
             cover: None,
             source: None,
         };

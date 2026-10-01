@@ -16,6 +16,8 @@ use std::{
 mod buffered;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+pub mod radio;
 use buffered::DecoderWorker;
 
 /// Open a streaming decoder without opening an audio output device.
@@ -39,6 +41,25 @@ pub fn decode_file(path: &Path) -> Result<Box<dyn Source + Send>> {
 
 pub trait PlaybackBackend: Send {
     fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()>;
+    fn load_source(
+        &mut self,
+        source: &crate::model::PlaybackSource,
+        position_ms: u64,
+        volume: u8,
+        paused: bool,
+    ) -> Result<()> {
+        match source {
+            crate::model::PlaybackSource::File { path } => {
+                self.load(path, position_ms, volume, paused)
+            }
+            crate::model::PlaybackSource::Stream { .. } => {
+                anyhow::bail!("Live streams are supported on macOS")
+            }
+        }
+    }
+    fn stream_update(&mut self) -> Option<StreamUpdate> {
+        None
+    }
     fn pause(&mut self);
     fn resume(&mut self) -> Result<()>;
     fn stop(&mut self);
@@ -51,6 +72,13 @@ pub trait PlaybackBackend: Send {
     fn output_event(&mut self) -> Option<String> {
         None
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamUpdate {
+    pub status: crate::model::StreamStatus,
+    pub error: Option<String>,
+    pub fatal: bool,
 }
 
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
@@ -67,6 +95,8 @@ impl std::error::Error for OutputUnavailable {}
 
 #[derive(Default)]
 pub struct RodioBackend {
+    #[cfg(target_os = "macos")]
+    radio: Option<radio::Player>,
     spectrum: Option<Arc<crate::spectrum::Spectrum>>,
     // Player must be dropped before its output stream.
     player: Option<Player>,
@@ -185,7 +215,46 @@ impl RodioBackend {
 }
 
 impl PlaybackBackend for RodioBackend {
+    fn load_source(
+        &mut self,
+        source: &crate::model::PlaybackSource,
+        position_ms: u64,
+        volume: u8,
+        paused: bool,
+    ) -> Result<()> {
+        match source {
+            crate::model::PlaybackSource::File { path } => {
+                self.load(path, position_ms, volume, paused)
+            }
+            crate::model::PlaybackSource::Stream { url } => {
+                self.stop();
+                #[cfg(target_os = "macos")]
+                {
+                    self.radio = Some(radio::Player::new(url.clone(), volume, paused)?);
+                    self.volume = volume;
+                    self.paused = paused;
+                    Ok(())
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = url;
+                    anyhow::bail!("Live streams are supported on macOS")
+                }
+            }
+        }
+    }
+    fn stream_update(&mut self) -> Option<StreamUpdate> {
+        #[cfg(target_os = "macos")]
+        if let Some(radio) = &self.radio {
+            return Some(radio.poll());
+        }
+        None
+    }
     fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.radio = None;
+        }
         let mut source = decode_file(path)?;
         // Seek the decoder directly: Player::try_seek waits for the audio callback,
         // which may never arrive while a Bluetooth output is disappearing.
@@ -226,6 +295,12 @@ impl PlaybackBackend for RodioBackend {
         Ok(())
     }
     fn pause(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(radio) = &mut self.radio {
+            radio.pause();
+            self.paused = true;
+            return;
+        }
         if let Some(player) = &self.player {
             player.pause();
         }
@@ -236,10 +311,20 @@ impl PlaybackBackend for RodioBackend {
         self.paused = true;
     }
     fn resume(&mut self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(radio) = &mut self.radio {
+            radio.resume();
+            self.paused = false;
+            return Ok(());
+        }
         let path = self.path.clone().context("No audio is loaded")?;
         self.load(&path, self.position_offset_ms, self.volume, false)
     }
     fn stop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.radio = None;
+        }
         self.clear_player();
         self.close_output();
         self.path = None;
@@ -247,12 +332,18 @@ impl PlaybackBackend for RodioBackend {
         self.position_offset_ms = 0;
     }
     fn seek(&mut self, position_ms: u64) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        anyhow::ensure!(self.radio.is_none(), "Live streams cannot seek");
         let path = self.path.clone().context("No audio is loaded")?;
         let paused = self.paused;
         self.load(&path, position_ms, self.volume, paused)
     }
     fn volume(&mut self, value: u8) {
         self.volume = value;
+        #[cfg(target_os = "macos")]
+        if let Some(radio) = &mut self.radio {
+            radio.volume(value);
+        }
         if let Some(p) = &self.player {
             p.set_volume(f32::from(value) / 100.0);
         }

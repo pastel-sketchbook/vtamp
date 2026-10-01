@@ -2,7 +2,7 @@
   <img src="site/mark.png" width="64" alt="vtamp">
   <h1>vtamp</h1>
   <p><strong>Music stays. Your terminal moves on.</strong></p>
-  <p>A detachable terminal music player. Rust. Local files. macOS first.</p>
+  <p>A detachable terminal music player. Rust. Local music and live radio. macOS first.</p>
 </div>
 
 There used to be a little player on the corner of your desktop. A playlist, an album cover, a green display. It did one thing, and it felt like yours.
@@ -25,6 +25,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, and an editable shared queue.
+- Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
 - Read-only audio spectrum with multicolor bars and falling peaks; press `v` to toggle.
@@ -38,7 +39,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 - Saved queue, playback position, volume, shuffle, and repeat settings.
 - A small, dependency-free [landing page](site/).
 
-macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Streaming, named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
+macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
 ## Install from source
 
@@ -77,6 +78,49 @@ vtamp play '/path/to/first.m4a' '/path/to/second.flac'
 `play PATH...` appends the supported files and starts the first new queue entry. `queue add PATH...` appends without interrupting playback. Adding paths directly to the queue does not register them as library roots. Directory imports use artist, album, track number, and path order. Nested symbolic-link directories are not followed.
 
 The first-run volume is 70% of system output. `vtamp volume 35` sets the player to 35%; it does not change the system volume.
+
+## Live radio
+
+Register a channel using its stable HTTP(S) URL and a name:
+
+```sh
+vtamp library stream add 'https://radio.bsod.kr/stream?stn=kbs&ch=1fm' --name 'KBS 1FM'
+vtamp library stream import ~/Downloads/seoul.m3u --preview
+vtamp library stream import ~/Downloads/seoul.m3u
+vtamp library stream remove STREAM_ID
+```
+
+For [radio.bsod.kr](https://radio.bsod.kr/), copy the channel's **fixed URL**
+(고정 URL), or export the selected region as M3U or PLS. A final broadcast URL
+may contain an expiring token; vtamp reconnects using the URL you registered.
+No yt-dlp, FFmpeg, account, or download step is needed for radio playback.
+
+In the TUI, press **a** and enter a stream URL, then its channel name. The same
+prompt accepts a local M3U/PLS file; review its channels and press Enter to add
+all. Escape cancels. Lists must be UTF-8, at most 1 MiB and 1000 channels, and
+contain HTTP(S) entries. Invalid entries reject the whole import. HLS manifests
+are playback inputs, not channel lists: register their HTTP(S) URL instead.
+`--preview` only reads the file, without starting the server or writing state.
+
+Channels appear in Library and Queue with **LIVE**. Enter, Ctrl+Enter, and **e**
+retain their usual play/direct-play/enqueue behavior. Duplicate registrations
+keep the existing name and ID; explicit queue additions still allow duplicates.
+Folder rescans preserve channels. Press **d** on a Library channel and confirm
+to unregister it; current playback and queued copies remain available. To change
+a registered name or URL, remove it and register it again.
+
+The server shows Connecting, Buffering, LIVE, or Reconnecting. Pause closes the
+connection; resume connects to the current broadcast. A server restart restores
+radio paused without contacting the station. Network interruptions retry the same
+channel with backoff (1, 2, 4, 8, 16, then 30 seconds); pause, stop, and switching
+channels cancel retries. Unsupported sources pause with a diagnostic. A dropped
+connection does not advance the queue. Next/previous remain manual navigation.
+
+Live radio has no seekable timeline, natural ending, or spectrum in this release.
+Use `vtamp sleep set 30m` to stop on a timer; `stop --after-current` rejects live
+channels. Native playback supports HLS and HTTP(S) MP3/AAC; login/DRM services,
+YouTube live, recording, and timeshift are outside this feature. Availability
+still depends on the broadcaster and your network/location.
 
 ## The interface is disposable
 
@@ -167,13 +211,13 @@ the desktop integration cannot initialize.
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
 | `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears the filter |
 | `Ctrl-U` | Clear the text in a search, folder, or track-editor field |
-| `a` | Add a music folder |
+| `a` | Add a folder, stream URL, or M3U/PLS channel list |
 | `r` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |
 | `Enter` | Play a library track, reusing a queue entry if present; or play the selected queue entry |
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
-| `x` / `d` | Remove the selected queue entry |
+| `x` / `d` | Remove the selected queue entry; Library `d` unregisters a stream after confirmation |
 | `J` / `K` | Move the selected queue entry down / up |
 | `v` | Toggle the read-only audio spectrum |
 | `t` | Preview and choose a color theme |
@@ -403,11 +447,11 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":5,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":6,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":5,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":6,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
 `status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
@@ -417,7 +461,7 @@ Every JSON response has a protocol version and `ok`. Successful responses have `
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":5,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":6,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -567,12 +611,25 @@ and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds)
 
 ### Updating from protocol 1, 2, 3, or 4
 
-This build uses **protocol 5** and migrates the library to **database version 5**
+This build uses **protocol 6** and migrates the library to **database version 6**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,
 position, volume, and play-next entries are preserved. Older binaries cannot
 open the migrated database.
+
+Optional native radio verification uses an isolated, muted server and generated
+silence, including HTTP redirects, token renewal, deliberate network failure,
+pause, restart, and sleep deadlines:
+
+```sh
+cargo build --locked --release
+python3 scripts/check-radio.py
+```
+
+This check requires macOS audio access and installed FFmpeg **only to generate
+test fixtures**. It contacts a temporary localhost server, not public stations.
+Radio playback itself has no FFmpeg dependency.
 
 ## Storage and troubleshooting
 

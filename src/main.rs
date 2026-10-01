@@ -23,7 +23,7 @@ fn main() {
         Some(Action::Server {
             command: vtamp::cli::Server::Run
         })
-    ) && vtamp::media_controls::enabled()
+    ) && cfg!(target_os = "macos")
     {
         vtamp::media_controls::run(move || run(args))
     } else {

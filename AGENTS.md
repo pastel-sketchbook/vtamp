@@ -163,8 +163,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
 
 ## Agent CLI contracts
 
-- Protocol and database versions are 5. New server startup migrates v1/v2/v3/v4 databases
-  with transactional migration steps, preserving IDs; old binaries reject v5. Do not restart the listener
+- Protocol and database versions are 6. New server startup migrates v1/v2/v3/v4/v5 databases
+  with transactional migration steps, preserving IDs; old binaries reject v6. Do not restart the listener
   just to upgrade during an active user listening session.
 - `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
   status are read-only and never auto-start a server. Dry-run edits also must not
@@ -229,7 +229,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   playing track changes/seeks and keep the OS buffer size. Dispose/join native
   decoders on the worker/control threads, not from a source dropped by rodio.
   Unchanged idle sessions must not write periodic position checkpoints.
-- On macOS, only AAC uses AudioToolbox; inspect the actual codec rather than the
+- For local files on macOS, only AAC uses AudioToolbox; inspect the actual codec rather than the
   extension so ALAC/m4a remains on Symphonia. Do not add an AAC software fallback.
   Keep `symphonia-codec-aac` out of the macOS target dependency graph (it may remain
   in Cargo.lock for non-macOS). Native handles have exclusive ownership and are
@@ -241,7 +241,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   inactive frames (active frames remain liveness heartbeats), and release the worker when its last owner disappears.
   Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
   pause/resume, track changes, and output recovery. SpectrumWatch is an optional
-  protocol-5 stream separate from State/Event, without database or revision writes.
+  protocol-6 stream separate from State/Event, without database or revision writes.
   `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
   Tab returns to the previous list and slash opens Library search. Theme saves and
   spectrum toggles must preserve each other's stored preference.
@@ -418,3 +418,25 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
   use local mock HTTP/CLI backends. Real extraction and graphics checks are
   separate; never test against the user's active session or authenticated browser
   profile unless explicitly requested.
+
+## Live radio
+
+- `src/streams.rs` validates registrations and UTF-8 M3U/PLS channel lists;
+  `src/audio/radio.rs` owns native macOS AVPlayer controls; `src/tui/streams.rs`
+  owns radio prompts/previews. Radio does not require yt-dlp or FFmpeg.
+- Preserve fixed registration URLs across redirects/reconnects. Never persist
+  resolved tokenized endpoints. HTTP(S) only; no credentials, DRM, or recording.
+- Store streams separately from scanned files and query the combined catalog for
+  search, paging, and anchors. Invalid batches are atomic; URL registration
+  duplicates keep the old identity/name, while queue duplicates remain permitted.
+- Native AVPlayer and its retained objects stay on the main run loop; server
+  commands never wait on network/native creation. Supply the run loop even with
+  media keys disabled, without publishing system media controls. Reject obsolete
+  connection generations and dispose players on pause, stop, switching, and exit.
+- Live duration is null, position stays zero, and stream status is transient.
+  Restore paused without network. Disconnects never advance Queue; sleep deadlines
+  still stop retries, and after-current/seek reject live media. Native stream
+  playback does not feed the spectrum in v1. Local decoding rules remain intact.
+- Exercise real radio only in a muted private VTAMP_HOME with media keys off;
+  terminate its server in finally. Native playable metadata alone does not prove
+  audio output. Never upgrade the active listening server for a test.

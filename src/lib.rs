@@ -18,6 +18,7 @@ pub mod settings;
 pub mod spectrum;
 mod spectrum_view;
 pub mod store;
+pub mod streams;
 mod subprocess;
 pub mod theme;
 mod tmux;

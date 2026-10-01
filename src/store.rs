@@ -25,7 +25,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
         if version == 0 {
@@ -76,6 +76,13 @@ impl Store {
             // Older binaries cannot restore a current item outside the queue.
             db.execute_batch("BEGIN; PRAGMA user_version = 5; COMMIT;")?;
         }
+        if version < 6 {
+            db.execute_batch("BEGIN;
+                CREATE TABLE IF NOT EXISTS streams(id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, search TEXT NOT NULL, json TEXT NOT NULL, title_search TEXT NOT NULL, artist_search TEXT NOT NULL, album_search TEXT NOT NULL);
+                CREATE VIEW IF NOT EXISTS catalog AS SELECT * FROM tracks UNION ALL SELECT * FROM streams;
+                PRAGMA user_version = 6;
+                COMMIT;")?;
+        }
         Ok(Self { db })
     }
     pub fn restore(&self) -> Result<State> {
@@ -95,6 +102,10 @@ impl Store {
         };
         state.scanning = false;
         state.scheduled_stop = None;
+        state.stream_status = None;
+        if state.current().is_some_and(|item| item.track.is_live()) {
+            state.position_ms = 0;
+        }
         state.volume = state.volume.min(100);
         Ok(state)
     }
@@ -143,11 +154,11 @@ impl Store {
     pub fn search(&self, query: &str, offset: usize, limit: usize) -> Result<(Vec<Track>, usize)> {
         let query = normalized(query);
         let total: i64 = self.db.query_row(
-            "SELECT count(*) FROM tracks WHERE instr(search,?1)>0",
+            "SELECT count(*) FROM catalog WHERE instr(search,?1)>0",
             [&query],
             |r| r.get(0),
         )?;
-        let strings = self.db.prepare("SELECT json FROM tracks WHERE instr(search,?1)>0 ORDER BY search,path LIMIT ?2 OFFSET ?3")?
+        let strings = self.db.prepare("SELECT json FROM catalog WHERE instr(search,?1)>0 ORDER BY search,path LIMIT ?2 OFFSET ?3")?
             .query_map(params![query, limit.clamp(1, 1000) as i64, i64::try_from(offset)?], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
         let tracks = strings
             .into_iter()
@@ -160,7 +171,7 @@ impl Store {
     pub fn search_around(&self, query: &str, id: &str, limit: usize) -> Result<LibraryPage> {
         let (search, path): (String, String) = self
             .db
-            .query_row("SELECT search,path FROM tracks WHERE id=?1", [id], |r| {
+            .query_row("SELECT search,path FROM catalog WHERE id=?1", [id], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .optional()?
@@ -171,7 +182,7 @@ impl Store {
             ""
         };
         let rank: i64 = self.db.query_row(
-            "SELECT count(*) FROM tracks WHERE instr(search,?1)>0 AND (search,path)<(?2,?3)",
+            "SELECT count(*) FROM catalog WHERE instr(search,?1)>0 AND (search,path)<(?2,?3)",
             params![normalized(query), search, path],
             |r| r.get(0),
         )?;
@@ -224,13 +235,13 @@ impl Store {
         }
         let condition = predicates.join(" AND ");
         let total: i64 = self.db.query_row(
-            &format!("SELECT count(*) FROM tracks WHERE {condition}"),
+            &format!("SELECT count(*) FROM catalog WHERE {condition}"),
             rusqlite::params_from_iter(&values),
             |row| row.get(0),
         )?;
         let offset = i64::try_from(offset)?;
         let sql = format!(
-            "SELECT json FROM tracks WHERE {condition} ORDER BY search,path LIMIT {} OFFSET {offset}",
+            "SELECT json FROM catalog WHERE {condition} ORDER BY search,path LIMIT {} OFFSET {offset}",
             limit.clamp(1, 1000)
         );
         let records = self
@@ -357,11 +368,47 @@ impl Store {
     pub fn track(&self, id: &str) -> Result<Option<Track>> {
         let json: Option<String> = self
             .db
-            .query_row("SELECT json FROM tracks WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT json FROM catalog WHERE id=?1", [id], |r| r.get(0))
             .optional()?;
         Ok(json
             .map(|s| serde_json::from_str::<Record>(&s).map(|r| r.track))
             .transpose()?)
+    }
+
+    pub fn add_streams(&mut self, entries: &[crate::streams::Entry]) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            !entries.is_empty() && entries.len() <= crate::streams::MAX_ENTRIES,
+            "Register 1–1000 channels at a time"
+        );
+        let entries = entries
+            .iter()
+            .map(crate::streams::Entry::validated)
+            .collect::<Result<Vec<_>>>()?;
+        let tx = self.db.transaction()?;
+        let mut added = Vec::new();
+        let mut existing = 0;
+        for entry in entries {
+            let track = entry.track();
+            let record = Record {
+                track: track.clone(),
+                modified: 0,
+                bytes: 0,
+            };
+            let count = tx.execute("INSERT INTO streams(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?3,'','') ON CONFLICT(path) DO NOTHING", params![track.id, entry.url, normalized(&entry.name), serde_json::to_string(&record)?])?;
+            if count == 0 {
+                existing += 1;
+            } else {
+                added.push(track);
+            }
+        }
+        tx.commit()?;
+        Ok(serde_json::json!({"added":added.len(),"existing":existing,"tracks":added}))
+    }
+    pub fn remove_stream(&self, id: &str) -> Result<()> {
+        if self.db.execute("DELETE FROM streams WHERE id=?1", [id])? == 0 {
+            return Err(ApiError::new("track_not_found", "Registered stream not found").into());
+        }
+        Ok(())
     }
 }
 
@@ -370,7 +417,14 @@ fn write_catalog(tx: &rusqlite::Transaction<'_>, records: &[Record]) -> Result<(
     let mut paths = std::collections::HashSet::new();
     for record in records {
         anyhow::ensure!(
-            ids.insert(&record.track.id) && paths.insert(&record.track.path),
+            ids.insert(&record.track.id)
+                && paths.insert(
+                    record
+                        .track
+                        .playback
+                        .file()
+                        .context("Catalog records must reference files")?
+                ),
             "Duplicate track in catalog"
         );
     }
@@ -387,6 +441,104 @@ fn write_catalog(tx: &rusqlite::Transaction<'_>, records: &[Record]) -> Result<(
 mod tests {
     use super::*;
     use crate::model::QueueItem;
+    #[test]
+    fn stream_registration_survives_scans_and_uses_unified_paging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("state.db")).unwrap();
+        let entry = crate::streams::Entry {
+            name: "사랑 Radio".into(),
+            url: "https://example.com/live".into(),
+        };
+        let result = store.add_streams(&[entry.clone(), entry]).unwrap();
+        assert_eq!(result["added"], 1);
+        assert_eq!(result["existing"], 1);
+        let id = result["tracks"][0]["id"].as_str().unwrap();
+        store
+            .replace_catalog(&[record("file", "A", "Artist", "")])
+            .unwrap();
+        assert_eq!(store.search("", 0, 10).unwrap().1, 2);
+        let page = store.search_around("", id, 1).unwrap();
+        assert_eq!(page.tracks[0].id, id);
+        assert_eq!(page.offset, 1);
+        assert_eq!(
+            store
+                .search_filtered(
+                    &SearchFilter {
+                        title: Some("사랑".into()),
+                        ..Default::default()
+                    },
+                    0,
+                    10
+                )
+                .unwrap()
+                .1,
+            1
+        );
+        store.replace_catalog(&[]).unwrap();
+        assert!(store.track(id).unwrap().unwrap().is_live());
+        assert!(store.records().unwrap().is_empty());
+        store.remove_stream(id).unwrap();
+        assert!(store.track(id).unwrap().is_none());
+    }
+    #[test]
+    fn stream_batch_failure_rolls_back_every_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("state.db")).unwrap();
+        store.db.execute_batch("CREATE TRIGGER fail_stream BEFORE INSERT ON streams WHEN NEW.title_search='fail' BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
+        let entries = [
+            crate::streams::Entry {
+                name: "Good".into(),
+                url: "https://example.com/1".into(),
+            },
+            crate::streams::Entry {
+                name: "Fail".into(),
+                url: "https://example.com/2".into(),
+            },
+        ];
+        assert!(store.add_streams(&entries).is_err());
+        assert_eq!(store.search("", 0, 10).unwrap().1, 0);
+    }
+    #[test]
+    fn v5_file_sessions_migrate_and_live_sessions_restore_without_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .replace_catalog(&[record("stable", "File", "Artist", "")])
+            .unwrap();
+        let item = QueueItem::new(store.track("stable").unwrap().unwrap());
+        let mut state = State {
+            current_id: Some(item.id.clone()),
+            queue: vec![item],
+            position_ms: 150,
+            ..Default::default()
+        };
+        store.save(&state).unwrap();
+        store
+            .db
+            .execute_batch("DROP VIEW catalog; DROP TABLE streams; PRAGMA user_version=5;")
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.restore().unwrap().current().unwrap().track.id,
+            "stable"
+        );
+        assert_eq!(store.restore().unwrap().position_ms, 150);
+        state.queue[0].track = crate::streams::Entry {
+            name: "Radio".into(),
+            url: "https://example.com/live".into(),
+        }
+        .track();
+        state.status = PlaybackStatus::Playing;
+        state.stream_status = Some(crate::model::StreamStatus::Live);
+        store.save(&state).unwrap();
+        let restored = store.restore().unwrap();
+        assert_eq!(restored.status, PlaybackStatus::Paused);
+        assert_eq!(restored.position_ms, 0);
+        assert_eq!(restored.stream_status, None);
+        assert!(restored.now()["duration_ms"].is_null());
+    }
     #[test]
     fn old_receipt_replays_with_current_protocol_without_losing_its_result() {
         let dir = tempfile::tempdir().unwrap();
@@ -448,12 +600,14 @@ mod tests {
         let db = Store::open(&dir.path().join("test.db")).unwrap();
         let item = QueueItem::new(Track {
             id: "track".into(),
-            path: "/music.m4a".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/music.m4a".into(),
+            },
             title: "Music".into(),
             artist: "Artist".into(),
             album: "Album".into(),
             track_number: 1,
-            duration_ms: 30000,
+            duration_ms: Some(30000),
             cover: None,
             source: None,
         });
@@ -475,12 +629,14 @@ mod tests {
         Record {
             track: Track {
                 id: id.into(),
-                path: format!("/{id}.wav").into(),
+                playback: crate::model::PlaybackSource::File {
+                    path: format!("/{id}.wav").into(),
+                },
                 title: title.into(),
                 artist: artist.into(),
                 album: album.into(),
                 track_number: 1,
-                duration_ms: 1000,
+                duration_ms: Some(1000),
                 cover: None,
                 source: None,
             },
@@ -550,7 +706,7 @@ mod tests {
                 .db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            5
+            6
         );
         let filter = SearchFilter {
             exclude: vec!["LIVE".into()],

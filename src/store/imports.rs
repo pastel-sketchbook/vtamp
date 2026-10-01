@@ -152,11 +152,13 @@ impl Store {
             return Ok(Some(Record {
                 track: Track {
                     id: m.track_id,
-                    path: PathBuf::new(),
+                    playback: crate::model::PlaybackSource::File {
+                        path: PathBuf::new(),
+                    },
                     title: m.metadata.title,
                     artist: m.metadata.artist,
                     album: m.source.music_album.clone().unwrap_or_default(),
-                    duration_ms: 0,
+                    duration_ms: Some(0),
                     track_number: 0,
                     cover: None,
                     source: Some(m.source),
@@ -281,7 +283,7 @@ pub(super) fn apply_metadata(tx: &rusqlite::Transaction<'_>, track: &mut Track) 
             track.album = album;
         }
     } else if track.source.is_some()
-        && let Some(parent) = track.path.parent()
+        && let Some(parent) = track.playback.file().and_then(std::path::Path::parent)
         && let Ok(m) = crate::imports::read_manifest(parent)
     {
         tx.execute("INSERT OR IGNORE INTO track_metadata(id,video_id,manifest,metadata,title_override,artist_override) VALUES(?1,?2,?3,?4,?5,?6)",params![track.id,m.source.video_id,serde_json::to_string(&m)?,serde_json::to_string(&m.metadata)?,m.title_override,m.artist_override])?;
@@ -291,7 +293,7 @@ pub(super) fn apply_metadata(tx: &rusqlite::Transaction<'_>, track: &mut Track) 
 }
 pub(super) fn write_record(tx: &rusqlite::Transaction<'_>, record: &Record) -> Result<()> {
     let t = &record.track;
-    tx.execute("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET path=excluded.path,search=excluded.search,json=excluded.json,title_search=excluded.title_search,artist_search=excluded.artist_search,album_search=excluded.album_search",params![t.id,t.path.to_string_lossy(),normalized(&format!("{} {} {}",t.title,t.artist,t.album)),serde_json::to_string(record)?,normalized(&t.title),normalized(&t.artist),normalized(&t.album)])?;
+    tx.execute("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET path=excluded.path,search=excluded.search,json=excluded.json,title_search=excluded.title_search,artist_search=excluded.artist_search,album_search=excluded.album_search",params![t.id,t.playback.file().context("Catalog entry is not a file")?.to_string_lossy(),normalized(&format!("{} {} {}",t.title,t.artist,t.album)),serde_json::to_string(record)?,normalized(&t.title),normalized(&t.artist),normalized(&t.album)])?;
     Ok(())
 }
 
@@ -356,12 +358,14 @@ mod tests {
             let record = Record {
                 track: Track {
                     id: id.into(),
-                    path: format!("/{id}.m4a").into(),
+                    playback: crate::model::PlaybackSource::File {
+                        path: format!("/{id}.m4a").into(),
+                    },
                     title: "Manual title".into(),
                     artist: "Artist".into(),
                     album: album.into(),
                     track_number: 0,
-                    duration_ms: 180_000,
+                    duration_ms: Some(180_000),
                     cover: None,
                     source: Some(source.clone()),
                 },

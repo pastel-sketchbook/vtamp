@@ -72,6 +72,37 @@ fn receive(stream: &mut UnixStream) -> Value {
 }
 
 #[test]
+fn streams_preview_register_search_queue_and_remove_without_network() {
+    let server = Server::new();
+    let playlist = server.home.path().join("radio.m3u");
+    std::fs::write(&playlist, "#EXTM3U\n#EXTINF:-1,KBS 음악\nhttps://example.com/radio\n#EXTINF:-1,Duplicate\nhttps://example.com/radio\n").unwrap();
+    let path = playlist.to_str().unwrap();
+    let preview = server.ok(&["library", "stream", "import", path, "--preview"]);
+    assert_eq!(preview["channels"].as_array().unwrap().len(), 2);
+    assert!(!server.socket().exists());
+    assert!(!server.home.path().join("state.db").exists());
+    let added = server.ok(&["library", "stream", "import", path]);
+    assert_eq!(added["added"], 1);
+    assert_eq!(added["existing"], 1);
+    let id = added["tracks"][0]["id"].as_str().unwrap();
+    assert_eq!(server.ok(&["library", "search", "음악"])["total"], 1);
+    server.ok(&["queue", "add", "--track", id]);
+    server.ok(&["queue", "add", "--track", id]);
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 2);
+    server.ok(&["library", "scan", "--wait"]);
+    assert_eq!(server.ok(&["library", "track", id])["title"], "KBS 음악");
+    server.ok(&["library", "stream", "remove", id]);
+    assert_eq!(server.ok(&["library", "list"])["total"], 0);
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 2);
+    server.ok(&["server", "stop"]);
+    server.wait_stopped();
+    server.ok(&["server", "start"]);
+    let restored = server.ok(&["status"]);
+    assert_eq!(restored["queue"].as_array().unwrap().len(), 2);
+    assert!(restored["stream_status"].is_null());
+}
+
+#[test]
 fn concurrent_start_watch_and_restore() {
     let server = Server::new();
     assert!(!server.cmd(&["status"]).status.success());

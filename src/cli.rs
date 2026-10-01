@@ -304,6 +304,11 @@ pub enum Queue {
 }
 #[derive(Debug, Subcommand)]
 pub enum Library {
+    /// Register live radio channels and import channel lists.
+    Stream {
+        #[command(subcommand)]
+        command: StreamAction,
+    },
     Add {
         #[arg(required_unless_present = "clipboard", conflicts_with = "clipboard")]
         path: Option<String>,
@@ -395,6 +400,22 @@ pub enum Library {
     Roots,
 }
 #[derive(Debug, Subcommand)]
+pub enum StreamAction {
+    Add {
+        url: String,
+        #[arg(long)]
+        name: String,
+    },
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        preview: bool,
+    },
+    Remove {
+        id: String,
+    },
+}
+#[derive(Debug, Subcommand)]
 pub enum Server {
     Start,
     Status,
@@ -408,6 +429,31 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Library {
+            command: Library::Stream { command },
+        } => {
+            let request = match command {
+                StreamAction::Add { url, name } => Command::StreamAdd {
+                    entries: vec![crate::streams::Entry { url, name }.validated()?],
+                },
+                StreamAction::Import { file, preview } => {
+                    let file = platform::absolute(&file)?;
+                    let entries =
+                        tokio::task::spawn_blocking(move || crate::streams::read_playlist(&file))
+                            .await??;
+                    if preview {
+                        return output(
+                            Reply::success(json!({"channels":entries,"preview":true})),
+                            args.json,
+                        );
+                    }
+                    Command::StreamAdd { entries }
+                }
+                StreamAction::Remove { id } => Command::StreamRemove { id },
+            };
+            client.ensure().await?;
+            return output(client.request(request).await?, args.json);
+        }
         Action::Llm { command } => {
             if args.json && matches!(command, IntegrationAction::Setup) {
                 bail!("Interactive setup does not support --json; use status or test");
@@ -811,6 +857,7 @@ pub async fn run(args: Args) -> Result<()> {
             },
         },
         Action::Library { command } => match command {
+            Library::Stream { .. } => unreachable!(),
             Library::Add { .. } => unreachable!(),
             Library::Imports => Command::Imports,
             Library::ImportStatus { id, offset, limit } => Command::ImportStatus {
@@ -979,6 +1026,34 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     let data = reply.data.unwrap_or(Value::Null);
+    if let Some(channels) = data.get("channels").and_then(Value::as_array) {
+        writeln!(out, "{} channels · preview only", channels.len())?;
+        for entry in channels {
+            writeln!(
+                out,
+                "{}\n  {}",
+                entry["name"].as_str().unwrap_or(""),
+                entry["url"].as_str().unwrap_or("")
+            )?;
+        }
+        return Ok(());
+    }
+    if data.get("added").is_some() && data.get("existing").is_some() {
+        writeln!(
+            out,
+            "Added {} channels · {} already registered",
+            data["added"], data["existing"]
+        )?;
+        for track in data["tracks"].as_array().into_iter().flatten() {
+            writeln!(
+                out,
+                "{}  {} · LIVE",
+                track["id"].as_str().unwrap_or(""),
+                track["title"].as_str().unwrap_or("")
+            )?;
+        }
+        return Ok(());
+    }
     if let Some(preview) = data.get("preview") {
         writeln!(out, "{}", preview["title"].as_str().unwrap_or("Preview"))?;
         if let Some(metadata) = data.get("metadata").filter(|v| !v.is_null()) {
@@ -1072,19 +1147,31 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         && data.get("queue").is_some()
     {
         if let Some(item) = state.current() {
-            writeln!(
-                out,
-                "{:?}  {} — {}",
-                state.status, item.track.artist, item.track.title
-            )?;
-            writeln!(
-                out,
-                "{} / {} · volume {}% · {} queued",
-                display_time(state.position_ms),
-                display_time(item.track.duration_ms),
-                state.volume,
-                state.queue.len()
-            )?;
+            if item.track.is_live() {
+                writeln!(
+                    out,
+                    "{:?}  {} · {} · volume {}% · {} queued",
+                    state.status,
+                    item.track.title,
+                    state.stream_status.map_or("LIVE", StreamStatus::label),
+                    state.volume,
+                    state.queue.len()
+                )?;
+            } else {
+                writeln!(
+                    out,
+                    "{:?}  {} — {}",
+                    state.status, item.track.artist, item.track.title
+                )?;
+                writeln!(
+                    out,
+                    "{} / {} · volume {}% · {} queued",
+                    display_time(state.position_ms),
+                    item.track.time_label(),
+                    state.volume,
+                    state.queue.len()
+                )?;
+            }
         } else {
             writeln!(
                 out,

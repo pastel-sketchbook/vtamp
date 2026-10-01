@@ -8,7 +8,7 @@ fn extended_mdat_metadata_and_decoding() {
     let track = library::read_track(&path, "fixture".into(), cache.path()).unwrap();
     assert_eq!(track.title, "Synthetic tone");
     assert_eq!(track.artist, "vtamp tests");
-    assert!(track.duration_ms >= 200);
+    assert!(track.duration_ms.unwrap() >= 200);
     let decoder = decode_file(&path).unwrap();
     assert!(decoder.take(10000).any(|sample| sample.abs() > 0.00001));
 }
@@ -56,7 +56,7 @@ fn local_m4a_decodes_indexes_and_reuses_ids() {
     assert!(!first.records.is_empty());
     assert!(first.records.iter().any(|r| r.track.cover.is_some()));
     for record in first.records.iter().take(5) {
-        let mut decoder = decode_file(&record.track.path).unwrap();
+        let mut decoder = decode_file(record.track.playback.file().unwrap()).unwrap();
         assert!(decoder.by_ref().take(100_000).any(|s| s.abs() > 0.00001));
     }
     let second = library::scan(&[root], &first.records, cache.path());

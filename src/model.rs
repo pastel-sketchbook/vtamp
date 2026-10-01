@@ -2,23 +2,72 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
+
+/// Untagged to retain the existing on-disk and wire representation of files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PlaybackSource {
+    File { path: PathBuf },
+    Stream { url: String },
+}
+
+impl PlaybackSource {
+    pub fn file(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::File { path } => Some(path),
+            Self::Stream { .. } => None,
+        }
+    }
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Stream { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamStatus {
+    Connecting,
+    Buffering,
+    Live,
+    Reconnecting,
+}
+
+impl StreamStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connecting => "Connecting",
+            Self::Buffering => "Buffering",
+            Self::Live => "LIVE",
+            Self::Reconnecting => "Reconnecting",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
     pub id: String,
-    pub path: PathBuf,
+    #[serde(flatten)]
+    pub playback: PlaybackSource,
     pub title: String,
     pub artist: String,
     pub album: String,
     pub track_number: u32,
-    pub duration_ms: u64,
+    pub duration_ms: Option<u64>,
     pub cover: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<crate::youtube::Source>,
 }
 
 impl Track {
+    pub fn is_live(&self) -> bool {
+        self.playback.is_live()
+    }
+    pub fn time_label(&self) -> String {
+        self.duration_ms
+            .map(display_time)
+            .unwrap_or_else(|| "LIVE".into())
+    }
     pub fn album_name(&self) -> Option<&str> {
         let album = self.album.trim();
         (!album.is_empty() && !album.eq_ignore_ascii_case("Unknown album")).then_some(album)
@@ -86,6 +135,7 @@ pub struct State {
     pub scheduled_stop: Option<ScheduledStop>,
     pub scanning: bool,
     pub last_error: Option<String>,
+    pub stream_status: Option<StreamStatus>,
 }
 
 impl Default for State {
@@ -106,6 +156,7 @@ impl Default for State {
             scheduled_stop: None,
             scanning: false,
             last_error: None,
+            stream_status: None,
         }
     }
 }
@@ -139,6 +190,15 @@ impl State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    StreamPreview {
+        path: PathBuf,
+    },
+    StreamAdd {
+        entries: Vec<crate::streams::Entry>,
+    },
+    StreamRemove {
+        id: String,
+    },
     ImportPreview {
         request: crate::imports::ImportRequest,
     },
@@ -427,11 +487,15 @@ pub struct ScanJob {
 
 impl State {
     pub fn now(&self) -> serde_json::Value {
-        let duration_ms = self.current().map_or(0, |item| item.track.duration_ms);
+        let duration_ms = self
+            .current()
+            .map_or(Some(0), |item| item.track.duration_ms);
         serde_json::json!({
             "current": self.current(), "status": self.status,
             "position_ms": self.position_ms, "duration_ms": duration_ms,
-            "remaining_ms": duration_ms.saturating_sub(self.position_ms),
+            "remaining_ms": duration_ms.map(|duration| duration.saturating_sub(self.position_ms)),
+            "is_live": self.current().is_some_and(|item| item.track.is_live()),
+            "stream_status": self.stream_status,
             "volume": self.volume, "shuffle": self.shuffle, "repeat": self.repeat,
             "queue_length": self.queue.len(), "revision": self.revision,
             "current_in_queue": self.current_index().is_some(),

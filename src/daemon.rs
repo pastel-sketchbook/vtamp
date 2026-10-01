@@ -338,6 +338,43 @@ fn worker(
                     )));
                 } else {
                     match command {
+                        Command::StreamPreview { path } => {
+                            if !path.is_absolute() {
+                                let _ = answer.send(Reply::failure(ApiError::new(
+                                    "invalid_arguments",
+                                    "Playlist path must be absolute",
+                                )));
+                                continue;
+                            }
+                            if youtube.tasks_busy() {
+                                let _ = answer.send(Reply::failure(ApiError::new(
+                                    "server_busy",
+                                    "Too many preview requests",
+                                )));
+                                continue;
+                            }
+                            youtube.spawn_task(move |_| {
+                                let result =
+                                    crate::streams::read_playlist(&path).map(Reply::success);
+                                let _ = answer.send(result.unwrap_or_else(failure));
+                            });
+                        }
+                        Command::StreamAdd { entries } => {
+                            let result = store.add_streams(&entries).map(Reply::success);
+                            if result.is_ok() {
+                                let _ = events.send(Event::LibraryChanged);
+                            }
+                            let _ = answer.send(result.unwrap_or_else(failure));
+                        }
+                        Command::StreamRemove { id } => {
+                            let result = store
+                                .remove_stream(&id)
+                                .map(|()| Reply::success(json!({"removed": id})));
+                            if result.is_ok() {
+                                let _ = events.send(Event::LibraryChanged);
+                            }
+                            let _ = answer.send(result.unwrap_or_else(failure));
+                        }
                         Command::PlayDirect { path, track } => {
                             if path.is_some() == track.is_some() {
                                 let _ = answer.send(Reply::failure(ApiError::new(
@@ -944,12 +981,14 @@ mod agent_tests {
         let mut store = Store::open(&home.path().join("state.db")).unwrap();
         let track = Track {
             id: "song".into(),
-            path: "/song.wav".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "/song.wav".into(),
+            },
             title: "Song".into(),
             artist: "Artist".into(),
             album: "Album".into(),
             track_number: 1,
-            duration_ms: 10000,
+            duration_ms: Some(10000),
             cover: None,
             source: None,
         };

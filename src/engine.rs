@@ -119,9 +119,11 @@ impl<B: PlaybackBackend> Engine<B> {
         result
     }
     fn load_direct(&mut self, item: Box<QueueItem>, position: u64, paused: bool) -> Result<()> {
-        let result = self
-            .backend
-            .load(&item.track.path, position, self.state.volume, paused);
+        let live = item.track.is_live();
+        let position = if live { 0 } else { position };
+        let result =
+            self.backend
+                .load_source(&item.track.playback, position, self.state.volume, paused);
         if let Err(error) = &result
             && !error.is::<OutputUnavailable>()
         {
@@ -150,6 +152,7 @@ impl<B: PlaybackBackend> Engine<B> {
         } else {
             PlaybackStatus::Playing
         };
+        self.state.stream_status = (live && !paused).then_some(StreamStatus::Connecting);
         Ok(())
     }
     fn note_queue_change(&mut self) {
@@ -222,6 +225,13 @@ impl<B: PlaybackBackend> Engine<B> {
                             "Play or pause a track before scheduling its end",
                         )
                     })?;
+                if item.track.is_live() {
+                    return Err(ApiError::new(
+                        "unsupported_operation",
+                        "Live streams have no natural end; use a sleep timer instead",
+                    )
+                    .into());
+                }
                 self.state.scheduled_stop = Some(ScheduledStop::AfterCurrent {
                     queue_item_id: item.id.clone(),
                 });
@@ -245,11 +255,20 @@ impl<B: PlaybackBackend> Engine<B> {
                 milliseconds,
                 relative,
             } => {
+                if self
+                    .state
+                    .current()
+                    .is_some_and(|item| item.track.is_live())
+                {
+                    return Err(
+                        ApiError::new("unsupported_operation", "Live streams cannot seek").into(),
+                    );
+                }
                 let duration = self
                     .state
                     .current()
-                    .map(|q| q.track.duration_ms)
-                    .ok_or_else(|| anyhow::anyhow!("Queue is empty"))?;
+                    .and_then(|q| q.track.duration_ms)
+                    .ok_or_else(|| anyhow::anyhow!("This item has no seekable duration"))?;
                 let base = if *relative {
                     self.state.position_ms as i128
                 } else {
@@ -350,11 +369,20 @@ impl<B: PlaybackBackend> Engine<B> {
                 self.state.position_ms = self.backend.position();
             }
             self.state.status = PlaybackStatus::Paused;
+            self.state.stream_status = None;
         }
     }
     fn resume(&mut self) -> Result<()> {
         if self.state.status == PlaybackStatus::Playing {
             return Ok(());
+        }
+        if self
+            .state
+            .current()
+            .is_some_and(|item| item.track.is_live())
+        {
+            self.state.stream_status = Some(StreamStatus::Connecting);
+            self.state.last_error = None;
         }
         if self.state.queue.is_empty() && self.state.direct.is_none() {
             bail!("Queue is empty. Add music with vtamp queue add PATH");
@@ -387,6 +415,7 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     pub fn stop(&mut self) {
+        self.state.stream_status = None;
         self.state.scheduled_stop = None;
         self.output_retry = None;
         self.backend.stop();
@@ -413,13 +442,19 @@ impl<B: PlaybackBackend> Engine<B> {
         // Every candidate is attempted at most once, even with repeat-all enabled.
         for (attempt, candidate) in candidates.into_iter().enumerate() {
             let item = &self.state.queue[candidate];
-            let position = if attempt == 0 { position_ms } else { 0 };
+            let position = if attempt == 0 && !item.track.is_live() {
+                position_ms
+            } else {
+                0
+            };
             self.upcoming.retain(|id| id != &item.id);
             self.state.play_next.retain(|id| id != &item.id);
-            match self
-                .backend
-                .load(&item.track.path, position, self.state.volume, paused)
-            {
+            match self.backend.load_source(
+                &item.track.playback,
+                position,
+                self.state.volume,
+                paused,
+            ) {
                 Err(error) if !error.is::<OutputUnavailable>() => {
                     last_error = Some(format!("{}: {error:#}", item.track.title));
                 }
@@ -434,6 +469,8 @@ impl<B: PlaybackBackend> Engine<B> {
                         self.history.push(id);
                     }
                     self.state.current_id = Some(item.id.clone());
+                    self.state.stream_status =
+                        (item.track.is_live() && !paused).then_some(StreamStatus::Connecting);
                     self.state.direct = None;
                     self.state.queue_cursor = None;
                     self.upcoming.retain(|id| id != &item.id);
@@ -548,6 +585,10 @@ impl<B: PlaybackBackend> Engine<B> {
     }
     pub(crate) fn output_waiting(&self) -> bool {
         self.output_retry.is_some()
+            || self
+                .state
+                .stream_status
+                .is_some_and(|status| status != StreamStatus::Live)
     }
     fn tick_at(&mut self, now: Instant) -> bool {
         self.tick_with_clock(now, unix_ms())
@@ -564,6 +605,27 @@ impl<B: PlaybackBackend> Engine<B> {
         {
             self.stop();
             return true;
+        }
+        if self
+            .state
+            .current()
+            .is_some_and(|item| item.track.is_live())
+        {
+            if self.state.status != PlaybackStatus::Playing {
+                return false;
+            }
+            if let Some(update) = self.backend.stream_update() {
+                let changed = self.state.stream_status != Some(update.status)
+                    || self.state.last_error != update.error;
+                if update.fatal {
+                    self.pause();
+                } else {
+                    self.state.stream_status = Some(update.status);
+                }
+                self.state.last_error = update.error;
+                return changed || update.fatal;
+            }
+            return false;
         }
         // output_event may discard the old player, so save its position first.
         if self.loaded {
@@ -586,8 +648,8 @@ impl<B: PlaybackBackend> Engine<B> {
             };
             // Do not use play_at: an unavailable output must never skip songs or
             // reset shuffle/history, and a paused track must remain paused.
-            match self.backend.load(
-                &item.track.path,
+            match self.backend.load_source(
+                &item.track.playback,
                 self.state.position_ms,
                 self.state.volume,
                 self.state.status != PlaybackStatus::Playing,
@@ -639,6 +701,7 @@ mod tests {
     };
     #[derive(Default)]
     struct Fake {
+        stream: Option<crate::audio::StreamUpdate>,
         ended: Arc<AtomicBool>,
         position: u64,
         loads: usize,
@@ -647,6 +710,34 @@ mod tests {
         last_load: Option<(String, u64, u8, bool)>,
     }
     impl PlaybackBackend for Fake {
+        fn load_source(
+            &mut self,
+            source: &PlaybackSource,
+            pos: u64,
+            volume: u8,
+            paused: bool,
+        ) -> Result<()> {
+            match source {
+                PlaybackSource::File { path } => {
+                    self.stream = None;
+                    self.load(path, pos, volume, paused)
+                }
+                PlaybackSource::Stream { url } => {
+                    self.loads += 1;
+                    self.position = 0;
+                    self.last_load = Some((url.clone(), 0, volume, paused));
+                    self.stream = Some(crate::audio::StreamUpdate {
+                        status: StreamStatus::Connecting,
+                        error: None,
+                        fatal: false,
+                    });
+                    Ok(())
+                }
+            }
+        }
+        fn stream_update(&mut self) -> Option<crate::audio::StreamUpdate> {
+            self.stream.clone()
+        }
         fn load(&mut self, p: &Path, pos: u64, volume: u8, paused: bool) -> Result<()> {
             self.loads += 1;
             self.last_load = Some((p.to_string_lossy().into_owned(), pos, volume, paused));
@@ -700,12 +791,12 @@ mod tests {
     fn track(name: &str) -> Track {
         Track {
             id: name.into(),
-            path: name.into(),
+            playback: crate::model::PlaybackSource::File { path: name.into() },
             title: name.into(),
             artist: "artist".into(),
             album: "album".into(),
             track_number: 0,
-            duration_ms: 60000,
+            duration_ms: Some(60000),
             cover: None,
             source: None,
         }
@@ -716,6 +807,65 @@ mod tests {
             .add(vec![track("a"), track("b"), track("c")])
             .unwrap();
         engine
+    }
+    fn radio_track() -> Track {
+        crate::streams::Entry {
+            name: "Radio".into(),
+            url: "https://example.com/live.m3u8".into(),
+        }
+        .track()
+    }
+    #[test]
+    fn live_disconnects_never_advance_and_failures_remain_selected() {
+        let mut e = engine();
+        e.play_track(radio_track()).unwrap();
+        let id = e.state.current_id.clone();
+        let revision = e.state.queue_revision;
+        e.state.repeat = Repeat::One;
+        e.backend.ended.store(true, Ordering::SeqCst);
+        e.backend.stream = Some(crate::audio::StreamUpdate {
+            status: StreamStatus::Reconnecting,
+            error: Some("offline".into()),
+            fatal: false,
+        });
+        assert!(e.tick());
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.queue_revision, revision);
+        assert_eq!(e.state.position_ms, 0);
+        assert!(
+            e.apply(&Command::Seek {
+                milliseconds: 1000,
+                relative: true
+            })
+            .is_err()
+        );
+        assert!(e.apply(&Command::StopAfterCurrent).is_err());
+        e.backend.stream.as_mut().unwrap().fatal = true;
+        assert!(e.tick());
+        assert_eq!(e.state.status, PlaybackStatus::Paused);
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.last_error.as_deref(), Some("offline"));
+        assert!(!e.tick());
+    }
+    #[test]
+    fn live_direct_pause_next_and_deadline_preserve_queue_semantics() {
+        let mut e = engine();
+        e.play_track(track("a")).unwrap();
+        let queue = e.state.queue.clone();
+        e.play_direct(radio_track()).unwrap();
+        e.apply(&Command::Pause).unwrap();
+        assert_eq!(e.state.stream_status, None);
+        e.apply(&Command::Resume).unwrap();
+        assert_eq!(e.state.stream_status, Some(StreamStatus::Connecting));
+        e.apply(&Command::Next).unwrap();
+        assert_eq!(e.state.current().unwrap().track.id, "b");
+        assert_eq!(e.state.queue, queue);
+        e.play_direct(radio_track()).unwrap();
+        e.state.scheduled_stop = Some(ScheduledStop::Deadline { deadline_ms: 42 });
+        assert!(e.tick_with_clock(Instant::now(), 42));
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        assert_eq!(e.state.stream_status, None);
+        assert!(!e.tick_with_clock(Instant::now(), 100));
     }
     #[test]
     fn direct_playback_preserves_queue_and_continues_from_its_cursor() {

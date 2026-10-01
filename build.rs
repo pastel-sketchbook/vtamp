@@ -18,6 +18,7 @@ fn main() {
 <key>CFBundleVersion</key><string>{version}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSUIElement</key><true/>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoadsForMedia</key><true/></dict>
 </dict></plist>"#)).unwrap();
     for arg in ["-sectcreate", "__TEXT", "__info_plist"] {
         println!("cargo:rustc-link-arg-bin=vtamp=-Wl,{arg}");

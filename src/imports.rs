@@ -320,7 +320,11 @@ fn work(
             }
             let existing = wait(rx, stop)?;
             if let Some(record) = &existing
-                && record.track.path.is_file()
+                && record
+                    .track
+                    .playback
+                    .file()
+                    .is_some_and(std::path::Path::is_file)
             {
                 item.track_id = Some(record.track.id.clone());
                 item.title = record.track.title.clone();
@@ -500,7 +504,9 @@ pub fn publish(paths: &Paths, publication: &mut Publication) -> Result<()> {
             }
         }
     }
-    publication.record.track.path = destination.join("audio.m4a").canonicalize()?;
+    publication.record.track.playback = crate::model::PlaybackSource::File {
+        path: destination.join("audio.m4a").canonicalize()?,
+    };
     publication.record.track.cover = destination
         .join("cover.jpg")
         .is_file()

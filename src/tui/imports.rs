@@ -84,6 +84,7 @@ impl App {
             || self.help
             || self.theme_picker.is_some()
             || self.import_ui.modal.is_some()
+            || self.stream_dialog.is_some()
     }
 
     pub(super) fn reveal_import(&mut self, commands: &mpsc::Sender<Command>) {

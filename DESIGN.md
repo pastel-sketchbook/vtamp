@@ -63,7 +63,7 @@ The lifecycle section also introduces the optional tmux status-bar plugin with a
 
 A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard reference. These are labeled keys, not clickable playback controls. Match the neighboring tmux feature’s spacing and stack copy above the keys on mobile.
 
-The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-5 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
+The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact protocol-6 response excerpt avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
 
 ## Audio spectrum
 
@@ -147,3 +147,19 @@ Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
 covers and restore them on close; the bottom add prompt keeps the cover visible.
 Use existing semantic palette roles and English copy. No installation prompts,
 integration placeholders, or related help are shown when yt-dlp is absent.
+
+## Live radio
+
+Use existing Library and Queue rows with a LIVE suffix for channel identity. The
+player replaces its progress gauge with Connecting / Buffering / LIVE /
+Reconnecting; paused live media reads LIVE · PAUSED. Seek keys explain that live
+radio cannot seek. The spectrum area shows an honest unavailable message and
+keeps its toggle preference, without simulated animation or an active subscription.
+
+The a prompt accepts folders, URLs, and local M3U/PLS lists. A non-YouTube HTTP(S)
+URL opens a bottom channel-name prompt using the shared grapheme editor and real
+terminal caret. Keep artwork visible under this prompt. Playlist previews show
+channel names and URLs with a fixed Enter/Escape/scroll footer. Library d confirms
+stream removal and explains that queued copies remain. These overlays hide and
+restore pixel art, keep keys local, and remain usable at 40×12. Radio controls
+remain visible without yt-dlp.

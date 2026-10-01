@@ -74,10 +74,12 @@ impl Runtime {
                 }
                 let mut existing = Vec::new();
                 for id in video_ids {
-                    if store
-                        .video_record(id)?
-                        .is_some_and(|r| r.track.path.is_file())
-                    {
+                    if store.video_record(id)?.is_some_and(|r| {
+                        r.track
+                            .playback
+                            .file()
+                            .is_some_and(std::path::Path::is_file)
+                    }) {
                         existing.push(id);
                     }
                 }

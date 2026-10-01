@@ -26,7 +26,7 @@ Virtual terminal meets Winamp: a local music player with the lifecycle of a deta
 
 ## Capabilities and Constraints
 
-Folder-based local library, search, queue editing, album art, machine-readable CLI, persistent session. A server restart restores the session paused. No streaming, account, login service, or permanent pane required. English-only first release. macOS is the supported platform; isolate platform dependencies for later Linux support.
+Folder-based local library, search, queue editing, album art, machine-readable CLI, persistent session. A server restart restores the session paused. No account, login service, or permanent pane required. Optional live radio uses registered HTTP(S) URLs and imported M3U/PLS channel lists, with native macOS playback. English-only first release. macOS is the supported platform; isolate platform dependencies for later Linux support.
 
 Agents can inspect compact playback state, search individual metadata fields, schedule the next tracks, and apply atomic queue edits that protect the current song. Successful keyed batch edits can be retried for 24 hours across server restarts. Scan jobs expose completion reports; server-owned stop reservations survive client exit and clear on server restart.
 
@@ -63,3 +63,8 @@ Local m4a files in ~/work/tapmusic/out are available for development verificatio
 - Terminal space is working space.
 - Every important action is available without a TUI.
 - Graceful text-based cover art is better than fragile terminal graphics.
+
+Live radio shares Library and Queue navigation. Pause disconnects and resume tunes
+to the current broadcast; transient disconnects retry the same channel. Radio has
+no timeline or spectrum in this release. Registration requires no installed import
+tools, and folder scans do not remove stations.

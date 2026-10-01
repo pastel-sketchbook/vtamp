@@ -70,11 +70,20 @@ fn render(state: &State, max_width: usize, show_artist: bool) -> String {
         label.push_str(" — ");
         label.push_str(&artist);
     }
-    let times = format!(
-        " · {} / {}",
-        display_time(state.position_ms),
-        display_time(item.track.duration_ms)
-    );
+    let times = if item.track.is_live() {
+        format!(
+            " · {}",
+            state
+                .stream_status
+                .map_or("LIVE", crate::model::StreamStatus::label)
+        )
+    } else {
+        format!(
+            " · {} / {}",
+            display_time(state.position_ms),
+            item.track.time_label()
+        )
+    };
     let reserved = indicator.width() + 1 + times.width();
     if reserved >= max_width {
         return String::new();
@@ -96,12 +105,14 @@ mod tests {
     fn state(title: &str) -> State {
         let item = QueueItem::new(Track {
             id: "track".into(),
-            path: "track.m4a".into(),
+            playback: crate::model::PlaybackSource::File {
+                path: "track.m4a".into(),
+            },
             title: title.into(),
             artist: "Vince DiCola".into(),
             album: String::new(),
             track_number: 0,
-            duration_ms: 219_103,
+            duration_ms: Some(219_103),
             cover: None,
             source: None,
         });
