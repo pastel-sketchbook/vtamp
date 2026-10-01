@@ -91,7 +91,7 @@ enum Message {
     Cover(Option<PathBuf>, Option<image::DynamicImage>),
     Resized(ResizeResponse),
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Focus {
     Library,
     Queue,
@@ -768,6 +768,7 @@ impl App {
                 query: self.query.clone(),
                 offset: self.offset,
                 limit: PAGE_SIZE,
+                anchor: None,
             },
         );
     }
@@ -804,8 +805,19 @@ impl App {
         messages: &mpsc::UnboundedSender<Message>,
         commands: &mpsc::Sender<Command>,
     ) {
+        self.message_inner(message, messages, commands);
+        self.reveal_import(commands);
+    }
+    fn message_inner(
+        &mut self,
+        message: Message,
+        messages: &mpsc::UnboundedSender<Message>,
+        commands: &mpsc::Sender<Command>,
+    ) {
         match message {
             Message::Connected(state) => {
+                self.import_ui.observing = false;
+                self.import_ui.reveal = None;
                 self.spectrum.clear();
                 self.connected = true;
                 self.state(state, messages);
@@ -826,6 +838,8 @@ impl App {
                 self.send(commands, Command::ImportAvailable);
             }
             Message::Disconnected(reason) => {
+                self.import_ui.observing = false;
+                self.import_ui.reveal = None;
                 self.spectrum.clear();
                 self.connected = false;
                 self.notice(reason);
@@ -860,6 +874,16 @@ impl App {
                     self.import_detail(commands);
                 }
             }
+            Message::Reply(
+                Command::LibraryList {
+                    anchor: Some(id),
+                    query,
+                    ..
+                },
+                result,
+            ) => {
+                self.import_reveal_reply(&id, &query, result);
+            }
             Message::Reply(command, result) => match result {
                 Err(error) => {
                     if matches!(command, Command::LibraryList { ref query, offset, .. }
@@ -883,6 +907,7 @@ impl App {
                             if !self.import_ui.enabled {
                                 self.import_ui.modal = None;
                                 self.import_ui.jobs.clear();
+                                self.import_ui.reveal = None;
                             }
                             return;
                         }
@@ -935,6 +960,11 @@ impl App {
                     }
                     if let Command::LibraryList { query, offset, .. } = command {
                         if query == self.query && offset == self.offset {
+                            let selected_id = self
+                                .library_selection
+                                .selected()
+                                .and_then(|i| self.tracks.get(i))
+                                .map(|t| t.id.clone());
                             self.tracks =
                                 serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
                             self.total = value["total"].as_u64().unwrap_or(0) as usize;
@@ -942,6 +972,11 @@ impl App {
                                 // A scan may have changed the last page while it was loading.
                                 self.jump_library(edge, commands);
                             } else {
+                                if let Some(index) = selected_id
+                                    .and_then(|id| self.tracks.iter().position(|t| t.id == id))
+                                {
+                                    self.library_selection.select(Some(index));
+                                }
                                 clamp_selection(&mut self.library_selection, self.tracks.len());
                             }
                         }
@@ -967,7 +1002,15 @@ impl App {
             _ => (),
         }
     }
-    fn key(&mut self, mut key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
+    fn key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
+        self.cancel_import_reveal_for_key(key);
+        let quit = self.key_inner(key, commands)?;
+        if !quit {
+            self.reveal_import(commands);
+        }
+        Ok(quit)
+    }
+    fn key_inner(&mut self, mut key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
         // Any intervening key (including opening a prompt) cancels a prefix.
         let previous_g = std::mem::take(&mut self.pending_g);
         let previous_ctrl_w = std::mem::take(&mut self.pending_ctrl_w);
@@ -1294,6 +1337,7 @@ impl App {
                     query: self.query.clone(),
                     offset,
                     limit: PAGE_SIZE,
+                    anchor: None,
                 })
                 .is_err()
             {
@@ -2249,7 +2293,7 @@ mod tests {
         app.key(key('G'), &commands).unwrap();
         let request = requests.try_recv().unwrap();
         assert!(
-            matches!(&request, Command::LibraryList { query: q, offset: 400, limit: PAGE_SIZE } if q == &query)
+            matches!(&request, Command::LibraryList { query: q, offset: 400, limit: PAGE_SIZE, .. } if q == &query)
         );
         assert!(app.tracks.is_empty());
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
@@ -2266,6 +2310,7 @@ mod tests {
                     query: query.clone(),
                     offset: 0,
                     limit: PAGE_SIZE,
+                    anchor: None,
                 },
                 Ok(serde_json::json!({"tracks": rows, "total": 450})),
             ),
@@ -3080,6 +3125,210 @@ mod tests {
             .collect();
         assert!(text.contains("› Album (optional)"));
         assert!(text.contains("Known album"));
+    }
+
+    #[test]
+    fn completed_import_reveals_first_added_track_on_its_library_page() {
+        let mut app = navigation_app(PAGE_SIZE);
+        app.focus = Focus::Queue;
+        app.viewport = Rect::new(0, 0, 80, 24);
+        app.spectrum.enabled = true;
+        let state = serde_json::to_value(&app.state).unwrap();
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        app.import_snapshot(vec![job.clone()]);
+        job.added = 1;
+        job.first_added_track_id = Some("425".into());
+        job.revision += 1;
+        app.message(
+            Message::Event(Event::ImportProgress(job.clone())),
+            &messages,
+            &commands,
+        );
+        assert!(
+            requests.try_recv().is_err(),
+            "Do not jump after each playlist item"
+        );
+        job.added = 3;
+        job.finish("partial");
+        app.message(
+            Message::Event(Event::ImportProgress(job.clone())),
+            &messages,
+            &commands,
+        );
+        let request = requests.try_recv().unwrap();
+        assert!(matches!(&request, Command::LibraryList { anchor: Some(id), .. } if id == "425"));
+        let rows = navigation_app(450).tracks[400..].to_vec();
+        app.message(
+            Message::Reply(
+                request,
+                Ok(serde_json::json!({
+                    "tracks": rows, "total": 450, "offset": 400, "query": ""
+                })),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.focus, Focus::Library);
+        assert_eq!(app.offset, 400);
+        assert_eq!(app.library_selection.selected(), Some(25));
+        assert_eq!(app.selected_track().unwrap().id, "425");
+        assert!(app.query.is_empty());
+        assert!(app.notice.contains("Search cleared"));
+        assert!(!app.spectrum.enabled);
+        assert_eq!(serde_json::to_value(&app.state).unwrap(), state);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            text.contains("Track 425"),
+            "Selected track must be scrolled into view"
+        );
+        // Replayed events/snapshots must not steal focus a second time.
+        app.focus = Focus::Queue;
+        app.message(
+            Message::Event(Event::Imports(vec![job.clone()])),
+            &messages,
+            &commands,
+        );
+        app.message(
+            Message::Event(Event::ImportProgress(job)),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.focus, Focus::Queue);
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn import_reveal_waits_for_overlays_and_prompts_even_if_opened_during_lookup() {
+        for overlay in 0..4 {
+            let mut app = navigation_app(3);
+            app.focus = Focus::Queue;
+            let (messages, _) = mpsc::unbounded_channel();
+            let (commands, mut requests) = mpsc::channel(16);
+            let mut job = crate::imports::ImportJob::new(&Default::default());
+            app.import_snapshot(vec![job.clone()]);
+            job.added = 1;
+            job.first_added_track_id = Some("2".into());
+            job.finish("completed");
+            app.message(
+                Message::Event(Event::ImportProgress(job)),
+                &messages,
+                &commands,
+            );
+            let request = requests.try_recv().unwrap();
+            match overlay {
+                0 => app.import_ui.modal = Some(imports::Modal::Jobs),
+                1 => app.input = Some(Input::Folder("unfinished draft".into())),
+                2 => app.help = true,
+                _ => app.open_theme_picker(),
+            }
+            let page =
+                serde_json::json!({"tracks":app.tracks, "total":3, "offset":0, "query":app.query});
+            app.message(
+                Message::Reply(request, Ok(page.clone())),
+                &messages,
+                &commands,
+            );
+            assert_eq!(app.focus, Focus::Queue);
+            assert!(requests.try_recv().is_err());
+            assert!(app.import_ui.reveal.is_some());
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+                .unwrap();
+            let request = requests.try_recv().unwrap();
+            app.message(Message::Reply(request, Ok(page)), &messages, &commands);
+            assert_eq!(app.focus, Focus::Library);
+            assert_eq!(app.selected_track().unwrap().id, "2");
+            assert!(!app.query.is_empty(), "Matching search is preserved");
+            assert!(requests.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn import_reveal_ignores_history_and_offline_completions_but_handles_watch_resync() {
+        let mut app = navigation_app(3);
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.added = 1;
+        job.first_added_track_id = Some("1".into());
+        job.finish("completed");
+        app.import_snapshot(vec![job.clone()]);
+        assert!(app.import_ui.reveal.is_none());
+        let mut active = crate::imports::ImportJob::new(&Default::default());
+        app.import_snapshot(vec![active.clone(), job.clone()]);
+        app.message(
+            Message::Disconnected("Offline".into()),
+            &messages,
+            &commands,
+        );
+        active.added = 1;
+        active.first_added_track_id = Some("2".into());
+        active.finish("completed");
+        app.import_snapshot(vec![active, job]);
+        assert!(app.import_ui.reveal.is_none());
+        app.connected = true;
+        let mut next = crate::imports::ImportJob::new(&Default::default());
+        app.import_snapshot(vec![next.clone()]);
+        next.added = 1;
+        next.first_added_track_id = Some("0".into());
+        next.finish("completed");
+        app.message(
+            Message::Event(Event::Imports(vec![next])),
+            &messages,
+            &commands,
+        );
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::LibraryList {anchor: Some(id), ..} if id == "0")
+        );
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn explicit_navigation_cancels_late_import_selection() {
+        for key in [KeyCode::Down, KeyCode::Tab, KeyCode::Char('/')] {
+            let mut app = navigation_app(3);
+            let (messages, _) = mpsc::unbounded_channel();
+            let (commands, mut requests) = mpsc::channel(16);
+            let mut job = crate::imports::ImportJob::new(&Default::default());
+            app.import_snapshot(vec![job.clone()]);
+            job.added = 1;
+            job.first_added_track_id = Some("2".into());
+            job.finish("completed");
+            app.message(
+                Message::Event(Event::ImportProgress(job)),
+                &messages,
+                &commands,
+            );
+            let request = requests.try_recv().unwrap();
+            app.key(KeyEvent::new(key, KeyModifiers::NONE), &commands)
+                .unwrap();
+            let selected = app.library_selection.selected();
+            let focus = app.focus;
+            app.message(
+                Message::Reply(
+                    request,
+                    Ok(serde_json::json!({
+                        "tracks": app.tracks, "total": 3, "offset": 0, "query": ""
+                    })),
+                ),
+                &messages,
+                &commands,
+            );
+            assert_eq!(app.library_selection.selected(), selected);
+            assert_eq!(app.focus, focus);
+            assert!(!app.query.is_empty());
+            assert!(app.import_ui.reveal.is_none());
+            assert!(requests.try_recv().is_err());
+        }
     }
 
     #[test]

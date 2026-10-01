@@ -115,6 +115,15 @@ matching. Normalize with NFKC and lowercase. Combine all positive filters with
 AND and reject matches containing any exclusion. Exact matching affects only
 explicit field filters. Results retain the existing search/path ordering.
 
+`library_list` accepts an optional `anchor` library track ID in addition to
+`query`, `offset`, and `limit`. With an anchor, the server ignores the supplied
+offset and locates the page containing that track in the ordinary `search,path`
+ordering. It preserves the query if the track matches, otherwise clears it.
+The response includes the effective `query`, `offset`, `tracks`, and `total`.
+A missing anchor returns `track_not_found`. Without an anchor, the existing list
+response is unchanged. This is an additive version-5 extension; older servers
+ignore the field, so clients must verify the response query and target identity.
+
 Queue edit documents and CLI examples are described in README > For scripts and
 agents. The command's nullable guard and request ID fields may be omitted;
 `dry_run` is required. Operations address library IDs for additions and entry IDs
@@ -213,7 +222,10 @@ error, and a monotonically increasing revision. Terminal statuses are completed,
 partial, failed, cancelled, and interrupted. Items carry an index, video ID,
 title, status, optional track ID, metadata result/warning, and error. Job history
 retains 100 terminal jobs. On startup all unfinished jobs become interrupted;
-only an explicit retry starts them again.
+only an explicit retry starts them again. Jobs optionally carry
+`first_added_track_id`, committed with the first successful publication and
+preserved for the rest of the job. It identifies the first added track in playlist
+order, excluding skipped/failed items. Older reports can omit it.
 
 When the integration is available, `watch` emits an `imports` snapshot after its
 initial State and on lag resynchronization, plus `import_progress` events. Ignore

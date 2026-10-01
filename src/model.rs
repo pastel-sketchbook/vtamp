@@ -254,6 +254,8 @@ pub enum Command {
         query: String,
         offset: usize,
         limit: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<String>,
     },
     LibraryRoots,
 }

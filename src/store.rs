@@ -11,6 +11,14 @@ pub struct Store {
     db: Connection,
 }
 
+#[derive(serde::Serialize)]
+pub struct LibraryPage {
+    pub tracks: Vec<Track>,
+    pub total: usize,
+    pub offset: usize,
+    pub query: String,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let mut db = Connection::open(path)?;
@@ -146,6 +154,36 @@ impl Store {
             .map(|s| serde_json::from_str::<Record>(&s).map(|r| r.track))
             .collect::<Result<_, _>>()?;
         Ok((tracks, total as usize))
+    }
+    /// Locate an identity in the same ordering as search, without loading the
+    /// whole catalog. Drop the filter only when it would hide the target.
+    pub fn search_around(&self, query: &str, id: &str, limit: usize) -> Result<LibraryPage> {
+        let (search, path): (String, String) = self
+            .db
+            .query_row("SELECT search,path FROM tracks WHERE id=?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?
+            .ok_or_else(|| ApiError::new("track_not_found", "Library track not found"))?;
+        let query = if search.contains(&normalized(query)) {
+            query
+        } else {
+            ""
+        };
+        let rank: i64 = self.db.query_row(
+            "SELECT count(*) FROM tracks WHERE instr(search,?1)>0 AND (search,path)<(?2,?3)",
+            params![normalized(query), search, path],
+            |r| r.get(0),
+        )?;
+        let limit = limit.clamp(1, 1000);
+        let offset = usize::try_from(rank)? / limit * limit;
+        let (tracks, total) = self.search(query, offset, limit)?;
+        Ok(LibraryPage {
+            tracks,
+            total,
+            offset,
+            query: query.into(),
+        })
     }
     pub fn search_filtered(
         &self,
@@ -450,6 +488,35 @@ mod tests {
             bytes: 1,
         }
     }
+    #[test]
+    fn anchored_library_page_matches_sort_order_and_only_clears_a_hiding_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("state.db")).unwrap();
+        // Equal metadata exercises the path tiebreaker as well as later pages.
+        let mut records: Vec<_> = (0..450)
+            .rev()
+            .map(|i| record(&format!("{i:03}"), "Song", "ＡＲＴＩＳＴ", ""))
+            .collect();
+        records.push(record("other", "Before", "Other", ""));
+        store.replace_catalog(&records).unwrap();
+        let page = store.search_around("artist", "425", 200).unwrap();
+        assert_eq!(page.query, "artist");
+        assert_eq!((page.offset, page.total, page.tracks.len()), (400, 450, 50));
+        assert_eq!(page.tracks[25].id, "425");
+        let all = store.search_around("unrelated search", "425", 200).unwrap();
+        assert_eq!(all.query, "");
+        assert_eq!((all.offset, all.total), (400, 451));
+        let expected = store.search("", 400, 200).unwrap().0;
+        assert_eq!(all.tracks, expected);
+        assert!(all.tracks.iter().any(|track| track.id == "425"));
+        assert!(store.search_around("", "deleted", 200).is_err());
+        // Clamp the page size before calculating the page boundary.
+        let one = store.search_around("artist", "425", 0).unwrap();
+        assert_eq!(one.offset, 425);
+        assert_eq!(one.tracks.len(), 1);
+        assert_eq!(one.tracks[0].id, "425");
+    }
+
     #[test]
     fn v1_migration_backfills_unicode_search_without_changing_ids() {
         let home = tempfile::tempdir().unwrap();

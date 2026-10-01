@@ -117,6 +117,7 @@ fn single_import_metadata_cover_dedup_edits_and_rescan() {
     let tracks = h.ok(&["library", "list"]);
     let t = &tracks["tracks"][0];
     let id = t["id"].as_str().unwrap();
+    assert_eq!(result["job"]["first_added_track_id"], id);
     assert_eq!(t["title"], "어떻게 사랑이 그래요");
     assert_eq!(t["artist"], "이승환, 정준일");
     assert_eq!(t["album"], "Generated fixtures"); // Fall back to the embedded album.
@@ -143,6 +144,7 @@ fn single_import_metadata_cover_dedup_edits_and_rescan() {
     assert_eq!(h.ok(&["library", "track", id])["artist"], "My artist");
     let duplicate = h.ok(&["library", "add", URL, "--wait"]);
     assert_eq!(duplicate["job"]["skipped"], 1);
+    assert!(duplicate["job"]["first_added_track_id"].is_null());
     assert_eq!(h.ok(&["library", "list"])["total"], 1);
     h.ok(&["server", "stop"]);
     h.ok(&["server", "start"]);
@@ -160,6 +162,14 @@ fn playlist_partial_failure_and_retry_only_unfinished() {
     assert_eq!(result["job"]["status"], "partial");
     assert_eq!(result["job"]["added"], 2);
     assert_eq!(result["job"]["failed"], 1);
+    assert_eq!(
+        result["job"]["first_added_track_id"],
+        result["items"][0]["track_id"]
+    );
+    assert_ne!(
+        result["job"]["first_added_track_id"],
+        result["items"][1]["track_id"]
+    );
     assert_eq!(
         h.ok(&[
             "library",
@@ -180,6 +190,7 @@ fn playlist_partial_failure_and_retry_only_unfinished() {
     let r = h.wait(retry["job_id"].as_str().unwrap());
     assert_eq!(r["job"]["added"], 1);
     assert_eq!(r["job"]["total"], 1);
+    assert_eq!(r["job"]["first_added_track_id"], r["items"][0]["track_id"]);
     assert_eq!(h.ok(&["library", "list"])["total"], 3);
 }
 #[test]

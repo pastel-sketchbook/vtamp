@@ -852,6 +852,7 @@ pub async fn run(args: Args) -> Result<()> {
                 query: String::new(),
                 offset,
                 limit: limit.into(),
+                anchor: None,
             },
             Library::Search {
                 query,

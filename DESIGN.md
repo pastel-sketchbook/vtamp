@@ -137,6 +137,12 @@ Opening `i` reveals the active job shown in the bottom status line, or
 the newest job when all have finished, starting at its first item. While the
 dialog is open, retain the job the user is reading by identity as new jobs arrive.
 List replies must not roll back newer progress or erase newly observed jobs.
+When a newly observed import finishes, focus Library and reveal its first
+successfully added track, once per job. Locate the correct page by identity;
+clear a search only if it hides the track. Defer this while a dialog or prompt is
+open, and let explicit browsing cancel a pending jump. Historical completions
+on attachment/reconnection and jobs with no additions must not move selection.
+Do not play or enqueue the revealed track.
 Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
 covers and restore them on close; the bottom add prompt keeps the cover visible.
 Use existing semantic palette roles and English copy. No installation prompts,

@@ -66,6 +66,14 @@ bottom status line, or the newest job when all are finished, with item paging
 reset. New arrivals preserve the job you are reading while the dialog is open.
 Detaching the TUI leaves the job running.
 
+When an import finishes while the TUI is attached, Library focuses and selects
+the first successfully added track, scrolling to it even on another page. For a
+playlist this happens once, when the whole job finishes. A search that hides the
+track is cleared; matching searches remain. Open dialogs and prompts defer the
+selection until they close. Explicit browsing while the destination loads takes
+precedence. Jobs that add no tracks and historical jobs on attachment do not move
+the selection. Playback and Queue are unchanged.
+
 ## Metadata and source links
 
 Structured music metadata takes precedence. Otherwise conservative code rules

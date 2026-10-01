@@ -564,12 +564,20 @@ fn worker(
                             query,
                             offset,
                             limit,
+                            anchor,
                         } => {
-                            let reply = match store.search(&query, offset, limit) {
-                                Ok((tracks, total)) => Reply::success(
-                                    json!({"tracks": tracks, "total": total, "offset": offset}),
-                                ),
-                                Err(e) => failure(e),
+                            let reply = if let Some(id) = anchor {
+                                match store.search_around(&query, &id, limit) {
+                                    Ok(page) => Reply::success(page),
+                                    Err(e) => failure(e),
+                                }
+                            } else {
+                                match store.search(&query, offset, limit) {
+                                    Ok((tracks, total)) => Reply::success(
+                                        json!({"tracks": tracks, "total": total, "offset": offset}),
+                                    ),
+                                    Err(e) => failure(e),
+                                }
                             };
                             let _ = answer.send(reply);
                         }

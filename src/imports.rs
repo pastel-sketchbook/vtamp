@@ -65,6 +65,9 @@ pub struct ImportJob {
     pub stage: String,
     pub total: Option<usize>,
     pub added: usize,
+    /// First successfully published track, in playlist order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_added_track_id: Option<String>,
     pub skipped: usize,
     pub failed: usize,
     pub current_index: Option<usize>,
@@ -85,6 +88,7 @@ impl ImportJob {
             stage: "queued".into(),
             total: None,
             added: 0,
+            first_added_track_id: None,
             skipped: 0,
             failed: 0,
             current_index: None,
@@ -411,6 +415,9 @@ fn work(
             item.title = record.track.title.clone();
             let mut committed = job.clone();
             committed.added += 1;
+            committed
+                .first_added_track_id
+                .get_or_insert_with(|| manifest.track_id.clone());
             let (tx, rx) = mpsc::sync_channel(1);
             if !send(Message::Publish(
                 Box::new(Publication {

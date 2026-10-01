@@ -18,6 +18,12 @@ pub(super) struct ImportUi {
     pub max_scroll: u16,
     pub detail_at: Option<Instant>,
     pub detail: Option<Value>,
+    pub observing: bool,
+    pub reveal: Option<LibraryReveal>,
+}
+pub(super) struct LibraryReveal {
+    id: String,
+    requested_query: Option<String>,
 }
 pub(super) enum Modal {
     Jobs,
@@ -34,6 +40,129 @@ pub(super) enum Modal {
     },
 }
 impl App {
+    pub(super) fn cancel_import_reveal_for_key(&mut self, key: KeyEvent) {
+        // Explicit browsing takes precedence over an automatic jump still in
+        // flight. Navigation inside an overlay leaves its deferred reveal intact.
+        let browsing = !self.import_reveal_blocked()
+            && (matches!(
+                key.code,
+                KeyCode::Tab
+                    | KeyCode::BackTab
+                    | KeyCode::Down
+                    | KeyCode::Up
+                    | KeyCode::PageDown
+                    | KeyCode::PageUp
+                    | KeyCode::Enter
+                    | KeyCode::Char('j' | 'k' | 'g' | 'G' | '[' | ']' | '/' | 'e' | 'v')
+            ) || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('f' | 'b' | 'w'))));
+        if browsing || (matches!(self.input, Some(Input::Search(_))) && key.code == KeyCode::Enter)
+        {
+            self.import_ui.reveal = None;
+        }
+    }
+
+    fn completed_import(&mut self, job: &ImportJob) {
+        if self.import_ui.observing
+            && job.terminal()
+            && job.added > 0
+            && self.import_ui.jobs.iter().any(|old| {
+                old.job_id == job.job_id && !old.terminal() && old.revision < job.revision
+            })
+            && let Some(id) = &job.first_added_track_id
+        {
+            self.import_ui.reveal = Some(LibraryReveal {
+                id: id.clone(),
+                requested_query: None,
+            });
+        }
+    }
+
+    fn import_reveal_blocked(&self) -> bool {
+        !self.connected
+            || self.input.is_some()
+            || self.help
+            || self.theme_picker.is_some()
+            || self.import_ui.modal.is_some()
+    }
+
+    pub(super) fn reveal_import(&mut self, commands: &mpsc::Sender<Command>) {
+        if self.import_reveal_blocked() {
+            return;
+        }
+        if let Some(reveal) = &mut self.import_ui.reveal
+            && reveal.requested_query.is_none()
+            && commands
+                .try_send(Command::LibraryList {
+                    query: self.query.clone(),
+                    offset: 0,
+                    limit: PAGE_SIZE,
+                    anchor: Some(reveal.id.clone()),
+                })
+                .is_ok()
+        {
+            reveal.requested_query = Some(self.query.clone());
+        }
+    }
+
+    pub(super) fn import_reveal_reply(
+        &mut self,
+        id: &str,
+        query: &str,
+        result: Result<Value, String>,
+    ) {
+        if !self
+            .import_ui
+            .reveal
+            .as_ref()
+            .is_some_and(|r| r.id == id && r.requested_query.as_deref() == Some(query))
+        {
+            return;
+        }
+        // A prompt may have opened while the page was loading. Locate again
+        // after it closes, using the then-current catalog and search filter.
+        if self.import_reveal_blocked() {
+            self.import_ui.reveal.as_mut().unwrap().requested_query = None;
+            return;
+        }
+        self.import_ui.reveal = None;
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.notice(error);
+                return;
+            }
+        };
+        let tracks: Vec<Track> =
+            serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
+        let Some(index) = tracks.iter().position(|track| track.id == id) else {
+            self.notice("Could not locate the imported track in Library.");
+            return;
+        };
+        let Some(effective_query) = value["query"].as_str() else {
+            self.notice("Could not locate the imported track in Library.");
+            return;
+        };
+        let cleared = !self.query.is_empty() && effective_query.is_empty();
+        self.query = effective_query.into();
+        self.offset = value["offset"].as_u64().unwrap_or(0) as usize;
+        self.total = value["total"].as_u64().unwrap_or(0) as usize;
+        self.tracks = tracks;
+        self.library_jump = None;
+        self.library_selection.select(Some(index));
+        self.focus = Focus::Library;
+        self.pending_g = false;
+        self.pending_ctrl_w = false;
+        if self.spectrum_replaces_list() {
+            self.spectrum.enabled = false;
+        }
+        self.notice(if cleared {
+            "Imported track selected in Library. Search cleared to show it."
+        } else {
+            "Imported track selected in Library."
+        });
+    }
+
     pub(super) fn open_imports(&mut self, commands: &mpsc::Sender<Command>) {
         self.import_ui.modal = Some(Modal::Jobs);
         self.import_ui.reveal_on_snapshot = true;
@@ -80,6 +209,14 @@ impl App {
     }
 
     pub(super) fn import_snapshot(&mut self, mut jobs: Vec<ImportJob>) {
+        // Oldest first lets the latest completion win if a lagged watch catches
+        // up with several finished jobs. The first snapshot is only a baseline.
+        let mut completed: Vec<_> = jobs.iter().filter(|j| j.terminal()).collect();
+        completed.sort_by_key(|j| (j.finished_at_ms, j.started_at_ms));
+        for job in completed {
+            self.completed_import(job);
+        }
+        self.import_ui.observing = true;
         let previous = self.selected_import();
         let newest = jobs.iter().map(|j| j.started_at_ms).max();
         let mut added_since = Vec::new();
@@ -262,6 +399,7 @@ impl App {
         }
     }
     pub(super) fn import_update(&mut self, job: ImportJob) -> bool {
+        self.completed_import(&job);
         let previous = self.selected_import();
         if let Some(old) = self
             .import_ui
