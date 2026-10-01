@@ -1643,21 +1643,38 @@ impl App {
             )),
             status,
         );
-        let keys = if area.width >= 100 {
-            if self
-                .state
-                .current()
-                .is_some_and(|item| item.track.is_live())
-            {
-                " Space play  n/b skip  a add  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
-            } else {
-                " Space play  n/b skip  ←/→ seek  +/- vol  Tab list  / search  v spectrum  t theme  ? help  q detach"
-            }
-        } else if area.width >= 52 {
-            " Space play  Tab list  v spectrum  ? help  q detach"
-        } else {
-            " Space play  v spectrum  ? help  q detach"
+        // Space toggles, so its label names the action it will take now.
+        let space = match self.state.status {
+            PlaybackStatus::Playing => "Space pause",
+            PlaybackStatus::Paused => "Space resume",
+            PlaybackStatus::Stopped => "Space play",
         };
+        let live = self
+            .state
+            .current()
+            .is_some_and(|item| item.track.is_live());
+        let mut groups = vec!["Enter play", space];
+        if area.width >= 102 {
+            groups.extend([
+                "n/b skip",
+                if live { "a add" } else { "←/→ seek" },
+                "+/- vol",
+                "Tab list",
+                "/ search",
+                "v spectrum",
+                "t theme",
+            ]);
+        } else if area.width >= 59 {
+            groups.extend(["Tab list", "v spectrum"]);
+        } else if area.width >= 48 {
+            groups.push("Tab list");
+        }
+        groups.extend(["? help", "q detach"]);
+        // Prefer the roomy spacing; tighten it rather than clip the last hint.
+        let mut keys = format!(" {}", groups.join("  "));
+        if keys.chars().count() > usize::from(area.width) {
+            keys = groups.join(" ");
+        }
         frame.render_widget(
             Paragraph::new(keys).style(Style::default().bg(p.panel).fg(p.muted)),
             hints,
@@ -3589,6 +3606,42 @@ mod tests {
         assert!(!launched);
         assert!(requests.try_recv().is_err());
         assert_eq!(app.state.status, PlaybackStatus::Playing);
+    }
+
+    /// The bottom row of a frame drawn at `width` × `height`.
+    fn hint_row(app: &mut App, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buffer[(x, height - 1)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn hint_bar_names_enter_and_follows_playback_state() {
+        let mut app = app();
+        app.state.status = PlaybackStatus::Playing;
+        let row = hint_row(&mut app, 120, 36);
+        assert!(row.contains("Enter play  Space pause"), "{row}");
+        assert!(row.contains("←/→ seek"), "{row}");
+        app.state.status = PlaybackStatus::Paused;
+        assert!(hint_row(&mut app, 120, 36).contains("Enter play  Space resume"));
+        app.state.status = PlaybackStatus::Stopped;
+        assert!(hint_row(&mut app, 120, 36).contains("Enter play  Space play"));
+        // Every width keeps Enter, Space, help, and detach, and never clips the last hint.
+        app.state.status = PlaybackStatus::Paused;
+        for width in [40u16, 47, 48, 58, 59, 101, 102, 113] {
+            let row = hint_row(&mut app, width, 12);
+            assert!(row.contains("Enter play"), "{width}: {row}");
+            assert!(row.contains("Space resume"), "{width}: {row}");
+            assert!(row.contains("? help"), "{width}: {row}");
+            assert!(row.trim_end().ends_with("q detach"), "{width}: {row}");
+            assert_eq!(row.contains("Tab list"), width >= 48, "{width}: {row}");
+            assert_eq!(row.contains("v spectrum"), width >= 59, "{width}: {row}");
+            assert_eq!(row.contains("/ search"), width >= 102, "{width}: {row}");
+        }
     }
 
     #[test]
