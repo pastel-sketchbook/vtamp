@@ -5,11 +5,9 @@ const slides = [...gallery.querySelectorAll('.gallery-slide')];
 const selectors = [...gallery.querySelectorAll('[data-slide]')];
 const rotation = $('gallery-rotation');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-const captions = [
-  '120 × 28 cells. Your library and queue, together.',
-  '100 × 24 cells. Less height. Still room for the cover and your library.',
-  '100 × 24 cells. Press Tab to bring your queue alongside the music.'
-];
+// Each page supplies its own language: captions on the slides, status strings in #strings.
+const captions = slides.map((slide) => slide.dataset.caption);
+const strings = JSON.parse($('strings').textContent);
 let current = 0;
 let automatic = !reducedMotion.matches;
 let hovering = false;
@@ -19,8 +17,8 @@ const ready = new Set();
 
 function renderRotation() {
   rotation.hidden = reducedMotion.matches;
-  rotation.setAttribute('aria-label', automatic ? 'Pause automatic slideshow' : 'Start automatic slideshow');
-  rotation.querySelector('span').textContent = automatic ? 'Pause' : 'Play';
+  rotation.setAttribute('aria-label', automatic ? strings.pauseLabel : strings.playLabel);
+  rotation.querySelector('span').textContent = automatic ? strings.pause : strings.play;
   rotation.querySelector('path').setAttribute('d', automatic ? 'M8 5v14M16 5v14' : 'm8 5 11 7-11 7Z');
 }
 function schedule() {
@@ -34,7 +32,7 @@ function schedule() {
 }
 function show(index, manual) {
   if (!ready.has(index)) {
-    $('gallery-status').textContent = 'This screenshot is still loading. Please try again.';
+    $('gallery-status').textContent = strings.loading;
     return;
   }
   if (manual) {
@@ -78,8 +76,8 @@ async function loadSlide(index) {
     schedule();
   } catch {
     selectors[index].disabled = true;
-    selectors[index].title = 'Screenshot unavailable';
-    if (index === current) $('gallery-description').textContent = 'Screenshot unavailable. Please reload the page.';
+    selectors[index].title = strings.unavailable;
+    if (index === current) $('gallery-description').textContent = strings.unavailableReload;
   }
 }
 // Prioritize the first real screenshot, then fetch the other two.
@@ -90,8 +88,8 @@ let feedbackTimer;
 document.querySelectorAll('[data-copy]').forEach((button) => {
   button.addEventListener('click', async () => {
     const command = button.dataset.copy;
-    try { await navigator.clipboard.writeText(command); $('copy-feedback').textContent = 'Command copied.'; }
-    catch { $('copy-feedback').textContent = `Select and copy: ${command}`; }
+    try { await navigator.clipboard.writeText(command); $('copy-feedback').textContent = strings.copied; }
+    catch { $('copy-feedback').textContent = `${strings.copyFallback}${command}`; }
     clearTimeout(feedbackTimer);
     feedbackTimer = setTimeout(() => { $('copy-feedback').textContent = ''; }, 4500);
   });

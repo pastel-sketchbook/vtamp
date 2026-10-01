@@ -4,7 +4,8 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#171c18">
 <meta name="description" content="vtamp is a detachable terminal music player. Local music, a persistent server, and a CLI for people, scripts, and agents. Built with Rust. macOS first.">
 <title>vtamp · A music player for the terminal that keeps playing after you detach</title>
-<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"><link rel="preload" href="fonts/SpaceGrotesk.ttf" as="font" type="font/ttf" crossorigin><link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"><link rel="preload" href="fonts/SpaceGrotesk.ttf" as="font" type="font/ttf" crossorigin><link rel="stylesheet" href="style.css">
+<script type="application/json" id="strings">{"pauseLabel":"Pause automatic slideshow","playLabel":"Start automatic slideshow","pause":"Pause","play":"Play","loading":"This screenshot is still loading. Please try again.","unavailable":"Screenshot unavailable","unavailableReload":"Screenshot unavailable. Please reload the page.","copied":"Command copied.","copyFallback":"Select and copy: "}</script><script src="app.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -35,13 +36,13 @@
 </div>
 </div>
 <div class="gallery-stage">
-<figure id="shot-wide" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="1 of 3: Wide">
+<figure id="shot-wide" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="1 of 3: Wide" data-caption="120 × 28 cells. Your library and queue, together.">
 <a href="screenshots/wide.png" target="_blank" rel="noopener" aria-label="Open Wide screenshot at full resolution"><img src="screenshots/wide.png" width="2072" height="1048" fetchpriority="high" alt="vtamp in Catppuccin Mocha: album art and current track above the Library and Queue, both visible in a wide terminal."></a>
 </figure>
-<figure id="shot-library" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="2 of 3: Compact Library" hidden>
+<figure id="shot-library" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="2 of 3: Compact Library" data-caption="100 × 24 cells. Less height. Still room for the cover and your library." hidden>
 <a href="screenshots/compact-library.png" target="_blank" rel="noopener" aria-label="Open Compact Library screenshot at full resolution"><img data-src="screenshots/compact-library.png" width="1732" height="912" alt="A short terminal pane keeps the high-resolution album cover and current track on the left, with Library browsing on the right."></a>
 </figure>
-<figure id="shot-queue" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="3 of 3: Compact Queue" hidden>
+<figure id="shot-queue" class="gallery-slide" role="group" aria-roledescription="slide" aria-label="3 of 3: Compact Queue" data-caption="100 × 24 cells. Press Tab to bring your queue alongside the music." hidden>
 <a href="screenshots/compact-queue.png" target="_blank" rel="noopener" aria-label="Open Compact Queue screenshot at full resolution"><img data-src="screenshots/compact-queue.png" width="1732" height="912" alt="The same short pane with Queue on the right. The album cover and playback information stay visible on the left."></a>
 </figure>
 </div>
