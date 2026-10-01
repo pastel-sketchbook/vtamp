@@ -187,6 +187,7 @@ struct ThemePicker {
 
 struct App {
     import_ui: imports::ImportUi,
+    library_reveal: Option<imports::LibraryReveal>,
     stream_dialog: Option<streams::Dialog>,
     spectrum: SpectrumView,
     viewport: Rect,
@@ -292,6 +293,7 @@ pub async fn run(
     let size = terminal.size()?;
     let mut app = App {
         import_ui: imports::ImportUi::default(),
+        library_reveal: None,
         stream_dialog: None,
         spectrum: SpectrumView::new(saved_spectrum),
         viewport: Rect::new(0, 0, size.width, size.height),
@@ -896,7 +898,7 @@ impl App {
         commands: &mpsc::Sender<Command>,
     ) {
         self.message_inner(message, messages, commands);
-        self.reveal_import(commands);
+        self.reveal_library(commands);
     }
     fn message_inner(
         &mut self,
@@ -907,7 +909,7 @@ impl App {
         match message {
             Message::Connected(state) => {
                 self.import_ui.observing = false;
-                self.import_ui.reveal = None;
+                self.library_reveal = None;
                 self.spectrum.clear();
                 self.connected = true;
                 self.state(state, messages);
@@ -929,7 +931,7 @@ impl App {
             }
             Message::Disconnected(reason) => {
                 self.import_ui.observing = false;
-                self.import_ui.reveal = None;
+                self.library_reveal = None;
                 self.spectrum.clear();
                 self.connected = false;
                 self.notice(reason);
@@ -972,7 +974,7 @@ impl App {
                 },
                 result,
             ) => {
-                self.import_reveal_reply(&id, &query, result);
+                self.library_reveal_reply(&id, &query, result);
             }
             Message::Reply(command, result)
                 if matches!(
@@ -1007,7 +1009,6 @@ impl App {
                             if !self.import_ui.enabled {
                                 self.import_ui.modal = None;
                                 self.import_ui.jobs.clear();
-                                self.import_ui.reveal = None;
                             }
                             return;
                         }
@@ -1103,10 +1104,10 @@ impl App {
         }
     }
     fn key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
-        self.cancel_import_reveal_for_key(key);
+        self.cancel_library_reveal_for_key(key);
         let quit = self.key_inner(key, commands)?;
         if !quit {
-            self.reveal_import(commands);
+            self.reveal_library(commands);
         }
         Ok(quit)
     }
@@ -1228,7 +1229,7 @@ impl App {
             }
             // Esc clears an applied search before it detaches.
             KeyCode::Esc if !self.query.is_empty() => {
-                self.import_ui.reveal = None;
+                self.library_reveal = None;
                 self.apply_search(String::new(), commands);
                 self.notice("Search cleared. Esc again or q detaches.");
             }
@@ -2103,6 +2104,85 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
             .unwrap();
         assert!(app.stream_dialog.is_none());
+    }
+
+    #[test]
+    fn radio_registration_selects_channel_across_pages_and_filters() {
+        for (duplicate, filter, effective) in [
+            (false, "unrelated", ""),
+            (false, "Radio", "Radio"),
+            (true, "", ""),
+        ] {
+            let mut app = navigation_app(PAGE_SIZE);
+            app.focus = Focus::Queue;
+            app.query = filter.into();
+            app.viewport = Rect::new(0, 0, 72, 20);
+            app.spectrum.enabled = true;
+            let state = serde_json::to_value(&app.state).unwrap();
+            let (messages, _) = mpsc::unbounded_channel();
+            let (commands, mut requests) = mpsc::channel(16);
+            let entry = crate::streams::Entry {
+                name: "한국 Radio".into(),
+                url: "https://example.com/live".into(),
+            };
+            let track = entry.track();
+            let tracks = if duplicate {
+                vec![]
+            } else {
+                vec![track.clone()]
+            };
+            app.message(
+                Message::Reply(
+                    Command::StreamAdd {
+                        entries: vec![entry],
+                    },
+                    Ok(serde_json::json!({
+                        "added": tracks.len(), "existing": usize::from(duplicate),
+                        "tracks": tracks, "first_registered_id": track.id,
+                    })),
+                ),
+                &messages,
+                &commands,
+            );
+            // Downloader availability must not cancel radio selection.
+            app.message(
+                Message::Reply(
+                    Command::ImportAvailable,
+                    Ok(serde_json::json!({"available": false})),
+                ),
+                &messages,
+                &commands,
+            );
+            let request = requests.try_recv().unwrap();
+            assert!(
+                matches!(&request, Command::LibraryList { anchor: Some(id), query, .. }
+                if id == &track.id && query == filter)
+            );
+            let mut rows = navigation_app(450).tracks[400..].to_vec();
+            rows[25] = track.clone();
+            app.message(
+                Message::Reply(
+                    request,
+                    Ok(serde_json::json!({
+                        "tracks": rows, "total": 450, "offset": 400, "query": effective,
+                    })),
+                ),
+                &messages,
+                &commands,
+            );
+            assert_eq!(app.focus, Focus::Library);
+            assert_eq!(app.offset, 400);
+            assert_eq!(app.query, effective);
+            assert_eq!(app.selected_track().unwrap().id, track.id);
+            assert!(!app.spectrum.enabled);
+            assert_eq!(serde_json::to_value(&app.state).unwrap(), state);
+            assert!(requests.try_recv().is_err());
+            app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+                .unwrap();
+            assert!(
+                matches!(requests.try_recv().unwrap(), Command::Play { track: Some(id), .. } if id == track.id)
+            );
+        }
     }
 
     #[test]
@@ -3286,6 +3366,7 @@ mod tests {
         let (tx, _rx) = sync_mpsc::channel();
         App {
             import_ui: imports::ImportUi::default(),
+            library_reveal: None,
             stream_dialog: None,
             spectrum: SpectrumView::new(false),
             viewport: Rect::default(),
@@ -3637,7 +3718,7 @@ mod tests {
             );
             assert_eq!(app.focus, Focus::Queue);
             assert!(requests.try_recv().is_err());
-            assert!(app.import_ui.reveal.is_some());
+            assert!(app.library_reveal.is_some());
             app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
                 .unwrap();
             let request = requests.try_recv().unwrap();
@@ -3659,7 +3740,7 @@ mod tests {
         job.first_added_track_id = Some("1".into());
         job.finish("completed");
         app.import_snapshot(vec![job.clone()]);
-        assert!(app.import_ui.reveal.is_none());
+        assert!(app.library_reveal.is_none());
         let mut active = crate::imports::ImportJob::new(&Default::default());
         app.import_snapshot(vec![active.clone(), job.clone()]);
         app.message(
@@ -3671,7 +3752,7 @@ mod tests {
         active.first_added_track_id = Some("2".into());
         active.finish("completed");
         app.import_snapshot(vec![active, job]);
-        assert!(app.import_ui.reveal.is_none());
+        assert!(app.library_reveal.is_none());
         app.connected = true;
         let mut next = crate::imports::ImportJob::new(&Default::default());
         app.import_snapshot(vec![next.clone()]);
@@ -3723,7 +3804,7 @@ mod tests {
             assert_eq!(app.library_selection.selected(), selected);
             assert_eq!(app.focus, focus);
             assert!(!app.query.is_empty());
-            assert!(app.import_ui.reveal.is_none());
+            assert!(app.library_reveal.is_none());
             assert!(requests.try_recv().is_err());
         }
     }

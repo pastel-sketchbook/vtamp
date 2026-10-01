@@ -85,10 +85,13 @@ Register a channel using its stable HTTP(S) URL and a name:
 
 ```sh
 vtamp library stream add 'https://radio.bsod.kr/stream?stn=kbs&ch=1fm' --name 'KBS 1FM'
+vtamp play --track STREAM_ID
 vtamp library stream import ~/Downloads/seoul.m3u --preview
 vtamp library stream import ~/Downloads/seoul.m3u
 vtamp library stream remove STREAM_ID
 ```
+
+`STREAM_ID` is the registration response’s `first_registered_id`.
 
 For [radio.bsod.kr](https://radio.bsod.kr/), copy the channel's **fixed URL**
 (고정 URL), or export the selected region as M3U or PLS. A final broadcast URL
@@ -97,7 +100,10 @@ No yt-dlp, FFmpeg, account, or download step is needed for radio playback.
 
 In the TUI, press **a** and enter a stream URL, then its channel name. The same
 prompt accepts a local M3U/PLS file; review its channels and press Enter to add
-all. Escape cancels. Lists must be UTF-8, at most 1 MiB and 1000 channels, and
+all. Registration focuses Library and selects the added channel (the first new
+channel for a playlist, or the existing channel for a duplicate). A filter is
+cleared only when it hides that channel. Press Enter to play it immediately.
+Escape cancels. Lists must be UTF-8, at most 1 MiB and 1000 channels, and
 contain HTTP(S) entries. Invalid entries reject the whole import. HLS manifests
 are playback inputs, not channel lists: register their HTTP(S) URL instead.
 `--preview` only reads the file, without starting the server or writing state.

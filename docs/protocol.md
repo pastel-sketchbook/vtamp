@@ -179,14 +179,16 @@ anchors, direct playback, and queue edits accept stream track IDs.
 
 | Command | Request fields | Successful data |
 | --- | --- | --- |
-| `stream_add` | `entries`: array of `{url,name}` | `added`, `existing`, newly added `tracks` |
+| `stream_add` | `entries`: array of `{url,name}` | `added`, `existing`, newly added `tracks`, `first_registered_id` |
 | `stream_remove` | `id` | `removed` ID |
 | `stream_preview` | absolute local `path` | array of validated `{url,name}` entries |
 
 Registration validates all entries before one database transaction. Up to 1000
 entries are accepted. URLs must be HTTP(S) without embedded credentials; their
-fragments are removed and URL parsing normalizes them. An already registered URL
-keeps its identity and name. This is registration deduplication, not keyed request
+fragments are removed and URL parsing normalizes them. `first_registered_id`
+identifies the first input channel, including when it was already registered;
+clients can use it as a Library anchor when no new tracks were added. An already
+registered URL keeps its identity and name. This is registration deduplication, not keyed request
 receipt replay. Queue additions still allow duplicates. Successful registration
 and removal emit `library_changed`, without changing queue revisions or playback.
 Unregistering leaves saved queue/direct copies intact.

@@ -19,11 +19,11 @@ pub(super) struct ImportUi {
     pub detail_at: Option<Instant>,
     pub detail: Option<Value>,
     pub observing: bool,
-    pub reveal: Option<LibraryReveal>,
 }
 pub(super) struct LibraryReveal {
     id: String,
     requested_query: Option<String>,
+    notice: String,
 }
 pub(super) enum Modal {
     Jobs,
@@ -40,10 +40,10 @@ pub(super) enum Modal {
     },
 }
 impl App {
-    pub(super) fn cancel_import_reveal_for_key(&mut self, key: KeyEvent) {
+    pub(super) fn cancel_library_reveal_for_key(&mut self, key: KeyEvent) {
         // Explicit browsing takes precedence over an automatic jump still in
         // flight. Navigation inside an overlay leaves its deferred reveal intact.
-        let browsing = !self.import_reveal_blocked()
+        let browsing = !self.library_reveal_blocked()
             && (matches!(
                 key.code,
                 KeyCode::Tab
@@ -58,7 +58,7 @@ impl App {
                 && matches!(key.code, KeyCode::Char('f' | 'b' | 'w'))));
         if browsing || (matches!(self.input, Some(Input::Search(_))) && key.code == KeyCode::Enter)
         {
-            self.import_ui.reveal = None;
+            self.library_reveal = None;
         }
     }
 
@@ -71,14 +71,22 @@ impl App {
             })
             && let Some(id) = &job.first_added_track_id
         {
-            self.import_ui.reveal = Some(LibraryReveal {
-                id: id.clone(),
-                requested_query: None,
-            });
+            self.select_library_when_ready(
+                id.clone(),
+                "Imported track selected in Library.".into(),
+            );
         }
     }
 
-    fn import_reveal_blocked(&self) -> bool {
+    pub(super) fn select_library_when_ready(&mut self, id: String, notice: String) {
+        self.library_reveal = Some(LibraryReveal {
+            id,
+            requested_query: None,
+            notice,
+        });
+    }
+
+    fn library_reveal_blocked(&self) -> bool {
         !self.connected
             || self.input.is_some()
             || self.help
@@ -87,11 +95,11 @@ impl App {
             || self.stream_dialog.is_some()
     }
 
-    pub(super) fn reveal_import(&mut self, commands: &mpsc::Sender<Command>) {
-        if self.import_reveal_blocked() {
+    pub(super) fn reveal_library(&mut self, commands: &mpsc::Sender<Command>) {
+        if self.library_reveal_blocked() {
             return;
         }
-        if let Some(reveal) = &mut self.import_ui.reveal
+        if let Some(reveal) = &mut self.library_reveal
             && reveal.requested_query.is_none()
             && commands
                 .try_send(Command::LibraryList {
@@ -106,15 +114,14 @@ impl App {
         }
     }
 
-    pub(super) fn import_reveal_reply(
+    pub(super) fn library_reveal_reply(
         &mut self,
         id: &str,
         query: &str,
         result: Result<Value, String>,
     ) {
         if !self
-            .import_ui
-            .reveal
+            .library_reveal
             .as_ref()
             .is_some_and(|r| r.id == id && r.requested_query.as_deref() == Some(query))
         {
@@ -122,11 +129,11 @@ impl App {
         }
         // A prompt may have opened while the page was loading. Locate again
         // after it closes, using the then-current catalog and search filter.
-        if self.import_reveal_blocked() {
-            self.import_ui.reveal.as_mut().unwrap().requested_query = None;
+        if self.library_reveal_blocked() {
+            self.library_reveal.as_mut().unwrap().requested_query = None;
             return;
         }
-        self.import_ui.reveal = None;
+        let reveal = self.library_reveal.take().unwrap();
         let value = match result {
             Ok(value) => value,
             Err(error) => {
@@ -137,11 +144,11 @@ impl App {
         let tracks: Vec<Track> =
             serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
         let Some(index) = tracks.iter().position(|track| track.id == id) else {
-            self.notice("Could not locate the imported track in Library.");
+            self.notice("Could not locate the track in Library.");
             return;
         };
         let Some(effective_query) = value["query"].as_str() else {
-            self.notice("Could not locate the imported track in Library.");
+            self.notice("Could not locate the track in Library.");
             return;
         };
         let cleared = !self.query.is_empty() && effective_query.is_empty();
@@ -158,9 +165,9 @@ impl App {
             self.spectrum.enabled = false;
         }
         self.notice(if cleared {
-            "Imported track selected in Library. Search cleared to show it."
+            format!("{} Search cleared to show it.", reveal.notice)
         } else {
-            "Imported track selected in Library."
+            reveal.notice
         });
     }
 

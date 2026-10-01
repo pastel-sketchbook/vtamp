@@ -163,3 +163,9 @@ channel names and URLs with a fixed Enter/Escape/scroll footer. Library d confir
 stream removal and explains that queued copies remain. These overlays hide and
 restore pixel art, keep keys local, and remain usable at 40×12. Radio controls
 remain visible without yt-dlp.
+
+After TUI stream registration, focus Library and reveal the first newly added
+channel, or the first existing channel when all inputs were duplicates. Locate
+its page by ID, preserve matching filters, and clear only filters that hide it.
+Reuse deferred Library selection for prompts/overlays and explicit navigation;
+registration must not start playback or change Queue.

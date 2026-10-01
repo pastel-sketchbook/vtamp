@@ -440,3 +440,9 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
 - Exercise real radio only in a muted private VTAMP_HOME with media keys off;
   terminate its server in finally. Native playable metadata alone does not prove
   audio output. Never upgrade the active listening server for a test.
+
+After TUI stream registration, focus Library and reveal the first newly added
+channel, or the first existing channel when all inputs were duplicates. Locate
+its page by ID, preserve matching filters, and clear only filters that hide it.
+Reuse deferred Library selection for prompts/overlays and explicit navigation;
+registration must not start playback or change Queue.

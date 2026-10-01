@@ -163,10 +163,18 @@ impl App {
         match result {
             Ok(value) => {
                 if matches!(command, Command::StreamAdd { .. }) {
-                    self.notice(format!(
+                    let notice = format!(
                         "Added {} channels · {} already registered",
                         value["added"], value["existing"]
-                    ));
+                    );
+                    self.notice(notice.clone());
+                    if let Some(id) = value["tracks"][0]["id"]
+                        .as_str()
+                        .or_else(|| value["first_registered_id"].as_str())
+                    {
+                        self.select_library_when_ready(id.into(), notice);
+                        return;
+                    }
                 } else {
                     self.notice("Stream registration removed. Queued copies remain available.");
                 }

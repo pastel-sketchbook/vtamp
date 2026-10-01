@@ -387,6 +387,7 @@ impl Store {
         let tx = self.db.transaction()?;
         let mut added = Vec::new();
         let mut existing = 0;
+        let mut first_registered_id: Option<String> = None;
         for entry in entries {
             let track = entry.track();
             let record = Record {
@@ -395,6 +396,13 @@ impl Store {
                 bytes: 0,
             };
             let count = tx.execute("INSERT INTO streams(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?3,'','') ON CONFLICT(path) DO NOTHING", params![track.id, entry.url, normalized(&entry.name), serde_json::to_string(&record)?])?;
+            if first_registered_id.is_none() {
+                first_registered_id = Some(tx.query_row(
+                    "SELECT id FROM streams WHERE path=?1",
+                    [&entry.url],
+                    |row| row.get(0),
+                )?);
+            }
             if count == 0 {
                 existing += 1;
             } else {
@@ -402,7 +410,9 @@ impl Store {
             }
         }
         tx.commit()?;
-        Ok(serde_json::json!({"added":added.len(),"existing":existing,"tracks":added}))
+        Ok(
+            serde_json::json!({"added":added.len(),"existing":existing,"tracks":added,"first_registered_id":first_registered_id}),
+        )
     }
     pub fn remove_stream(&self, id: &str) -> Result<()> {
         if self.db.execute("DELETE FROM streams WHERE id=?1", [id])? == 0 {
@@ -449,10 +459,14 @@ mod tests {
             name: "사랑 Radio".into(),
             url: "https://example.com/live".into(),
         };
-        let result = store.add_streams(&[entry.clone(), entry]).unwrap();
+        let result = store.add_streams(&[entry.clone(), entry.clone()]).unwrap();
         assert_eq!(result["added"], 1);
         assert_eq!(result["existing"], 1);
         let id = result["tracks"][0]["id"].as_str().unwrap();
+        assert_eq!(result["first_registered_id"], id);
+        let duplicate = store.add_streams(&[entry]).unwrap();
+        assert_eq!(duplicate["first_registered_id"], id);
+        assert_eq!(duplicate["added"], 0);
         store
             .replace_catalog(&[record("file", "A", "Artist", "")])
             .unwrap();
