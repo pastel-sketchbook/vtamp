@@ -252,6 +252,8 @@ automatically. See [configuration and workflows](imports.md).
 | `import_status` | `id`, `offset`, `limit` (1–1000) | `job`, paginated `items`, `offset` |
 | `import_cancel` | `id` | Updated job; running jobs enter `cancelling` |
 | `import_retry` | `id` | New job for unfinished retryable entries |
+| `cover_refresh` | optional `track` | Job counters; one refresh at a time; reports live in server memory |
+| `cover_status` | `id` | Job counters and capped failure reports |
 | `library_edit` | `id`, nullable `title`, `artist`, `album` | Updated Track |
 | `library_retag` | `id` | Updated Track; manual overrides remain authoritative |
 
@@ -259,6 +261,16 @@ For `library_edit`, an omitted/null field is unchanged. An empty `album` string
 explicitly clears it and remains authoritative across scans and retagging.
 Title and artist must remain nonempty. Track `album` is an empty string when
 absent; TUI clients omit missing albums and associated separators.
+
+`cover_refresh` starts re-fetching thumbnails for managed YouTube imports and
+rewrites their cover files; a track outside the managed `imports/` directory is
+counted as skipped, and `track` limits the run to one library track (`cover all`
+sends no `track`). The reply is the running job; `cover_status` reads it,
+reporting `completed`, `partial`,
+`failed`, or `cancelled` with `refreshed`, `unchanged`, `skipped`, and `failed`
+counters. Only the last handful of reports is retained, they are not persisted,
+and an unknown or restarted job returns `cover_job_not_found`. A second refresh
+while one runs returns `cover_refresh_in_progress` with its `job_id`.
 
 An import request has `url`, `playlist` (default false), optional single-video
 `title`/`artist`, and optional `video_ids` to freeze a preview or retry subset.

@@ -375,6 +375,21 @@ impl Store {
             .transpose()?)
     }
 
+    /// Point a track at a regenerated cover file without touching its metadata.
+    pub fn set_cover(&mut self, id: &str, cover: &Path) -> Result<Track> {
+        let json: String = self
+            .db
+            .query_row("SELECT json FROM tracks WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| ApiError::new("track_not_found", "Library track not found"))?;
+        let mut record: Record = serde_json::from_str(&json)?;
+        record.track.cover = Some(cover.to_owned());
+        let tx = self.db.transaction()?;
+        imports::write_record(&tx, &record)?;
+        tx.commit()?;
+        Ok(record.track)
+    }
+
     pub fn add_streams(&mut self, entries: &[crate::streams::Entry]) -> Result<serde_json::Value> {
         anyhow::ensure!(
             !entries.is_empty() && entries.len() <= crate::streams::MAX_ENTRIES,

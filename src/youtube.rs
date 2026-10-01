@@ -329,6 +329,19 @@ pub fn download(
     }
     Ok(audio)
 }
+/// Fetch the thumbnail for an already imported video; `cover` converts it.
+pub fn thumbnail(video_id: &str, stage: &Path, config: &Config, stop: &Cancel) -> Result<()> {
+    std::fs::create_dir_all(stage)?;
+    let mut cmd = command(config)?;
+    cmd.args(["--no-playlist", "--skip-download", "--write-thumbnail"])
+        .arg("-o")
+        .arg(stage.join("thumb.%(ext)s"))
+        .arg("--")
+        .arg(video_url(video_id));
+    subprocess::run(&mut cmd, None, stop, Duration::from_secs(120), |_| {})?;
+    Ok(())
+}
+
 pub fn cover(stage: &Path, config: &Config, stop: &Cancel) -> Result<()> {
     let thumbnail = std::fs::read_dir(stage)?
         .filter_map(|e| e.ok())

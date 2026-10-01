@@ -3,6 +3,7 @@ pub mod audio;
 pub mod cli;
 pub mod client;
 mod cover;
+pub mod covers;
 pub mod daemon;
 pub mod engine;
 pub mod import_config;

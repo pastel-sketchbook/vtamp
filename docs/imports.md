@@ -46,6 +46,8 @@ vtamp library imports
 vtamp library import-status JOB_ID --offset 0 --limit 20
 vtamp library import-cancel JOB_ID
 vtamp library import-retry JOB_ID
+vtamp library cover refresh [TRACK_ID|all]
+vtamp library cover status JOB_ID
 ```
 
 All commands support the global `--json` flag. A waited partial/failed/cancelled
@@ -54,6 +56,18 @@ Status queries never auto-start a server. A retry creates a new job containing
 unfinished retryable videos only. There is one download worker, at most 32
 queued/running jobs, and 100 retained terminal reports. Restart marks unfinished
 jobs interrupted; explicit retry is required. Completed tracks remain available.
+
+`library cover refresh` re-fetches the thumbnail of every managed YouTube import
+and rewrites its `cover.jpg` with the current thumbnail pipeline, so imports from
+an older pipeline can be repaired without re-importing audio. Omitting the track
+or passing `all` refreshes the whole set; a track ID limits the run to that one
+track. One refresh runs at a time; `--wait` follows it, and
+`--wait --timeout 60s` limits waiting without cancelling the work. Covers are
+written only for files under the managed `imports/` directory; other library
+tracks are counted as skipped. A track that has no thumbnail yet (or a failed
+one) gains a cover when the refresh succeeds, and tracks whose cover bytes are
+already current are left untouched. The job report lives in server memory:
+restarting the server loses it, and re-running the command is safe.
 
 In the TUI, press `a` and paste a URL into the existing add prompt. Playlist URLs
 open a preview; Enter confirms all entries, Esc closes it. Press `i` for the

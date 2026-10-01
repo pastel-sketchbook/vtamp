@@ -421,6 +421,8 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `library add PATH`, `library remove PATH` | Register/unregister a directory; never delete music files |
 | `library scan [--wait] [--timeout 60s]` | Rescan and optionally await a report; add/remove also accept wait options |
 | `library scan-status JOB_ID` | Inspect a running or recent scan |
+| `library cover refresh [TRACK_ID\|all] [--wait]` | Re-fetch thumbnails and rebuild square covers; every managed YouTube import unless a track ID is given |
+| `library cover status JOB_ID` | Inspect a cover refresh job; reports live in server memory only |
 | `library track ID` | Read one indexed track |
 | `library list [--offset N] [--limit N]` | List indexed tracks, default 200, maximum 1000 per page |
 | `library search [QUERY] [--title TEXT] [--artist TEXT] [--album TEXT] [--exact] [--exclude TEXT]` | Combine normalized field filters and exclusions; supports pagination |

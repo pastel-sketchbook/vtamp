@@ -414,6 +414,10 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
   art; never crop or pad the stored file. The player sizes its cover area to the
   image's shape (within the space the layout reserves) and scales the artwork to
   fill that rect, so a wide thumbnail is drawn in full without bars or cropping.
+  `library cover refresh` rebuilds covers for managed imports without re-downloading
+  audio: one refresh at a time, cancellable, off the playback loop, writing only
+  inside the managed `imports/` directory. Its report is in-memory only and must
+  stay bounded; re-running it must be harmless.
 - Import options live in imports.json; shared LLM settings live in llm.json.
   `llm setup/status/test` work without yt-dlp. The LLM defaults to `none`, while
   explicit setup defaults to `api`; imports use code rules when it is disabled.

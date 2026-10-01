@@ -1,3 +1,4 @@
+mod covers;
 mod imports;
 use crate::{
     audio::RodioBackend,
@@ -305,6 +306,7 @@ fn worker(
     let mut imports = 0usize;
     let mut active_scan: Option<String> = None;
     let mut youtube = imports::Runtime::new(&store)?;
+    let mut covers = covers::Runtime::new();
     loop {
         let revision_before = engine.state.revision;
         let mut changed = false;
@@ -325,6 +327,8 @@ fn worker(
             }
             Ok(Work::Request(command, answer)) => {
                 if let Some(result) = youtube.command(&command, &paths, &mut store, events) {
+                    let _ = answer.send(result.unwrap_or_else(failure));
+                } else if let Some(result) = covers.command(&command, &paths, &store) {
                     let _ = answer.send(result.unwrap_or_else(failure));
                 } else if matches!(
                     command,
@@ -820,6 +824,9 @@ fn worker(
             events,
         ) {
             tracing::error!("Import scheduler: {error:#}");
+        }
+        if let Err(error) = covers.poll(&mut store, &mut engine, events) {
+            tracing::error!("Cover refresh: {error:#}");
         }
         // Commands/catalog changes persist their revisions before replying.
         // Capture that position before the next tick advances it again.

@@ -40,11 +40,16 @@ if video=='FAILED00001' and not (base/'repair').exists():
  print('Video unavailable',file=sys.stderr);sys.exit(1)
 if '--dump-single-json' in args:
  print(json.dumps({{'id':video,'title':"이승환 + 정준일 '어떻게 사랑이 그래요'",'channel':'이승환 LEE SEUNG HWAN','channel_id':'UCtest','live_status':'not_live','album':(base/'album').read_text() if (base/'album').exists() else None}}));sys.exit(0)
+if '--skip-download' in args:
+ assert '--write-thumbnail' in args
+ if not (base/'nothumb').exists():
+  shutil.copyfile(base/'art.png',pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','png')))
+ sys.exit(0)
 assert '-f' in args and args[args.index('-f')+1]=='bestaudio[ext=m4a]/bestaudio'
 assert '--cookies-from-browser' not in args
 out=pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','m4a'))
 shutil.copyfile({fixture},out)
-shutil.copyfile(base/'art.png',out.with_suffix('.png'))
+if not (base/'nothumb').exists(): shutil.copyfile(base/'art.png',out.with_suffix('.png'))
 print('VTAMP_PROGRESS '+json.dumps({{'downloaded_bytes':50,'total_bytes':100,'speed':1024,'eta':1}}),flush=True)
 time.sleep(.15)
 print('VTAMP_PROGRESS '+json.dumps({{'downloaded_bytes':100,'total_bytes':100,'speed':1024,'eta':0}}),flush=True)
@@ -157,6 +162,108 @@ fn single_import_metadata_cover_dedup_edits_and_rescan() {
         "lO3lG-qXU14"
     );
 }
+#[test]
+fn cover_refresh_restores_wide_covers_and_repairs_missing_ones() {
+    let h = Harness::new();
+    let added = h.ok(&["library", "add", URL, "--wait"]);
+    let first = added["job"]["first_added_track_id"].as_str().unwrap();
+    let cover = PathBuf::from(
+        h.ok(&["library", "track", first])["cover"]
+            .as_str()
+            .unwrap(),
+    );
+    let image = image::open(&cover).unwrap();
+    assert_eq!(
+        (image.width(), image.height()),
+        (512, 288),
+        "The import keeps the thumbnail's own 16:9 shape"
+    );
+    // Simulate an existing square cover from the padded era, then add an
+    // import whose thumbnail is unavailable.
+    let mut padded = image::RgbImage::from_pixel(512, 512, image::Rgb([24, 24, 24]));
+    let art = image::imageops::resize(
+        &image::open(&cover).unwrap().to_rgb8(),
+        512,
+        288,
+        image::imageops::FilterType::Triangle,
+    );
+    image::imageops::overlay(&mut padded, &art, 0, 112);
+    padded.save(&cover).unwrap();
+    let marker = h.home.path().join("bin/nothumb");
+    fs::write(&marker, b"").unwrap();
+    let missing = h.ok(&[
+        "library",
+        "add",
+        "https://www.youtube.com/watch?v=SECOND00001",
+        "--wait",
+    ]);
+    let second = missing["job"]["first_added_track_id"].as_str().unwrap();
+    assert!(
+        h.ok(&["library", "track", second])["cover"].is_null(),
+        "An unavailable thumbnail leaves the track without a cover"
+    );
+    fs::remove_file(&marker).unwrap();
+
+    let job = h.ok(&["library", "cover", "refresh", "--wait"]);
+    assert_eq!(job["status"], "completed");
+    assert_eq!(job["total"], 2);
+    assert_eq!(job["refreshed"], 2);
+    assert_eq!(job["unchanged"], 0);
+    assert_eq!(job["failed"], 0);
+    assert_eq!(job["reports"].as_array().unwrap().len(), 0);
+    let status = h.ok(&[
+        "library",
+        "cover",
+        "status",
+        job["job_id"].as_str().unwrap(),
+    ]);
+    assert_eq!(status["refreshed"], 2);
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert!(
+        calls.contains("--skip-download"),
+        "Refresh must not download audio again: {calls}"
+    );
+    for id in [first, second] {
+        let track = h.ok(&["library", "track", id]);
+        let cover = PathBuf::from(track["cover"].as_str().unwrap());
+        let image = image::open(cover).unwrap().to_rgb8();
+        assert_eq!(
+            (image.width(), image.height()),
+            (512, 288),
+            "The refreshed cover must carry the source shape, not a baked crop"
+        );
+        let center = image.get_pixel(256, 144).0;
+        assert!(
+            center
+                .iter()
+                .zip([40, 120, 180])
+                .all(|(a, b)| a.abs_diff(b) < 12),
+            "The rewritten cover is the fixture, not padding: {center:?}"
+        );
+        let dark = image
+            .pixels()
+            .filter(|p| p.0.iter().all(|c| c.abs_diff(24) < 10))
+            .count();
+        assert_eq!(dark, 0, "Padded background must not survive the refresh");
+    }
+    // A second run finds everything current, and one track can be selected.
+    let again = h.ok(&["library", "cover", "refresh", "--wait"]);
+    assert_eq!(again["refreshed"], 0);
+    assert_eq!(again["unchanged"], 2);
+    let only = h.ok(&["library", "cover", "refresh", first, "--wait"]);
+    assert_eq!(only["total"], 1);
+    assert_eq!(only["unchanged"], 1);
+    assert_eq!(only["skipped"], 0);
+    // `all` is the explicit spelling of the bulk run.
+    let all = h.ok(&["library", "cover", "refresh", "all", "--wait"]);
+    assert_eq!(all["total"], 2);
+    assert_eq!(all["unchanged"], 2);
+    assert_eq!(
+        h.ok(&["library", "cover", "refresh", "ALL", "--wait"])["total"],
+        2
+    );
+}
+
 #[test]
 fn playlist_partial_failure_and_retry_only_unfinished() {
     let h = Harness::new();

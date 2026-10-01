@@ -206,9 +206,10 @@ fn parse_sleep(input: &str) -> Result<u64, String> {
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct ScanWait {
+    /// Wait until the job finishes before printing its report.
     #[arg(long)]
     wait: bool,
-    /// Maximum time to wait; timing out does not cancel the scan.
+    /// Maximum time to wait; timing out does not cancel the job.
     #[arg(long, default_value = "60s", value_parser = parse_sleep, requires = "wait")]
     timeout: u64,
 }
@@ -370,6 +371,11 @@ pub enum Library {
     ScanStatus {
         id: String,
     },
+    /// Rebuild square cover images for existing YouTube imports.
+    Cover {
+        #[command(subcommand)]
+        command: CoverAction,
+    },
     Track {
         id: String,
     },
@@ -398,6 +404,18 @@ pub enum Library {
         limit: u16,
     },
     Roots,
+}
+#[derive(Debug, Subcommand)]
+pub enum CoverAction {
+    /// Re-fetch thumbnails and rewrite covers for imported tracks.
+    Refresh {
+        /// Refresh this track, or `all` (the default) for every managed import.
+        track: Option<String>,
+        #[command(flatten)]
+        wait: ScanWait,
+    },
+    /// Read a cover refresh job; reports live in server memory only.
+    Status { id: String },
 }
 #[derive(Debug, Subcommand)]
 pub enum StreamAction {
@@ -568,7 +586,7 @@ pub async fn run(args: Args) -> Result<()> {
                     .as_str()
                     .context("Missing scan ID")?
                     .to_owned();
-                reply = wait_for_scan(&client, &id, timeout.unwrap_or(60_000)).await?;
+                reply = wait_for_job(&client, &id, timeout.unwrap_or(60_000), Job::Scan).await?;
             }
             return output(reply, args.json);
         }
@@ -694,10 +712,16 @@ pub async fn run(args: Args) -> Result<()> {
         }
         _ => (),
     }
-    let scan_wait = match &action {
+    let job_wait = match &action {
         Action::Library {
             command: Library::Remove { wait, .. } | Library::Scan { wait },
-        } if wait.wait => Some(wait.clone()),
+        } if wait.wait => Some((Job::Scan, wait.clone())),
+        Action::Library {
+            command:
+                Library::Cover {
+                    command: CoverAction::Refresh { wait, .. },
+                },
+        } if wait.wait => Some((Job::Cover, wait.clone())),
         _ => None,
     };
     let read_only = matches!(
@@ -720,6 +744,9 @@ pub async fn run(args: Args) -> Result<()> {
                     | Library::Roots
                     | Library::Track { .. }
                     | Library::ScanStatus { .. }
+                    | Library::Cover {
+                        command: CoverAction::Status { .. },
+                    }
                     | Library::Imports
                     | Library::ImportStatus { .. }
                     | Library::ImportCancel { .. }
@@ -893,6 +920,12 @@ pub async fn run(args: Args) -> Result<()> {
             },
             Library::Scan { .. } => Command::LibraryScan,
             Library::ScanStatus { id } => Command::ScanStatus { id },
+            Library::Cover { command } => match command {
+                CoverAction::Refresh { track, .. } => Command::CoverRefresh {
+                    track: track.filter(|id| !id.eq_ignore_ascii_case("all")),
+                },
+                CoverAction::Status { id } => Command::CoverStatus { id },
+            },
             Library::Track { id } => Command::LibraryTrack { id },
             Library::Roots => Command::LibraryRoots,
             Library::List { offset, limit } => Command::LibraryList {
@@ -945,16 +978,16 @@ pub async fn run(args: Args) -> Result<()> {
     if queue_only && reply.ok {
         reply.data = reply.data.and_then(|s| s.get("queue").cloned());
     }
-    if let Some(wait) = scan_wait
+    if let Some((job, wait)) = job_wait
         && reply.ok
     {
         let id = reply
             .data
             .as_ref()
             .and_then(|d| d["job_id"].as_str())
-            .ok_or_else(|| ApiError::new("protocol_error", "Scan reply is missing job_id"))?
+            .ok_or_else(|| ApiError::new("protocol_error", "Reply is missing job_id"))?
             .to_owned();
-        reply = wait_for_scan(&client, &id, wait.timeout).await?;
+        reply = wait_for_job(&client, &id, wait.timeout, job).await?;
     }
     output(reply, args.json)
 }
@@ -976,37 +1009,60 @@ fn read_edit(path: &std::path::Path) -> Result<QueueEdit> {
         .map_err(|e| ApiError::new("invalid_arguments", format!("Invalid queue edit: {e}")).into())
 }
 
-async fn wait_for_scan(client: &Client, id: &str, timeout_ms: u64) -> Result<Reply> {
+/// Background jobs a `--wait` flag can follow.
+#[derive(Debug, Clone, Copy)]
+enum Job {
+    Scan,
+    Cover,
+}
+
+impl Job {
+    fn status(self, id: &str) -> Command {
+        match self {
+            Job::Scan => Command::ScanStatus { id: id.into() },
+            Job::Cover => Command::CoverStatus { id: id.into() },
+        }
+    }
+
+    fn failure(self, data: Value) -> anyhow::Error {
+        let (code, message) = match self {
+            Job::Scan => ("scan_failed", "Scan did not complete successfully"),
+            Job::Cover => (
+                "cover_failed",
+                "Cover refresh did not complete successfully",
+            ),
+        };
+        ApiError::new(code, message).with_details(data).into()
+    }
+
+    fn timeout(self) -> ApiError {
+        ApiError::new(
+            "wait_timeout",
+            match self {
+                Job::Scan => "Stopped waiting; the scan has not been cancelled",
+                Job::Cover => "Stopped waiting; the cover refresh has not been cancelled",
+            },
+        )
+    }
+}
+
+async fn wait_for_job(client: &Client, id: &str, timeout_ms: u64, job: Job) -> Result<Reply> {
     let wait = async {
         loop {
-            let reply = client
-                .request(Command::ScanStatus { id: id.into() })
-                .await?;
+            let reply = client.request(job.status(id)).await?;
             let data = reply.into_data()?;
             match data["status"].as_str() {
-                Some("completed") => return Ok(Reply::success(data)),
-                Some("failed" | "interrupted") => {
-                    return Err(
-                        ApiError::new("scan_failed", "Scan did not complete successfully")
-                            .with_details(data)
-                            .into(),
-                    );
-                }
-                Some("running") => (),
-                _ => return Err(ApiError::new("protocol_error", "Unknown scan status").into()),
+                Some("completed" | "partial") => return Ok(Reply::success(data)),
+                Some("failed" | "interrupted" | "cancelled") => return Err(job.failure(data)),
+                Some("running" | "queued") => (),
+                _ => return Err(ApiError::new("protocol_error", "Unknown job status").into()),
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     };
     tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), wait)
         .await
-        .map_err(|_| {
-            ApiError::new(
-                "wait_timeout",
-                "Stopped waiting; the scan has not been cancelled",
-            )
-            .with_details(json!({"job_id":id}))
-        })?
+        .map_err(|_| job.timeout().with_details(json!({"job_id":id})))?
 }
 
 fn absolute_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
@@ -1085,6 +1141,15 @@ fn output(reply: Reply, json: bool) -> Result<()> {
             if preview["items"].as_array().is_some_and(|v| v.len() > 50) {
                 writeln!(out, "First 50 shown; use --json for all entries.")?;
             }
+        }
+        return Ok(());
+    }
+    if let Ok(job) = serde_json::from_value::<CoverJob>(data.clone())
+        && data.get("refreshed").is_some()
+    {
+        writeln!(out, "{}\n{}", job.job_id, job.summary())?;
+        for report in &job.reports {
+            writeln!(out, "  {}: {}", report.title, report.message)?;
         }
         return Ok(());
     }
@@ -1397,6 +1462,7 @@ pub fn command_with_features(available: bool) -> clap::Command {
                     "import-status",
                     "import-cancel",
                     "import-retry",
+                    "cover",
                     "edit",
                     "retag",
                 ] {
@@ -1528,12 +1594,60 @@ mod tests {
             .await
             .unwrap();
         });
-        let error = wait_for_scan(&Client::new(paths), "job", 50)
+        let error = wait_for_job(&Client::new(paths), "job", 50, Job::Scan)
             .await
             .unwrap_err();
         let error = error.downcast_ref::<ApiError>().unwrap();
         assert_eq!(error.code, "wait_timeout");
         assert_eq!(error.details.as_ref().unwrap()["job_id"], "job");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cover_wait_reports_a_finished_job_and_fails_on_cancellation() {
+        use tokio::net::UnixListener;
+        let home = tempfile::Builder::new()
+            .prefix("vtamp-cover-wait-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = Paths {
+            data: home.path().into(),
+            runtime: home.path().into(),
+            cache: home.path().into(),
+        };
+        let listener = UnixListener::bind(paths.socket()).unwrap();
+        let server = tokio::spawn(async move {
+            // A finished job returns its report; a cancelled one is an error.
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request: Request = wire::read(&mut stream).await.unwrap();
+            assert!(matches!(request.request, Command::CoverStatus { ref id } if id == "cover"));
+            wire::write(
+                &mut stream,
+                &Reply::success(json!({"job_id":"cover","status":"completed","refreshed":2})),
+            )
+            .await
+            .unwrap();
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request: Request = wire::read(&mut stream).await.unwrap();
+            assert!(matches!(request.request, Command::CoverStatus { ref id } if id == "cover"));
+            wire::write(
+                &mut stream,
+                &Reply::success(json!({"job_id":"cover","status":"cancelled"})),
+            )
+            .await
+            .unwrap();
+        });
+        let reply = wait_for_job(&Client::new(paths.clone()), "cover", 500, Job::Cover)
+            .await
+            .unwrap();
+        assert_eq!(reply.into_data().unwrap()["refreshed"], 2);
+        let error = wait_for_job(&Client::new(paths), "cover", 500, Job::Cover)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<ApiError>().unwrap().code,
+            "cover_failed"
+        );
         server.await.unwrap();
     }
 }

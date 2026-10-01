@@ -310,6 +310,14 @@ pub enum Command {
         path: PathBuf,
     },
     LibraryScan,
+    CoverRefresh {
+        /// Refresh one track instead of every managed YouTube import.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<String>,
+    },
+    CoverStatus {
+        id: String,
+    },
     LibraryList {
         query: String,
         offset: usize,
@@ -483,6 +491,56 @@ pub struct ScanJob {
     pub finished_at_ms: Option<u64>,
     pub summary: Option<ScanSummary>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverReport {
+    pub track_id: String,
+    pub title: String,
+    pub message: String,
+}
+
+/// Cover refresh progress. Kept in server memory only: the action is
+/// idempotent, so a restart simply means no report to read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoverJob {
+    pub job_id: String,
+    pub status: String,
+    pub total: usize,
+    pub refreshed: usize,
+    pub unchanged: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub current: Option<String>,
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+    pub error: Option<String>,
+    pub reports: Vec<CoverReport>,
+}
+
+impl CoverJob {
+    /// Detailed failures are capped; `failed` counts all of them.
+    pub const MAX_REPORTS: usize = 100;
+    pub fn summary(&self) -> String {
+        let elapsed = self
+            .finished_at_ms
+            .unwrap_or_else(unix_ms)
+            .saturating_sub(self.started_at_ms)
+            / 1000;
+        let mut line = format!(
+            "{} · {} refreshed · {} unchanged · {} skipped · {} failed of {} imports · {elapsed}s",
+            self.status, self.refreshed, self.unchanged, self.skipped, self.failed, self.total
+        );
+        if self.status == "running"
+            && let Some(title) = &self.current
+        {
+            line.push_str(&format!(" · {title}"));
+        }
+        if let Some(error) = &self.error {
+            line.push_str(&format!(" · {error}"));
+        }
+        line
+    }
 }
 
 impl State {
