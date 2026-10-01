@@ -63,7 +63,7 @@ impl<B: PlaybackBackend> Engine<B> {
     fn add_with_rng(
         &mut self,
         tracks: Vec<Track>,
-        rng: &mut impl rand::Rng,
+        rng: &mut impl rand::RngExt,
     ) -> Result<Option<String>> {
         if self.state.queue.len() + tracks.len() > 10_000 {
             bail!("Queue limit is 10,000 entries");
@@ -180,7 +180,7 @@ impl<B: PlaybackBackend> Engine<B> {
         for item in &state.queue {
             if !existing.contains(&item.id) && !state.play_next.contains(&item.id) {
                 let index = if state.shuffle {
-                    rand::Rng::random_range(&mut rand::rng(), 0..=self.upcoming.len())
+                    rand::RngExt::random_range(&mut rand::rng(), 0..=self.upcoming.len())
                 } else {
                     self.upcoming.len()
                 };
