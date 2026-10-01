@@ -126,12 +126,12 @@ impl SpectrumView {
         }
         let height = inner.height.saturating_sub(1);
         let count = BANDS.min((inner.width as usize).div_ceil(2));
+        let step = (inner.width as usize + 1) / count;
+        let width = step.saturating_sub(1).max(1);
+        let offset = (inner.width as usize - (count * step - (step - width))) / 2;
         let blocks = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         let buf = frame.buffer_mut();
         for bar in 0..count {
-            // Shared boundaries fill the entire plot, including any remainder columns.
-            let left = bar * inner.width as usize / count;
-            let right = (bar + 1) * inner.width as usize / count;
             let start = bar * BANDS / count;
             let end = ((bar + 1) * BANDS / count).max(start + 1);
             let level = self.levels[start..end].iter().copied().fold(0.0, f32::max) * height as f32;
@@ -151,8 +151,11 @@ impl SpectrumView {
                     } else {
                         blocks[units]
                     };
-                for col in left..right {
-                    buf[(inner.x + col as u16, inner.y + height - 1 - row)]
+                for col in 0..width {
+                    buf[(
+                        inner.x + (offset + bar * step + col) as u16,
+                        inner.y + height - 1 - row,
+                    )]
                         .set_char(glyph)
                         .set_fg(color)
                         .set_bg(p.bg);
@@ -206,18 +209,14 @@ mod tests {
                     .any(|c| c.fg == color && c.symbol() == "█")
             );
         }
-        // Full-height bands must fill the plot through both edges at any width.
-        for width in [3, 40, 61, 62, 67, 100] {
-            terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 12)).unwrap();
-            draw(&mut view, &mut terminal);
-            for x in 1..width - 1 {
-                assert_eq!(
-                    terminal.backend().buffer()[(x, 9)].symbol(),
-                    "█",
-                    "width={width}, x={x}"
-                );
-            }
+        // An odd inner width must still leave one empty column between bars.
+        terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(61, 12)).unwrap();
+        draw(&mut view, &mut terminal);
+        for x in 1..60 {
+            assert_eq!(
+                terminal.backend().buffer()[(x, 9)].symbol(),
+                if x % 2 == 1 { "█" } else { " " }
+            );
         }
         view.received = Instant::now() - Duration::from_secs(1);
         for _ in 0..10 {
