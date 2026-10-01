@@ -575,6 +575,7 @@ impl App {
     fn spectrum_visible(&self) -> bool {
         self.spectrum.enabled
             && !self.cover_hidden()
+            && self.theme_picker.is_none()
             && self.viewport.width >= 40
             && self.viewport.height >= 12
     }
@@ -609,9 +610,9 @@ impl App {
     }
 
     fn cover_hidden(&self) -> bool {
-        // Help and themes can cover the image. Search/folder prompts sit below
-        // it in every layout, so they need neither hiding nor a terminal clear.
-        self.help || self.theme_picker.is_some() || self.import_ui.modal.is_some()
+        // The theme picker stays in the browser area, away from album art.
+        // Help and import dialogs can overlap the player and must hide pixels.
+        self.help || self.import_ui.modal.is_some()
     }
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
@@ -687,8 +688,18 @@ impl App {
     fn draw_theme_picker(&mut self, frame: &mut Frame, area: Rect) {
         let p = self.theme.palette();
         let picker = self.theme_picker.as_mut().unwrap();
-        let error_height = if picker.error.is_some() { 3 } else { 0 };
-        let popup = centered(area, 52, 15 + error_height);
+        let error_height = if picker.error.is_some() && area.height >= 10 {
+            3
+        } else {
+            0
+        };
+        // At the minimum size the browser has five rows: one option, two hint
+        // rows, and borders. Do not spend that space on an outer margin.
+        let popup = if area.height < 7 {
+            area
+        } else {
+            centered(area, 52, 15 + error_height)
+        };
         frame.render_widget(Clear, popup);
         let panel = block(p, " COLOR THEME · preview ", true)
             .style(Style::default().fg(p.text).bg(p.panel));
@@ -1401,7 +1412,7 @@ impl App {
         let embedded_spectrum = self.spectrum.enabled && area.height >= 28 && area.width >= 72;
         self.now_playing(frame, now, embedded_spectrum);
         if self.spectrum_replaces_list() {
-            if !self.cover_hidden() {
+            if self.spectrum_visible() {
                 self.spectrum.draw(
                     frame,
                     content,
@@ -1423,6 +1434,12 @@ impl App {
         }
         let message = if !self.connected {
             self.notice.clone()
+        } else if let Some(error) = self
+            .theme_picker
+            .as_ref()
+            .and_then(|picker| picker.error.as_ref())
+        {
+            error.clone()
         } else if let Some(warning) = &self.settings_warning {
             warning.clone()
         } else if self.notice_at.elapsed() < Duration::from_secs(6) {
@@ -1497,7 +1514,7 @@ impl App {
             self.draw_help(frame, area);
         }
         if self.theme_picker.is_some() {
-            self.draw_theme_picker(frame, area);
+            self.draw_theme_picker(frame, content);
         }
     }
     fn now_playing(&mut self, frame: &mut Frame, area: Rect, spectrum: bool) {
@@ -1517,7 +1534,7 @@ impl App {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
                     .areas(inner);
-            if !self.cover_hidden() {
+            if self.spectrum_visible() {
                 self.spectrum.draw(
                     frame,
                     right,
@@ -2504,6 +2521,23 @@ mod tests {
                     );
                 }
                 app.input = None;
+                app.open_theme_picker();
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert_eq!(
+                    text.contains("\x1bP"),
+                    art,
+                    "theme cover at {width}x{height}"
+                );
+                assert!(text.contains("COLOR THEME"));
+                assert!(text.contains("Enter save"));
+                app.theme_key(KeyCode::Esc);
                 app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
                     .unwrap();
             }
@@ -2517,7 +2551,7 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(99, 24)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         assert!(
-            !terminal
+            terminal
                 .backend()
                 .buffer()
                 .content()
@@ -2635,6 +2669,24 @@ mod tests {
         app.theme_key(KeyCode::Enter);
         assert!(app.theme_picker.as_ref().unwrap().error.is_some());
         assert_eq!(app.theme, Theme::CatppuccinLatte);
+        for (width, height) in [(40, 12), (72, 12), (120, 28)] {
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("Save failed"),
+                "save error at {width}x{height}"
+            );
+            assert!(text.contains("Enter save"));
+            assert!(text.contains("Esc/q cancel"));
+        }
         app.theme_key(KeyCode::Esc);
         assert_eq!(app.theme, Theme::CatppuccinMocha);
         assert!(app.settings_path.is_dir());
@@ -3269,7 +3321,7 @@ mod tests {
     }
 
     #[test]
-    fn pixel_cover_stays_with_search_but_hides_under_help_and_themes() {
+    fn pixel_cover_stays_with_search_and_themes_but_hides_under_help() {
         use ratatui_image::{FontSize, ResizeEncodeRender, picker::ProtocolType};
 
         let mut app = app();
@@ -3312,7 +3364,7 @@ mod tests {
         app.open_theme_picker();
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert!(
-            !terminal.backend().buffer()[(1, 2)]
+            terminal.backend().buffer()[(1, 2)]
                 .symbol()
                 .contains("\x1bP")
         );

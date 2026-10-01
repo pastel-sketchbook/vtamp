@@ -246,8 +246,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
 - Decode and encode artwork off the input loop. Keep the old cover visible while
   preparing a replacement, swap when ready, and reject obsolete generations.
   Show `No album art` for missing/failed artwork, not briefly during decoding.
-  Layout resizing may need to hide an image that no longer fits. Hide pixel art
-  under help/theme overlays and restore it when they close. Bottom search/folder
+  Layout resizing may need to hide an image that no longer fits. Keep the theme
+  picker in the browser area so the player and art remain visible. Hide pixel art
+  under help/import overlays and restore it when they close. Bottom search/folder
   prompts do not overlap the cover; keep it visible without clearing the terminal.
 - Help scrolls by wrapped rows with a fixed footer. Keep scrolling keys local to
   the modal, clamp its offset on resize, and reset to the top when reopening.

@@ -231,7 +231,7 @@ the new binary and reattach. Client and server must use the same protocol versio
 
 vtamp opens in **Catppuccin Mocha**, with a peach accent and quiet, dark panels. Press **`t`** to preview all nine themes: Catppuccin Mocha, Catppuccin Latte (light), Rosé Pine, Gruvbox, Tokyo Night, Nord, Dracula, Kanagawa, and the original green Classic.
 
-Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. Album art keeps its original colors; its padding and the no-cover illustration follow the theme.
+Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. The picker stays in the list area so the player and album cover remain visible. Album art keeps its original colors; its padding and the no-cover illustration follow the theme.
 
 ```sh
 vtamp theme list                       # Names and stable CLI identifiers.
