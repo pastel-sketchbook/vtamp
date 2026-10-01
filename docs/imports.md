@@ -114,8 +114,10 @@ selected track's video or `O` for its channel in the system browser. Track JSON
 contains this information in `source` (`provider: youtube`).
 
 Downloads select audio only, preferring m4a; FFmpeg extracts/converts to m4a when
-needed. Thumbnail images are fitted into a padded 512×512 JPEG without stretching
-or cutting off their edges. Missing/failed artwork does not fail the audio import.
+needed. Thumbnails are stored at up to 512 pixels on the long side, keeping the
+image's own shape like album art: nothing is cropped or padded on disk, and the
+player sizes its cover area to the image so a wide thumbnail is drawn in full.
+Missing/failed artwork does not fail the audio import.
 Completed files live under the data directory's `imports/youtube/VIDEO_ID/` with
 `audio.m4a`, optional `cover.jpg`, and `source.json`. Temporary files stay under
 `imports/.staging/` and are excluded from scans. Publication waits for scans and

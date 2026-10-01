@@ -358,18 +358,17 @@ pub fn cover(stage: &Path, config: &Config, stop: &Cancel) -> Result<()> {
         Duration::from_secs(30),
         |_| {},
     )?;
-    let image = crate::library::decode_image(&std::fs::read(&converted)?)?
-        .thumbnail(512, 512)
-        .to_rgb8();
-    let mut canvas = image::RgbImage::from_pixel(512, 512, image::Rgb([24, 24, 24]));
-    image::imageops::overlay(
-        &mut canvas,
-        &image,
-        ((512 - image.width()) / 2).into(),
-        ((512 - image.height()) / 2).into(),
-    );
-    canvas.save(stage.join("cover.jpg"))?;
+    // Keep the thumbnail's own shape, like embedded album art: the client
+    // decides how to fit it, so a wide image can still be drawn in full.
+    bounded_cover(crate::library::decode_image(&std::fs::read(&converted)?)?)
+        .save(stage.join("cover.jpg"))?;
     Ok(())
+}
+
+/// Bound a thumbnail to the same 512-pixel cache size as album art without
+/// cropping or padding it; the client chooses the visible crop.
+fn bounded_cover(image: image::DynamicImage) -> image::RgbImage {
+    image.thumbnail(512, 512).to_rgb8()
 }
 #[cfg(test)]
 mod tests {
@@ -401,5 +400,32 @@ mod tests {
                 .url,
             video_url("lO3lG-qXU14")
         );
+    }
+
+    #[test]
+    fn thumbnails_keep_their_aspect_ratio_and_stay_bounded() {
+        // Imported covers must not be cropped or padded: the client decides
+        // how to fit them, so a wide image can still be drawn in full.
+        for (width, height, expected) in [
+            (1280, 720, (512, 288)),
+            (720, 1280, (288, 512)),
+            (720, 720, (512, 512)),
+        ] {
+            let cover = bounded_cover(image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                width,
+                height,
+                image::Rgb([40, 120, 180]),
+            )));
+            assert_eq!(
+                (cover.width(), cover.height()),
+                expected,
+                "{width}x{height} must keep its shape"
+            );
+            let pad = cover
+                .pixels()
+                .filter(|p| p.0.iter().all(|c| c.abs_diff(24) < 8))
+                .count();
+            assert_eq!(pad, 0, "{width}x{height} must not gain padding");
+        }
     }
 }

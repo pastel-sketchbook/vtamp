@@ -410,6 +410,10 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
 - Albums are optional. Prefer structured source albums, then audio tags, and do
   not guess missing names. Empty album overrides must survive scans and retagging.
   Omit missing albums and their separators in the TUI; title/artist stay required.
+- Imported thumbnails are stored at their own aspect ratio, bounded like album
+  art; never crop or pad the stored file. The player sizes its cover area to the
+  image's shape (within the space the layout reserves) and scales the artwork to
+  fill that rect, so a wide thumbnail is drawn in full without bars or cropping.
 - Import options live in imports.json; shared LLM settings live in llm.json.
   `llm setup/status/test` work without yt-dlp. The LLM defaults to `none`, while
   explicit setup defaults to `api`; imports use code rules when it is disabled.

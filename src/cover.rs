@@ -31,6 +31,11 @@ impl ResizeRequest {
     }
 }
 
+/// The player fills its cover rect. The rect is sized to the image's own
+/// aspect ratio, so scaling up (which `Resize::Fit` refuses to do) only fills
+/// the space instead of distorting the artwork.
+pub(crate) const COVER_RESIZE: Resize = Resize::Scale(None);
+
 pub(crate) struct Cover {
     visible: Option<StatefulProtocol>,
     pending: Option<StatefulProtocol>,
@@ -77,6 +82,16 @@ impl Cover {
             .as_ref()
             .or(self.visible.as_ref())
             .and_then(|p| p.background_color())
+    }
+
+    /// Size the current cover would occupy in `area` under `resize`, used by
+    /// tests to prove a wide image fills its slot instead of leaving bars.
+    #[cfg(test)]
+    pub fn size_for(&self, resize: Resize, size: Size) -> Option<Size> {
+        self.pending
+            .as_ref()
+            .or(self.visible.as_ref())
+            .map(|protocol| protocol.size_for(resize, size))
     }
 
     pub fn update_resized_protocol(&mut self, response: ResizeResponse) -> bool {
@@ -130,10 +145,7 @@ impl ResizeEncodeRender for Cover {
         if let Some(protocol) = &mut self.visible {
             // Sixel cannot be clipped like text; avoid spilling an old image
             // into adjacent panels if the pane shrank while work was pending.
-            if protocol
-                .needs_resize(&Resize::Fit(None), area.into())
-                .is_none()
-            {
+            if protocol.needs_resize(&COVER_RESIZE, area.into()).is_none() {
                 protocol.render(area, buf);
             }
         }
@@ -172,7 +184,7 @@ mod tests {
             let area = Rect::new(0, 0, 8, 4);
             let render = |cover: &mut Cover| {
                 let mut buffer = Buffer::empty(area);
-                cover.resize_encode_render(&Resize::Fit(None), area, &mut buffer);
+                cover.resize_encode_render(&COVER_RESIZE, area, &mut buffer);
                 buffer
             };
             let (tx, rx) = mpsc::channel();

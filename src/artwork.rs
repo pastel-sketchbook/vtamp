@@ -94,6 +94,14 @@ impl Artwork {
         }
     }
 
+    /// Cell size of the terminal, as understood by the graphics protocol.
+    pub fn font_size(&self) -> FontSize {
+        match self {
+            Self::Detected(picker) => picker.font_size(),
+            Self::Native { font_size, .. } => *font_size,
+        }
+    }
+
     pub fn new_resize_protocol(
         &self,
         image: DynamicImage,

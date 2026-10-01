@@ -123,7 +123,11 @@ fn single_import_metadata_cover_dedup_edits_and_rescan() {
     assert_eq!(t["album"], "Generated fixtures"); // Fall back to the embedded album.
     assert_eq!(t["source"]["video_id"], "lO3lG-qXU14");
     let cover = image::open(t["cover"].as_str().unwrap()).unwrap();
-    assert_eq!((cover.width(), cover.height()), (512, 512));
+    assert_eq!(
+        (cover.width(), cover.height()),
+        (512, 288),
+        "Imported covers keep the thumbnail's own shape"
+    );
     h.ok(&["queue", "add", "--track", id]);
     let before = h.ok(&["status"]);
     h.ok(&[

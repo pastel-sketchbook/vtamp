@@ -28,7 +28,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
-use ratatui_image::{Resize, StatefulImage};
+use ratatui_image::StatefulImage;
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -699,6 +699,19 @@ impl App {
                 Some(streams::Dialog::Preview { .. } | streams::Dialog::Remove { .. })
             )
     }
+    /// Shape of the cover the player must frame: the decoded image's aspect, or
+    /// a square while it is still decoding.
+    fn cover_shape(&self) -> CoverShape {
+        let font = self.artwork.font_size();
+        CoverShape {
+            aspect: self
+                .cover_image
+                .as_ref()
+                .map_or(1.0, |image| image.width() as f32 / image.height() as f32),
+            cell: (font.width, font.height),
+        }
+    }
+
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
         let Some(image) = self.cover_image.clone() else {
@@ -1711,6 +1724,7 @@ impl App {
         );
         let inner = panel.inner(area);
         frame.render_widget(panel, area);
+        let shape = self.cover_shape();
         let (cover, info) = if spectrum {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -1719,13 +1733,13 @@ impl App {
                 self.draw_spectrum(frame, right, false);
             }
             if self.show_art && left.width >= 28 {
-                let cover_width = (left.width.saturating_sub(22)).min(inner.height * 2);
-                let cover_height = (cover_width / 2).min(inner.height);
-                let cover = Rect::new(left.x, left.y, cover_height * 2, cover_height);
+                let (width, height) =
+                    shape.size(left.width.saturating_sub(22), inner.height.min(9));
+                let cover = Rect::new(left.x, left.y + (inner.height - height) / 2, width, height);
                 let info = Rect::new(
-                    left.x + cover.width + 2,
+                    cover.x + cover.width + 2,
                     left.y,
-                    left.width - cover.width - 2,
+                    left.width.saturating_sub(cover.width + 2),
                     left.height,
                 );
                 (Some(cover), info)
@@ -1733,7 +1747,7 @@ impl App {
                 (None, left)
             }
         } else {
-            now_playing_regions(inner, self.show_art)
+            now_playing_regions(inner, self.show_art, shape)
         };
         if let Some(cover) = cover {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
@@ -1741,7 +1755,7 @@ impl App {
             if !self.cover_hidden() {
                 if self.cover.has_image() {
                     frame.render_stateful_widget(
-                        StatefulImage::new().resize(Resize::Fit(None)),
+                        StatefulImage::new().resize(crate::cover::COVER_RESIZE.clone()),
                         cover,
                         &mut self.cover,
                     );
@@ -1988,36 +2002,79 @@ impl App {
     }
 }
 
+/// Shape of the current cover: pixel aspect (width / height) and the cell size
+/// used to convert it into cells. The player sizes the artwork to the image
+/// instead of cropping the image to a fixed slot.
+#[derive(Clone, Copy)]
+struct CoverShape {
+    aspect: f32,
+    cell: (u16, u16),
+}
+
+impl CoverShape {
+    /// Largest size matching the cover's shape inside a `width × height` box.
+    /// Callers place the artwork; the narrow player centers it, the column
+    /// layouts keep it beside the text.
+    fn size(&self, width: u16, height: u16) -> (u16, u16) {
+        let max_width = width.max(1);
+        let max_height = height.max(1);
+        let aspect = if self.aspect.is_finite() && self.aspect > 0.0 {
+            self.aspect
+        } else {
+            1.0
+        };
+        let cell = f32::from(self.cell.0) / f32::from(self.cell.1);
+        let wanted = f32::from(max_height) * aspect / cell;
+        let width = wanted.round().clamp(1.0, f32::from(max_width)) as u16;
+        let height = (f32::from(width) * cell / aspect)
+            .round()
+            .clamp(1.0, f32::from(max_height)) as u16;
+        (width, height)
+    }
+}
+
 /// Retain artwork in a narrow, tall player by stacking it above the text.
 /// Reserve room for title, progress, volume, shuffle, and repeat even at 12 rows.
-fn now_playing_regions(inner: Rect, show_art: bool) -> (Option<Rect>, Rect) {
+fn now_playing_regions(inner: Rect, show_art: bool, cover: CoverShape) -> (Option<Rect>, Rect) {
     if !show_art || inner.height < 7 || inner.width < 18 {
         return (None, inner);
     }
     if inner.width >= 64 {
-        let [cover, _, info] = Layout::horizontal([
-            Constraint::Length(inner.height.min(9) * 2),
-            Constraint::Length(2),
-            Constraint::Min(1),
-        ])
-        .areas(inner);
-        return (Some(cover), info);
+        let (width, height) = cover.size(inner.width.saturating_sub(22), inner.height.min(9));
+        // Center the artwork in the player's column so a short band does not
+        // pin it to the top edge.
+        let art = Rect::new(
+            inner.x,
+            inner.y + (inner.height - height) / 2,
+            width,
+            height,
+        );
+        let info = Rect::new(
+            art.x + art.width + 2,
+            inner.y,
+            inner.width.saturating_sub(art.width + 2),
+            inner.height,
+        );
+        return (Some(art), info);
     }
-    let cover_height = inner.height.saturating_sub(7).max(2).min(inner.width / 2);
-    let [slot, _, info] = Layout::vertical([
-        Constraint::Length(cover_height),
-        Constraint::Length(1),
-        Constraint::Min(4),
-    ])
-    .areas(inner);
-    let cover_width = slot.height * 2;
-    let cover = Rect::new(
-        slot.x + (slot.width - cover_width) / 2,
-        slot.y,
-        cover_width,
-        slot.height,
+    // A wide cover is width-limited here, which leaves room above and below:
+    // center it between the panel edge and the info block (including the
+    // separator row) so the artwork does not stick to the top edge.
+    let band = inner.height.saturating_sub(7).max(2);
+    let (width, height) = cover.size(inner.width, band);
+    let art = Rect::new(
+        inner.x + (inner.width - width) / 2,
+        inner.y + (band + 1 - height) / 2,
+        width,
+        height,
     );
-    (Some(cover), info)
+    let info = Rect::new(
+        inner.x,
+        inner.y + band + 1,
+        inner.width,
+        inner.height.saturating_sub(band + 1),
+    );
+    (Some(art), info)
 }
 
 fn block(p: Palette, title: &str, active: bool) -> Block<'static> {
@@ -3279,7 +3336,8 @@ mod tests {
         let (tx, rx) = sync_mpsc::channel();
         app.cover = Cover::new(tx, None);
         app.rebuild_cover();
-        app.cover.resize_encode(&Resize::Fit(None), (8, 8).into());
+        app.cover
+            .resize_encode(&crate::cover::COVER_RESIZE.clone(), (8, 8).into());
         let old_encoding = rx.recv().unwrap().resize_encode();
         app.apply_theme(Theme::CatppuccinLatte);
         assert!(!app.cover.update_resized_protocol(old_encoding));
@@ -4627,6 +4685,121 @@ mod tests {
     }
 
     #[test]
+    fn cover_slots_follow_the_cover_shape_without_cropping_it() {
+        let cell = (10, 20);
+        let shape = |aspect| CoverShape { aspect, cell };
+        // A square cover keeps the 2×1-cell slot the player always reserved.
+        assert_eq!(shape(1.0).size(60, 20), (40, 20));
+        // A 16:9 thumbnail widens the slot instead of losing its sides.
+        assert_eq!(shape(16.0 / 9.0).size(60, 20), (60, 17));
+        // The narrow player caps the slot at the space above the info block.
+        assert_eq!(shape(16.0 / 9.0).size(57, 11), (39, 11));
+        // Portrait covers stay inside the box, and tiny boxes clamp to one cell.
+        assert_eq!(shape(0.5).size(60, 20), (20, 20));
+        assert_eq!(shape(3.0).size(4, 20), (4, 1));
+
+        // A width-limited wide cover is centered in the narrow player's band.
+        let inner = Rect::new(0, 0, 48, 26);
+        let (cover, info) = now_playing_regions(inner, true, shape(16.0 / 9.0));
+        let cover = cover.expect("art is shown");
+        assert!(
+            cover.y > inner.y && cover.y + cover.height < info.y - 1,
+            "the artwork sits between the panel edge and the info block: {cover:?} {info:?}"
+        );
+        let above = cover.y - inner.y;
+        let below = info.y - 1 - (cover.y + cover.height);
+        assert!(
+            above.abs_diff(below) <= 1,
+            "the gaps above and below the artwork match within rounding: {above} vs {below}"
+        );
+        let (square, _) = now_playing_regions(inner, true, shape(1.0));
+        assert!(
+            cover.width > square.expect("art is shown").width,
+            "a wide cover gets more room than a square one"
+        );
+    }
+
+    #[test]
+    fn wide_covers_reach_the_protocol_uncropped() {
+        use ratatui_image::Resize;
+        let mut app = app();
+        app.show_art = true;
+        app.viewport = Rect::new(0, 0, 120, 36);
+        let (tx, rx) = sync_mpsc::channel();
+        app.cover = Cover::new(tx, None);
+        // A stored 16:9 thumbnail, as an import writes it.
+        app.cover_image = Some(image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            512,
+            288,
+            image::Rgb([200, 40, 40]),
+        )));
+        app.rebuild_cover();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+        let pump = |app: &mut App| {
+            while let Ok(request) = rx.try_recv() {
+                assert!(app.cover.update_resized_protocol(request.resize_encode()));
+            }
+        };
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        pump(&mut app);
+        let size = app
+            .cover
+            .size_for(Resize::Fit(None), ratatui::layout::Size::new(64, 64))
+            .expect("the cover is pending encoding");
+        let pixels = (f32::from(size.width) * 10.0, f32::from(size.height) * 20.0);
+        assert!(
+            (pixels.0 / pixels.1 - 16.0 / 9.0).abs() < 0.1,
+            "the protocol must keep the thumbnail's own shape: {pixels:?}"
+        );
+    }
+
+    #[test]
+    fn covers_fill_their_rect_even_when_the_source_is_smaller() {
+        use ratatui_image::Resize;
+        let mut app = app();
+        app.show_art = true;
+        app.viewport = Rect::new(0, 0, 120, 36);
+        let (tx, rx) = sync_mpsc::channel();
+        app.cover = Cover::new(tx, None);
+        // 160×90 px is smaller than a 39×11-cell rect (390×220 px), the case
+        // where Resize::Fit leaves the artwork at its natural size in a corner.
+        app.cover_image = Some(image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            160,
+            90,
+            image::Rgb([200, 40, 40]),
+        )));
+        app.rebuild_cover();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 36)).unwrap();
+        let pump = |app: &mut App| {
+            while let Ok(request) = rx.try_recv() {
+                assert!(app.cover.update_resized_protocol(request.resize_encode()));
+            }
+        };
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        pump(&mut app);
+        let rect = ratatui::layout::Size::new(39, 11);
+        let fitted = app
+            .cover
+            .size_for(Resize::Fit(None), rect)
+            .expect("the cover is pending encoding");
+        assert!(
+            (fitted.width, fitted.height) != (rect.width, rect.height),
+            "Fit would leave the artwork at its natural size: {fitted:?}"
+        );
+        let filled = app
+            .cover
+            .size_for(crate::cover::COVER_RESIZE.clone(), rect)
+            .expect("the cover is pending encoding");
+        assert_eq!(
+            (filled.width, filled.height),
+            (rect.width, rect.height),
+            "the cover must fill its rect"
+        );
+    }
+
+    #[test]
     fn pixel_cover_stays_with_search_and_themes_but_hides_under_help() {
         use ratatui_image::{FontSize, ResizeEncodeRender, picker::ProtocolType};
 
@@ -4645,7 +4818,8 @@ mod tests {
         let (tx, rx) = sync_mpsc::channel();
         app.cover = Cover::new(tx, None);
         app.cover.replace_protocol(protocol);
-        app.cover.resize_encode(&Resize::Fit(None), (18, 9).into());
+        app.cover
+            .resize_encode(&crate::cover::COVER_RESIZE.clone(), (18, 9).into());
         app.cover
             .update_resized_protocol(rx.recv().unwrap().resize_encode());
         let mut terminal =

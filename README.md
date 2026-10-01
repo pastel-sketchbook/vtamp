@@ -282,7 +282,7 @@ the new binary and reattach. Client and server must use the same protocol versio
 
 vtamp opens in **Catppuccin Mocha**, with a peach accent and quiet, dark panels. Press **`t`** to preview all nine themes: Catppuccin Mocha, Catppuccin Latte (light), Rosé Pine, Gruvbox, Tokyo Night, Nord, Dracula, Kanagawa, and the original green Classic.
 
-Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. The picker stays in the list area so the player and album cover remain visible. Album art keeps its original colors; its padding and the no-cover illustration follow the theme.
+Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. The picker stays in the list area so the player and album cover remain visible. Album art keeps its original colors; the no-cover illustration follows the theme.
 
 ```sh
 vtamp theme list                       # Names and stable CLI identifiers.
@@ -325,7 +325,7 @@ For Kitty graphics, vtamp temporarily enables `allow-passthrough on` **only for 
 
 Halfblocks need no graphics passthrough. Use `--art halfblocks` if graphics are unavailable in your terminal or multiplexer version. For true color, configure your terminal and tmux for RGB color if necessary.
 
-Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Embedded art is cached at up to 512×512 pixels; graphics modes fit those pixels to the cover area while preserving aspect ratio. Missing or undecodable art uses a built-in image. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
+Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Artwork is cached at up to 512 pixels on the long side and keeps its own shape, as imported YouTube thumbnails do; the player sizes the cover area to the image and scales the artwork to fill it, so a wide thumbnail is drawn in full without bars or losing pixels. Missing or undecodable art uses a built-in image. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
 
 ## tmux status bar
 
