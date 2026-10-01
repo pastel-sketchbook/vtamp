@@ -18,7 +18,9 @@ use crossterm::event::{
 };
 use futures_util::StreamExt;
 use ratatui::{
-    Frame,
+    Frame, Terminal,
+    backend::Backend,
+    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
@@ -34,6 +36,42 @@ use std::{
 use tokio::sync::{mpsc, watch};
 
 const PAGE_SIZE: usize = 200;
+
+// Even an empty Ratatui diff writes cursor/style escapes through Crossterm.
+// Present only changed cells so an idle client doesn't keep waking the terminal.
+#[derive(Default)]
+struct Presentation {
+    previous: Option<Buffer>,
+}
+impl Presentation {
+    fn invalidate(&mut self) {
+        self.previous = None;
+    }
+
+    fn draw<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        render: impl FnOnce(&mut Frame),
+    ) -> std::result::Result<bool, B::Error> {
+        terminal.autoresize()?;
+        render(&mut terminal.get_frame());
+        let next = terminal.current_buffer_mut();
+        let changed = self.previous.as_ref().is_none_or(|previous| {
+            previous.area != next.area || previous.diff_iter(next).next().is_some()
+        });
+        if !changed {
+            next.reset();
+            return Ok(false);
+        }
+        match &mut self.previous {
+            Some(previous) => previous.clone_from(next),
+            None => self.previous = Some(next.clone()),
+        }
+        // The TUI uses an inline text caret; the terminal cursor stays hidden.
+        terminal.apply_buffer()?;
+        Ok(true)
+    }
+}
 
 enum Message {
     Connected(State),
@@ -244,8 +282,8 @@ pub async fn run(
         }
     });
     let result = async {
-        let mut tick = tokio::time::interval(Duration::from_millis(50));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut presentation = Presentation::default();
+        let mut last_draw = Instant::now();
         let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
         let mut terminate =
@@ -253,21 +291,33 @@ pub async fn run(
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         loop {
+            let deadline = if presentation.previous.is_none() {
+                Some(Instant::now())
+            } else {
+                app.next_redraw(last_draw)
+            };
             let terminal_event = tokio::select! {
-                _ = tick.tick() => None,
+                _ = async {
+                    if let Some(deadline) = deadline {
+                        tokio::time::sleep_until(deadline.into()).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => None,
                 changed = latest_spectrum.changed(), if spectrum_stream_alive => {
                     if changed.is_err() {
                         spectrum_stream_alive = false;
                         app.spectrum.clear();
                         app.spectrum.error = Some("Spectrum disconnected. Reattach to retry.".into());
-                        continue;
+                    } else {
+                        match latest_spectrum.borrow_and_update().clone() {
+                            Some(Ok(frame)) if frame.current_id == app.state.current_id => app.spectrum.accept(frame),
+                            Some(Err(error)) => { app.spectrum.clear(); app.spectrum.error = Some(error); },
+                            _ => (),
+                        }
                     }
-                    match latest_spectrum.borrow_and_update().clone() {
-                        Some(Ok(frame)) if frame.current_id == app.state.current_id => app.spectrum.accept(frame),
-                        Some(Err(error)) => { app.spectrum.clear(); app.spectrum.error = Some(error); },
-                        _ => (),
-                    }
-                    // The animation timer draws at 20 Hz; inputs/artwork still draw immediately.
+                    // Frames wake the animation only while bars/peaks need it.
+                    // Keep its 20 Hz deadline independent of stream arrival times.
                     continue;
                 },
                 Some(message) = incoming.recv() => {
@@ -297,20 +347,19 @@ pub async fn run(
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
                             terminal.clear()?;
+                            presentation.invalidate();
                         }
                     }
-                    TerminalEvent::Resize(_, _) => terminal.clear()?,
+                    TerminalEvent::Resize(_, _) => {
+                        terminal.clear()?;
+                        presentation.invalidate();
+                    },
                     _ => (),
                 }
             }
-            terminal.draw(|frame| app.draw(frame))?;
-            let wanted = app.spectrum.enabled && app.connected && !app.cover_hidden()
-                && app.viewport.width >= 40 && app.viewport.height >= 12;
-            let period = Duration::from_millis(if wanted { 50 } else { 100 });
-            if tick.period() != period {
-                tick = tokio::time::interval(period);
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            }
+            presentation.draw(&mut terminal, |frame| app.draw(frame))?;
+            last_draw = Instant::now();
+            let wanted = app.spectrum_visible() && app.connected;
             spectrum_enabled.send_if_modified(|value| {
                 if *value == wanted { false } else { *value = wanted; true }
             });
@@ -372,6 +421,29 @@ async fn spectrum_stream(
 }
 
 impl App {
+    fn spectrum_visible(&self) -> bool {
+        self.spectrum.enabled
+            && !self.cover_hidden()
+            && self.viewport.width >= 40
+            && self.viewport.height >= 12
+    }
+
+    fn next_redraw(&self, last_draw: Instant) -> Option<Instant> {
+        let playing = self.connected && self.state.status == PlaybackStatus::Playing;
+        let animation = if self.spectrum_visible() && self.spectrum.needs_animation(playing) {
+            Some(last_draw + Duration::from_millis(50))
+        } else if playing && self.viewport.width >= 40 && self.viewport.height >= 12 {
+            // Keep the progress gauge responsive, including short tracks. Identical
+            // text/cells are discarded before sending anything to the terminal.
+            Some(last_draw + Duration::from_millis(100))
+        } else {
+            None
+        };
+        let expiry = self.notice_at + Duration::from_secs(6);
+        let notice = (Instant::now() < expiry).then_some(expiry);
+        animation.into_iter().chain(notice).min()
+    }
+
     fn spectrum_replaces_list(&self) -> bool {
         self.spectrum.enabled && (self.viewport.height < 28 || self.viewport.width < 72)
     }
@@ -2196,6 +2268,74 @@ mod tests {
             cover_key: None,
             show_art: false,
         }
+    }
+
+    #[test]
+    fn unchanged_frames_write_no_terminal_escape_sequences() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        let mut output = Vec::new();
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut output),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            let mut presentation = Presentation::default();
+            let draw = |f: &mut Frame| f.render_widget("same screen", f.area());
+            assert!(presentation.draw(&mut terminal, draw).unwrap());
+            for _ in 0..20 {
+                assert!(!presentation.draw(&mut terminal, draw).unwrap());
+            }
+            assert!(
+                presentation
+                    .draw(&mut terminal, |f| f.render_widget("changed", f.area()))
+                    .unwrap()
+            );
+        }
+        assert_eq!(output.windows(6).filter(|w| *w == b"\x1b[?25l").count(), 2);
+    }
+
+    #[test]
+    fn clearing_and_resizing_force_presentation_of_identical_content() {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut presentation = Presentation::default();
+        let draw = |f: &mut Frame| f.render_widget("same screen", f.area());
+        assert!(presentation.draw(&mut terminal, draw).unwrap());
+        assert!(!presentation.draw(&mut terminal, draw).unwrap());
+        terminal.clear().unwrap();
+        presentation.invalidate();
+        assert!(presentation.draw(&mut terminal, draw).unwrap());
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "s");
+        terminal.backend_mut().resize(50, 14);
+        assert!(presentation.draw(&mut terminal, draw).unwrap());
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "s");
+        assert!(!presentation.draw(&mut terminal, draw).unwrap());
+    }
+
+    #[test]
+    fn redraw_deadlines_sleep_when_idle_and_preserve_notice_expiry() {
+        let mut app = app();
+        app.viewport = Rect::new(0, 0, 100, 24);
+        app.notice_at = Instant::now() - Duration::from_secs(7);
+        let now = Instant::now();
+        assert_eq!(app.next_redraw(now), None);
+        app.notice("Saved");
+        assert_eq!(
+            app.next_redraw(now),
+            Some(app.notice_at + Duration::from_secs(6))
+        );
+        app.state.status = PlaybackStatus::Playing;
+        assert_eq!(app.next_redraw(now), Some(now + Duration::from_millis(100)));
+        app.spectrum.enabled = true;
+        assert_eq!(app.next_redraw(now), Some(now + Duration::from_millis(50)));
+        app.help = true;
+        assert_eq!(app.next_redraw(now), Some(now + Duration::from_millis(100)));
+        app.connected = false;
+        app.notice_at = now - Duration::from_secs(7);
+        assert_eq!(app.next_redraw(now), None);
     }
 
     #[test]

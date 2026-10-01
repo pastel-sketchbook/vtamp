@@ -21,6 +21,7 @@ pub(crate) struct SpectrumView {
     levels: [f32; BANDS],
     peaks: [f32; BANDS],
     hold: [Instant; BANDS],
+    redraw: bool,
 }
 impl SpectrumView {
     pub fn new(enabled: bool) -> Self {
@@ -34,6 +35,7 @@ impl SpectrumView {
             levels: [0.0; BANDS],
             peaks: [0.0; BANDS],
             hold: [now; BANDS],
+            redraw: true,
         }
     }
     pub fn clear(&mut self) {
@@ -41,6 +43,18 @@ impl SpectrumView {
         self.error = None;
         self.levels.fill(0.0);
         self.peaks.fill(0.0);
+        self.redraw = true;
+    }
+    pub fn needs_animation(&self, playing: bool) -> bool {
+        self.redraw
+            || (self.error.is_none()
+                && (self.levels.iter().chain(&self.peaks).any(|v| *v > 0.0)
+                    || (playing
+                        && self.received.elapsed() < Duration::from_millis(300)
+                        && self
+                            .frame
+                            .as_ref()
+                            .is_some_and(|f| f.active && f.levels.iter().any(|v| *v > 0.0)))))
     }
     pub fn accept(&mut self, frame: SpectrumFrame) {
         if self
@@ -57,6 +71,7 @@ impl SpectrumView {
         {
             self.clear();
         }
+        self.redraw |= self.error.is_some();
         self.frame = Some(frame);
         self.error = None;
         self.received = Instant::now();
@@ -69,6 +84,7 @@ impl SpectrumView {
         bordered: bool,
         playing: bool,
     ) {
+        self.redraw = false;
         let inner = if bordered {
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -179,6 +195,53 @@ impl SpectrumView {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+
+    #[test]
+    fn animation_sleeps_after_decay_and_wakes_for_new_audio() {
+        let mut view = SpectrumView::new(true);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        let mut draw = |view: &mut SpectrumView, playing| {
+            terminal
+                .draw(|f| view.draw(f, f.area(), Theme::default().palette(), true, playing))
+                .unwrap();
+        };
+        draw(&mut view, false);
+        assert!(!view.needs_animation(false));
+        view.accept(SpectrumFrame {
+            active: true,
+            levels: [1.0; BANDS],
+            ..SpectrumFrame::default()
+        });
+        assert!(view.needs_animation(true));
+        draw(&mut view, true);
+        assert!(view.needs_animation(false), "pause must let peaks fall");
+        for _ in 0..10 {
+            view.updated = Instant::now() - Duration::from_millis(200);
+            view.hold.fill(Instant::now() - Duration::from_secs(1));
+            draw(&mut view, false);
+        }
+        assert!(!view.needs_animation(false));
+        view.accept(SpectrumFrame::default());
+        assert!(!view.needs_animation(true), "silent frames stay idle");
+        view.accept(SpectrumFrame {
+            active: true,
+            levels: [0.5; BANDS],
+            ..SpectrumFrame::default()
+        });
+        assert!(view.needs_animation(true), "resume wakes animation");
+        view.received = Instant::now() - Duration::from_secs(1);
+        assert!(!view.needs_animation(true), "stale audio cannot wake it");
+        view.clear();
+        view.error = Some("Disconnected".into());
+        draw(&mut view, false);
+        assert!(!view.needs_animation(false));
+        view.accept(SpectrumFrame::default());
+        assert!(
+            view.needs_animation(false),
+            "recovery clears a visible error"
+        );
+    }
 
     #[test]
     fn colors_peaks_staleness_and_generation_follow_actual_frames() {

@@ -229,7 +229,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
   applies the draft (an empty draft clears the filter).
 - Keep terminal input and incoming server/artwork messages immediately actionable
   through the event loop. Do not reintroduce a 100 ms polling gate for keys or
-  image completion; the periodic tick is for time-based updates.
+  image completion; redraw deadlines are for time-based updates. Suppress empty
+  terminal diffs, and stop the 20 Hz spectrum timer once bars and peaks settle.
+  Preserve progress/notice expiry and invalidate presentation after terminal clears.
 - Decode and encode artwork off the input loop. Keep the old cover visible while
   preparing a replacement, swap when ready, and reject obsolete generations.
   Show `No album art` for missing/failed artwork, not briefly during decoding.

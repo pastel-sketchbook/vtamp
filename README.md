@@ -199,6 +199,8 @@ The view starts off and remembers your choice in `ui.json`. Each attached TUI ha
 its own visibility; toggling one does not change another. Analysis runs only while
 a spectrum view is subscribed, and slow displays drop old frames instead of
 holding up playback. Pause, stop, and missing data let the bars settle to zero.
+Animation stays at 20 fps while needed; settled bars stop the animation timer,
+and unchanged screens send no terminal updates.
 After upgrading from a server without spectrum support, restart the server with
 the new binary and reattach. Regular protocol-2 commands remain compatible.
 
