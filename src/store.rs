@@ -1,3 +1,4 @@
+mod imports;
 use crate::{
     library::{Record, normalized},
     model::{ApiError, PlaybackStatus, Reply, ScanJob, SearchFilter, State, Track},
@@ -16,7 +17,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
         if version == 0 {
@@ -47,6 +48,14 @@ impl Store {
                     params![normalized(&t.title), normalized(&t.artist), normalized(&t.album), t.id])?;
             }
             tx.commit()?;
+        }
+        if version < 3 {
+            db.execute_batch("BEGIN;
+                CREATE TABLE import_jobs(id TEXT PRIMARY KEY,json TEXT NOT NULL,request TEXT NOT NULL,finished_ms INTEGER);
+                CREATE TABLE import_items(job_id TEXT NOT NULL,position INTEGER NOT NULL,json TEXT NOT NULL,PRIMARY KEY(job_id,position));
+                CREATE TABLE track_metadata(id TEXT PRIMARY KEY,video_id TEXT UNIQUE,manifest TEXT,metadata TEXT NOT NULL,title_override TEXT,artist_override TEXT);
+                PRAGMA user_version = 3;
+                COMMIT;")?;
         }
         Ok(Self { db })
     }
@@ -304,19 +313,19 @@ impl Store {
 }
 
 fn write_catalog(tx: &rusqlite::Transaction<'_>, records: &[Record]) -> Result<()> {
-    tx.execute("DELETE FROM tracks", [])?;
-    let mut stmt = tx.prepare("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
+    let mut ids = std::collections::HashSet::new();
+    let mut paths = std::collections::HashSet::new();
     for record in records {
-        let t = &record.track;
-        stmt.execute(params![
-            t.id,
-            t.path.to_string_lossy(),
-            normalized(&format!("{} {} {}", t.title, t.artist, t.album)),
-            serde_json::to_string(record)?,
-            normalized(&t.title),
-            normalized(&t.artist),
-            normalized(&t.album)
-        ])?;
+        anyhow::ensure!(
+            ids.insert(&record.track.id) && paths.insert(&record.track.path),
+            "Duplicate track in catalog"
+        );
+    }
+    tx.execute("DELETE FROM tracks", [])?;
+    for record in records {
+        let mut record = record.clone();
+        imports::apply_metadata(tx, &mut record.track)?;
+        imports::write_record(tx, &record)?;
     }
     Ok(())
 }
@@ -338,6 +347,7 @@ mod tests {
             track_number: 1,
             duration_ms: 30000,
             cover: None,
+            source: None,
         });
         let state = State {
             current_id: Some(item.id.clone()),
@@ -364,6 +374,7 @@ mod tests {
                 track_number: 1,
                 duration_ms: 1000,
                 cover: None,
+                source: None,
             },
             modified: 1,
             bytes: 1,
@@ -402,7 +413,7 @@ mod tests {
                 .db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         let filter = SearchFilter {
             exclude: vec!["LIVE".into()],

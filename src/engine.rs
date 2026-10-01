@@ -617,6 +617,7 @@ mod tests {
             track_number: 0,
             duration_ms: 60000,
             cover: None,
+            source: None,
         }
     }
     fn engine() -> Engine<Fake> {

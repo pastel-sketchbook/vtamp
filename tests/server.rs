@@ -365,7 +365,7 @@ fn spectrum_is_a_separate_read_only_latest_frame_stream() {
             .unwrap();
         send(
             &mut stream,
-            json!({"version":2,"request":{"command":"spectrum_watch"}}),
+            json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"spectrum_watch"}}),
         );
         let first = receive(&mut stream);
         assert_eq!(first["ok"], true);
@@ -374,17 +374,22 @@ fn spectrum_is_a_separate_read_only_latest_frame_stream() {
         assert!(first["data"].get("queue").is_none());
         watchers.push(stream);
     }
-    // An ordinary watch still contains only its established event types.
+    // Ordinary watch may include import snapshots, but never spectrum frames.
     let mut ordinary = UnixStream::connect(server.socket()).unwrap();
     ordinary
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
     send(
         &mut ordinary,
-        json!({"version":2,"request":{"command":"watch"}}),
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"watch"}}),
     );
     assert_eq!(receive(&mut ordinary)["data"], before);
-    assert_eq!(receive(&mut ordinary)["data"]["event"], "progress");
+    let mut event = receive(&mut ordinary);
+    if event["data"]["event"] == "imports" {
+        assert_eq!(event["data"]["data"], json!([]));
+        event = receive(&mut ordinary);
+    }
+    assert_eq!(event["data"]["event"], "progress");
     let frame = receive(&mut watchers[0]);
     assert!(
         frame["data"]["levels"]

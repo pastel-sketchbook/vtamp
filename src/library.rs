@@ -91,7 +91,15 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
     let mut seen = HashSet::new();
     let mut result = Scan::default();
     for root in paths {
-        for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| {
+                e.file_name() != ".staging"
+                    && !e.file_name().to_string_lossy().starts_with(".replaced-")
+            })
+        {
             match entry {
                 Ok(entry) if entry.file_type().is_file() && supported(entry.path()) => {
                     let read = (|| -> Result<Option<Record>> {
@@ -112,7 +120,18 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
                             .get(&path)
                             .map(|r| r.track.id.clone())
                             .unwrap_or_else(|| Uuid::new_v4().to_string());
-                        let track = read_track(&path, id, cache)?;
+                        let mut track = read_track(&path, id, cache)?;
+                        if path.file_name().is_some_and(|n| n == "audio.m4a")
+                            && let Some(parent) = path.parent()
+                            && let Ok(manifest) = crate::imports::read_manifest(parent)
+                        {
+                            track.id = manifest.track_id;
+                            track.title =
+                                manifest.title_override.unwrap_or(manifest.metadata.title);
+                            track.artist =
+                                manifest.artist_override.unwrap_or(manifest.metadata.artist);
+                            track.source = Some(manifest.source);
+                        }
                         Ok(Some(Record {
                             track,
                             modified,
@@ -233,6 +252,7 @@ pub fn read_track(path: &Path, id: String, cache: &Path) -> Result<Track> {
         track_number,
         duration_ms: tagged.properties().duration().as_millis() as u64,
         cover,
+        source: None,
     })
 }
 
@@ -283,6 +303,7 @@ fn read_mp4(path: &Path, id: String, cache: &Path) -> Result<Track> {
         track_number: tag.track_number().unwrap_or(0).into(),
         duration_ms: tag.duration().as_millis() as u64,
         cover,
+        source: None,
     })
 }
 

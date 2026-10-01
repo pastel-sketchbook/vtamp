@@ -6,7 +6,7 @@ use crate::{
     theme::Theme,
     wire,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::{
@@ -52,6 +52,16 @@ pub enum Switch {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Configure optional metadata inference (does not start playback).
+    Llm {
+        #[command(subcommand)]
+        command: IntegrationAction,
+    },
+    /// Configure installed YouTube tools and optional Chrome cookies.
+    Youtube {
+        #[command(subcommand)]
+        command: YoutubeAction,
+    },
     /// Read a compact now-playing segment for the tmux status bar.
     Tmux {
         #[command(subcommand)]
@@ -134,6 +144,18 @@ pub enum Action {
     },
     /// Inspect runtime paths, server health, and the default audio device.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IntegrationAction {
+    Setup,
+    Status,
+    Test,
+}
+#[derive(Debug, Subcommand)]
+pub enum YoutubeAction {
+    Setup,
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -277,9 +299,49 @@ pub enum Queue {
 #[derive(Debug, Subcommand)]
 pub enum Library {
     Add {
-        path: PathBuf,
-        #[command(flatten)]
-        wait: ScanWait,
+        #[arg(required_unless_present = "clipboard", conflicts_with = "clipboard")]
+        path: Option<String>,
+        /// Read one YouTube URL from the macOS clipboard.
+        #[arg(long)]
+        clipboard: bool,
+        /// Import the whole playlist from a watch URL that also contains a list.
+        #[arg(long,conflicts_with_all=["title","artist"])]
+        playlist: bool,
+        /// Preview metadata without downloading audio or starting the server.
+        #[arg(long,conflicts_with_all=["wait","timeout"])]
+        preview: bool,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long,requires="wait",value_parser=parse_duration)]
+        timeout: Option<u64>,
+    },
+    Imports,
+    ImportStatus {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
+        limit: u16,
+    },
+    ImportCancel {
+        id: String,
+    },
+    ImportRetry {
+        id: String,
+    },
+    Edit {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        artist: Option<String>,
+    },
+    Retag {
+        id: String,
     },
     /// Unregister a folder without deleting any music files.
     Remove {
@@ -337,6 +399,124 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Llm { command } => {
+            if args.json && matches!(command, IntegrationAction::Setup) {
+                bail!("Interactive setup does not support --json; use status or test");
+            }
+            let data = tokio::task::spawn_blocking(move || -> Result<Value> {
+                match command {
+                    IntegrationAction::Setup => crate::import_config::setup(&paths, true),
+                    IntegrationAction::Status => Ok(crate::import_config::capabilities(
+                        &crate::import_config::Config::load(&paths)?,
+                    )),
+                    IntegrationAction::Test => {
+                        crate::metadata::test(&crate::import_config::Config::load(&paths)?, &paths)
+                    }
+                }
+            })
+            .await??;
+            return output(Reply::success(data), args.json);
+        }
+        Action::Youtube { command } => {
+            if args.json && matches!(command, YoutubeAction::Setup) {
+                bail!("Interactive setup does not support --json");
+            }
+            if matches!(command, YoutubeAction::Status)
+                && let Ok(reply) = client.request(Command::ImportCapabilities).await
+            {
+                return output(reply, args.json);
+            }
+            let data = tokio::task::spawn_blocking(move || -> Result<Value> {
+                match command {
+                    YoutubeAction::Setup => crate::import_config::setup(&paths, false),
+                    YoutubeAction::Status => Ok(crate::import_config::capabilities(
+                        &crate::import_config::Config::load(&paths)?,
+                    )),
+                }
+            })
+            .await??;
+            return output(Reply::success(data), args.json);
+        }
+        Action::Library {
+            command:
+                Library::Add {
+                    path,
+                    clipboard,
+                    playlist,
+                    preview,
+                    title,
+                    artist,
+                    wait,
+                    timeout,
+                },
+        } => {
+            let input = if clipboard {
+                clipboard_text()?
+            } else {
+                path.unwrap_or_default()
+            };
+            if input.trim().starts_with("https://") || input.trim().starts_with("http://") {
+                if !crate::import_config::youtube_available(&paths) {
+                    return Err(ApiError::new(
+                        "invalid_arguments",
+                        "Library input must be an existing music folder",
+                    )
+                    .into());
+                }
+                let mut request = crate::imports::ImportRequest {
+                    url: input,
+                    playlist,
+                    title,
+                    artist,
+                    video_ids: None,
+                };
+                request.validate()?;
+                if preview {
+                    let result = preview_import(&client, request).await?;
+                    return output(Reply::success(result), args.json);
+                }
+                client.ensure().await?;
+                let reply = client.request(Command::ImportStart { request }).await?;
+                let id = reply.clone().into_data()?["job_id"]
+                    .as_str()
+                    .context("Missing import job ID")?
+                    .to_owned();
+                if wait {
+                    return output(
+                        wait_for_import(&client, &id, timeout, args.json).await?,
+                        args.json,
+                    );
+                }
+                if !args.json {
+                    println!(
+                        "Import started: {id}\nCheck progress: vtamp library import-status {id}"
+                    );
+                    return Ok(());
+                }
+                return output(reply, true);
+            }
+            if clipboard || playlist || preview || title.is_some() || artist.is_some() {
+                return Err(ApiError::new(
+                    "invalid_arguments",
+                    "YouTube options require a YouTube URL",
+                )
+                .into());
+            }
+            client.ensure().await?;
+            let mut reply = client
+                .request(Command::LibraryAdd {
+                    path: platform::absolute(std::path::Path::new(&input))?,
+                })
+                .await?;
+            if wait {
+                let id = reply.clone().into_data()?["job_id"]
+                    .as_str()
+                    .context("Missing scan ID")?
+                    .to_owned();
+                reply = wait_for_scan(&client, &id, timeout.unwrap_or(60_000)).await?;
+            }
+            return output(reply, args.json);
+        }
         Action::Tmux {
             command:
                 TmuxAction::Status {
@@ -406,15 +586,35 @@ pub async fn run(args: Args) -> Result<()> {
                 .and_then(|d| d.description().ok())
                 .map(|d| d.to_string());
             let status = client.request(Command::Status).await;
-            return output(
-                Reply::success(
-                    json!({"data_directory": paths.data, "socket": paths.socket(), "log": paths.log(),
+            let import_info = if crate::import_config::youtube_available(&paths) {
+                Some(
+                    match client
+                        .request(Command::ImportCapabilities)
+                        .await
+                        .and_then(|r| r.into_data().map_err(Into::into))
+                    {
+                        Ok(value) => value,
+                        Err(_) => {
+                            let p = paths.clone();
+                            tokio::task::spawn_blocking(move || {
+                                crate::import_config::Config::load(&p)
+                                    .map(|c| crate::import_config::capabilities(&c))
+                            })
+                            .await??
+                        }
+                    },
+                )
+            } else {
+                None
+            };
+            let mut doctor_data = json!({"data_directory": paths.data, "socket": paths.socket(), "log": paths.log(),
                 "server_reachable": status.as_ref().is_ok_and(|r| r.ok), "server_error": status.err().map(|e| e.to_string()),
                 "default_output_device": device, "term": std::env::var("TERM").ok(), "tmux": std::env::var_os("TMUX").is_some(),
-                "protocol_version": PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION")}),
-                ),
-                args.json,
-            );
+                "protocol_version": PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION")});
+            if let Some(info) = import_info {
+                doctor_data["imports"] = info;
+            }
+            return output(Reply::success(doctor_data), args.json);
         }
         Action::Watch => {
             let (state, mut stream) = client.watch().await?;
@@ -441,8 +641,7 @@ pub async fn run(args: Args) -> Result<()> {
     }
     let scan_wait = match &action {
         Action::Library {
-            command:
-                Library::Add { wait, .. } | Library::Remove { wait, .. } | Library::Scan { wait },
+            command: Library::Remove { wait, .. } | Library::Scan { wait },
         } if wait.wait => Some(wait.clone()),
         _ => None,
     };
@@ -466,6 +665,9 @@ pub async fn run(args: Args) -> Result<()> {
                     | Library::Roots
                     | Library::Track { .. }
                     | Library::ScanStatus { .. }
+                    | Library::Imports
+                    | Library::ImportStatus { .. }
+                    | Library::ImportCancel { .. }
             }
             | Action::Server {
                 command: Server::Status | Server::Stop
@@ -587,9 +789,24 @@ pub async fn run(args: Args) -> Result<()> {
             },
         },
         Action::Library { command } => match command {
-            Library::Add { path, .. } => Command::LibraryAdd {
-                path: platform::absolute(&path)?,
+            Library::Add { .. } => unreachable!(),
+            Library::Imports => Command::Imports,
+            Library::ImportStatus { id, offset, limit } => Command::ImportStatus {
+                id,
+                offset,
+                limit: limit.into(),
             },
+            Library::ImportCancel { id } => Command::ImportCancel { id },
+            Library::ImportRetry { id } => Command::ImportRetry { id },
+            Library::Edit { id, title, artist } => {
+                if title.is_none() && artist.is_none() {
+                    return Err(
+                        ApiError::new("invalid_arguments", "Specify --title or --artist").into(),
+                    );
+                }
+                Command::LibraryEdit { id, title, artist }
+            }
+            Library::Retag { id } => Command::LibraryRetag { id },
             Library::Remove { path, .. } => Command::LibraryRemove {
                 path: platform::absolute(&path)?,
             },
@@ -727,6 +944,73 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     let data = reply.data.unwrap_or(Value::Null);
+    if let Some(preview) = data.get("preview") {
+        writeln!(out, "{}", preview["title"].as_str().unwrap_or("Preview"))?;
+        if let Some(metadata) = data.get("metadata").filter(|v| !v.is_null()) {
+            writeln!(
+                out,
+                "Title: {}\nArtist: {}",
+                metadata["title"].as_str().unwrap_or(""),
+                metadata["artist"].as_str().unwrap_or("")
+            )?;
+        }
+        let items = preview["items"].as_array();
+        writeln!(
+            out,
+            "{} videos · {} already in library",
+            items.map_or(0, Vec::len),
+            preview["existing"]
+                .as_u64()
+                .map_or_else(|| "unknown (server not running)".into(), |v| v.to_string())
+        )?;
+        if preview["playlist"] == true {
+            for (i, item) in items.into_iter().flatten().take(50).enumerate() {
+                writeln!(
+                    out,
+                    "{}  {}",
+                    i + 1,
+                    item["title"].as_str().unwrap_or("Unavailable")
+                )?;
+            }
+            if preview["items"].as_array().is_some_and(|v| v.len() > 50) {
+                writeln!(out, "First 50 shown; use --json for all entries.")?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some(job) = data.get("job") {
+        let job: crate::imports::ImportJob = serde_json::from_value(job.clone())?;
+        writeln!(out, "{}\n{}", job.job_id, job.summary())?;
+        if let Some(error) = job.error {
+            writeln!(out, "{error}")?;
+        }
+        for item in data["items"].as_array().into_iter().flatten() {
+            writeln!(
+                out,
+                "{}  {}  {}",
+                item["index"].as_u64().unwrap_or(0) + 1,
+                item["status"].as_str().unwrap_or(""),
+                item["title"].as_str().unwrap_or("")
+            )?;
+            for error in [&item["error"], &item["metadata"]["warning"]]
+                .into_iter()
+                .filter_map(Value::as_str)
+            {
+                writeln!(out, "  {error}")?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some(jobs) = data
+        .as_array()
+        .filter(|v| !v.is_empty() && v[0].get("job_id").is_some())
+    {
+        for job in jobs {
+            let job: crate::imports::ImportJob = serde_json::from_value(job.clone())?;
+            writeln!(out, "{}  {}", job.job_id, job.summary())?;
+        }
+        return Ok(());
+    }
     if let Some(themes) = data.get("themes").and_then(Value::as_array) {
         for theme in themes {
             writeln!(
@@ -835,6 +1119,185 @@ pub fn report(error: anyhow::Error, json: bool) -> i32 {
         eprintln!("vtamp: {api}");
     }
     1
+}
+
+fn clipboard_text() -> Result<String> {
+    let bytes = crate::subprocess::run(
+        &mut std::process::Command::new("/usr/bin/pbpaste"),
+        None,
+        &crate::subprocess::cancel(),
+        std::time::Duration::from_secs(3),
+        |_| {},
+    )?;
+    let text = String::from_utf8(bytes)?;
+    if text.len() > 8192 || text.trim().lines().count() != 1 {
+        bail!("Clipboard must contain one YouTube URL");
+    }
+    Ok(text.trim().into())
+}
+pub(crate) async fn preview_import(
+    client: &Client,
+    request: crate::imports::ImportRequest,
+) -> Result<Value> {
+    let paths = client.paths.clone();
+    let request_clone = request.clone();
+    let stop = crate::subprocess::cancel();
+    let worker_stop = stop.clone();
+    let mut task = tokio::task::spawn_blocking(move || -> Result<_> {
+        let config = crate::import_config::Config::load(&paths)?;
+        let (preview, metadata) = if !request_clone.playlist {
+            let source = crate::youtube::extract(&request_clone.url, &config, &worker_stop)?;
+            let mut m = crate::metadata::resolve(&source, &config, &paths, &worker_stop);
+            if let Some(t) = request_clone.title {
+                m.title = t;
+            }
+            if let Some(a) = request_clone.artist {
+                m.artist = a;
+            }
+            let preview = crate::youtube::Preview {
+                url: request_clone.url,
+                title: source.original_title.clone(),
+                playlist: false,
+                items: vec![crate::youtube::PreviewItem {
+                    video_id: source.video_id,
+                    title: source.original_title,
+                }],
+                existing: None,
+            };
+            (preview, Some(m))
+        } else {
+            (
+                crate::youtube::preview(&request_clone.url, true, &config, &worker_stop)?,
+                None,
+            )
+        };
+        Ok((preview, metadata))
+    });
+    let (mut preview, metadata) = tokio::select! {
+        result = &mut task => result??,
+        _ = tokio::signal::ctrl_c() => {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = task.await;
+            bail!("Preview cancelled");
+        }
+    };
+    if let Ok(reply) = client
+        .request(Command::ImportLookup {
+            video_ids: preview.items.iter().map(|v| v.video_id.clone()).collect(),
+        })
+        .await
+        && let Ok(data) = reply.into_data()
+    {
+        preview.existing = data["video_ids"].as_array().map(Vec::len);
+    }
+    Ok(serde_json::json!({"preview":preview,"metadata":metadata}))
+}
+async fn wait_for_import(
+    client: &Client,
+    id: &str,
+    timeout_ms: Option<u64>,
+    json: bool,
+) -> Result<Reply> {
+    let start = std::time::Instant::now();
+    let mut last = String::new();
+    loop {
+        let data = client
+            .request(Command::ImportStatus {
+                id: id.into(),
+                offset: 0,
+                limit: 1,
+            })
+            .await?
+            .into_data()?;
+        let job: crate::imports::ImportJob = serde_json::from_value(data["job"].clone())?;
+        if !json {
+            let summary = job.summary();
+            if io::stderr().is_terminal() {
+                eprint!("\r\x1b[2K{summary}");
+                io::stderr().flush()?;
+            } else if last != job.stage {
+                eprintln!("{summary}");
+            }
+            last = job.stage.clone();
+        }
+        if job.terminal() {
+            if !json && io::stderr().is_terminal() {
+                eprintln!();
+            }
+            return if job.status == "completed" {
+                Ok(Reply::success(data))
+            } else {
+                Ok(Reply::failure(
+                    ApiError::new(
+                        "import_failed",
+                        job.error
+                            .as_deref()
+                            .unwrap_or("Import did not complete successfully"),
+                    )
+                    .with_details(data),
+                ))
+            };
+        }
+        if timeout_ms.is_some_and(|ms| start.elapsed().as_millis() >= ms as u128) {
+            return Err(ApiError::new(
+                "wait_timeout",
+                "Stopped waiting; import has not been cancelled",
+            )
+            .with_details(serde_json::json!({"job_id":id}))
+            .into());
+        }
+        tokio::select! {
+            _=tokio::time::sleep(std::time::Duration::from_millis(250))=>(),
+            _=tokio::signal::ctrl_c()=>{if !json{eprintln!("\nStopped waiting; import {id} continues.");}return Ok(Reply::success(serde_json::json!({"job_id":id,"waiting":false})));}
+        }
+    }
+}
+
+/// Optional integrations are discoverable only on machines that have yt-dlp.
+/// This performs no subprocess execution, network request, or filesystem write.
+pub fn command_with_features(available: bool) -> clap::Command {
+    use clap::CommandFactory;
+    let mut command = Args::command().mut_subcommand("library", |c| {
+        c.mut_subcommand("add", |a| {
+            a.about(if available {
+                "Register a music folder or import a YouTube URL"
+            } else {
+                "Register a music folder"
+            })
+        })
+    });
+    if !available {
+        command = command
+            .mut_subcommand("youtube", |c| c.hide(true))
+            .mut_subcommand("llm", |c| c.hide(true))
+            .mut_subcommand("library", |mut c| {
+                for name in [
+                    "imports",
+                    "import-status",
+                    "import-cancel",
+                    "import-retry",
+                    "edit",
+                    "retag",
+                ] {
+                    c = c.mut_subcommand(name, |s| s.hide(true));
+                }
+                c.mut_subcommand("add", |mut a| {
+                    for name in ["clipboard", "playlist", "preview", "title", "artist"] {
+                        a = a.mut_arg(name, |arg| arg.hide(true));
+                    }
+                    a
+                })
+            });
+    }
+    command
+}
+pub fn parse_args() -> std::result::Result<Args, clap::Error> {
+    use clap::FromArgMatches;
+    let available = Paths::discover()
+        .ok()
+        .is_some_and(|p| crate::import_config::youtube_available(&p));
+    let matches = command_with_features(available).try_get_matches()?;
+    Args::from_arg_matches(&matches)
 }
 
 #[cfg(test)]

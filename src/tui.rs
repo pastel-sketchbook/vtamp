@@ -1,3 +1,4 @@
+mod imports;
 use crate::{
     artwork::Artwork,
     cli::Art,
@@ -120,6 +121,7 @@ struct ThemePicker {
 }
 
 struct App {
+    import_ui: imports::ImportUi,
     spectrum: SpectrumView,
     viewport: Rect,
     theme: Theme,
@@ -154,6 +156,7 @@ struct App {
 struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), event::DisableBracketedPaste);
         ratatui::restore();
     }
 }
@@ -182,6 +185,7 @@ pub async fn run(
     let (theme, settings_warning) = attachment_theme(&settings_path, override_theme);
     let mut terminal = ratatui::try_init()?;
     let _guard = TerminalGuard;
+    crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)?;
     let (artwork, _passthrough) = Artwork::detect(art);
     let (messages, mut incoming) = mpsc::unbounded_channel();
     let (commands, mut requests) = mpsc::channel::<Command>(64);
@@ -200,6 +204,7 @@ pub async fn run(
         .map(|s| s.spectrum)
         .unwrap_or(false);
     let mut app = App {
+        import_ui: imports::ImportUi::default(),
         spectrum: SpectrumView::new(saved_spectrum),
         viewport: Rect::default(),
         theme,
@@ -280,6 +285,51 @@ pub async fn run(
     let reply_messages = messages.clone();
     let command_task = tokio::spawn(async move {
         while let Some(command) = requests.recv().await {
+            if matches!(
+                command,
+                Command::ImportPreview { .. } | Command::LibraryRetag { .. }
+            ) {
+                let client = client.clone();
+                let messages = reply_messages.clone();
+                tokio::spawn(async move {
+                    let result = if let Command::ImportPreview { request } = &command {
+                        async {
+                            let mut value = client
+                                .request(Command::ImportPreview {
+                                    request: request.clone(),
+                                })
+                                .await?
+                                .into_data()?;
+                            let ids = value["preview"]["items"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|v| v["video_id"].as_str().map(str::to_owned))
+                                .collect();
+                            if let Ok(reply) = client
+                                .request(Command::ImportLookup { video_ids: ids })
+                                .await
+                                && let Ok(existing) = reply.into_data()
+                            {
+                                value["preview"]["existing"] = serde_json::json!(
+                                    existing["video_ids"].as_array().map(Vec::len)
+                                );
+                            }
+                            Ok::<_, anyhow::Error>(value)
+                        }
+                        .await
+                        .map_err(|e| e.to_string())
+                    } else {
+                        client
+                            .request(command.clone())
+                            .await
+                            .and_then(|r| r.into_data().map_err(Into::into))
+                            .map_err(|e| e.to_string())
+                    };
+                    let _ = messages.send(Message::Reply(command, result));
+                });
+                continue;
+            }
             let result = match client.request(command.clone()).await {
                 Ok(reply) => reply.into_data().map_err(|e| e.to_string()),
                 Err(error) => Err(format!("{error:#}")),
@@ -307,6 +357,7 @@ pub async fn run(
             } else {
                 app.next_redraw(last_draw)
             };
+            let previous_cover_hidden = app.cover_hidden();
             let terminal_event = tokio::select! {
                 _ = async {
                     if let Some(deadline) = deadline {
@@ -361,12 +412,17 @@ pub async fn run(
                             presentation.invalidate();
                         }
                     }
+                    TerminalEvent::Paste(text)=>app.import_paste(&text),
                     TerminalEvent::Resize(_, _) => {
                         terminal.clear()?;
                         presentation.invalidate();
                     },
                     _ => (),
                 }
+            }
+            if previous_cover_hidden != app.cover_hidden() {
+                terminal.clear()?;
+                presentation.invalidate();
             }
             presentation.draw(&mut terminal, |frame| app.draw(frame))?;
             last_draw = Instant::now();
@@ -465,7 +521,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(HELP_TEXT).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nm   Edit track title and artist\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -534,7 +590,7 @@ impl App {
     fn cover_hidden(&self) -> bool {
         // Help and themes can cover the image. Search/folder prompts sit below
         // it in every layout, so they need neither hiding nor a terminal clear.
-        self.help || self.theme_picker.is_some()
+        self.help || self.theme_picker.is_some() || self.import_ui.modal.is_some()
     }
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
@@ -723,6 +779,7 @@ impl App {
                 self.state(state, messages);
                 self.notice("Attached. q detaches; music keeps playing.");
                 self.refresh(commands);
+                self.send(commands, Command::ImportAvailable);
             }
             Message::Disconnected(reason) => {
                 self.spectrum.clear();
@@ -740,6 +797,36 @@ impl App {
                 self.last_progress = Instant::now();
             }
             Message::Event(Event::LibraryChanged) => self.refresh(commands),
+            Message::Event(Event::Imports(jobs)) => {
+                let selected = self
+                    .import_ui
+                    .jobs
+                    .get(self.import_ui.selected)
+                    .map(|j| j.job_id.clone());
+                self.import_ui.jobs = jobs;
+                if let Some(id) = selected {
+                    self.import_ui.selected = self
+                        .import_ui
+                        .jobs
+                        .iter()
+                        .position(|j| j.job_id == id)
+                        .unwrap_or(0);
+                }
+                if matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
+                    self.import_detail(commands);
+                }
+            }
+            Message::Event(Event::ImportProgress(job)) => {
+                let refresh = job.terminal()
+                    || self
+                        .import_ui
+                        .detail_at
+                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+                self.import_update(job);
+                if refresh && matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
+                    self.import_detail(commands);
+                }
+            }
             Message::Reply(command, result) => match result {
                 Err(error) => {
                     if matches!(command, Command::LibraryList { ref query, offset, .. }
@@ -747,9 +834,65 @@ impl App {
                     {
                         self.library_jump = None;
                     }
+                    if let Command::ImportPreview { request } = &command {
+                        if !matches!(&self.import_ui.modal, Some(imports::Modal::Preview { request: pending, .. }) if pending.url == request.url)
+                        {
+                            return;
+                        }
+                        self.import_ui.modal = None;
+                    }
                     self.notice(error);
                 }
                 Ok(value) => {
+                    match &command {
+                        Command::ImportAvailable => {
+                            self.import_ui.enabled = value["available"] == true;
+                            if !self.import_ui.enabled {
+                                self.import_ui.modal = None;
+                                self.import_ui.jobs.clear();
+                            }
+                            return;
+                        }
+                        Command::Imports => {
+                            self.import_ui.jobs = serde_json::from_value(value).unwrap_or_default();
+                            self.import_detail(commands);
+                            return;
+                        }
+                        Command::ImportStatus { id, offset, .. } => {
+                            if self.import_ui.offset == *offset
+                                && self
+                                    .import_ui
+                                    .jobs
+                                    .get(self.import_ui.selected)
+                                    .is_some_and(|j| j.job_id == *id)
+                            {
+                                self.import_ui.detail = Some(value);
+                            }
+                            return;
+                        }
+                        Command::ImportPreview { request } => {
+                            if let Some(imports::Modal::Preview {
+                                request: pending,
+                                result,
+                            }) = &mut self.import_ui.modal
+                                && pending.url == request.url
+                            {
+                                *result = serde_json::from_value(value["preview"].clone()).ok();
+                            }
+                            return;
+                        }
+                        Command::ImportStart { .. } | Command::ImportRetry { .. } => {
+                            self.notice("Import started. Press i for progress.");
+                            self.send(commands, Command::Imports);
+                            return;
+                        }
+                        Command::LibraryEdit { .. } | Command::LibraryRetag { .. } => {
+                            self.notice("Track metadata updated.");
+                            self.refresh(commands);
+                            return;
+                        }
+                        _ => (),
+                    }
                     if let Command::LibraryList { query, offset, .. } = command {
                         if query == self.query && offset == self.offset {
                             self.tracks =
@@ -790,6 +933,9 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
+        if self.import_key(key, commands) {
+            return Ok(false);
+        }
         if self.theme_picker.is_some() {
             self.theme_key(key.code);
             return Ok(false);
@@ -817,6 +963,28 @@ impl App {
                         self.refresh(commands);
                     }
                     Input::Folder(path) if !path.trim().is_empty() => {
+                        if self.import_ui.enabled
+                            && (path.trim().starts_with("https://")
+                                || path.trim().starts_with("http://"))
+                        {
+                            let mut request = crate::imports::ImportRequest {
+                                url: path,
+                                ..Default::default()
+                            };
+                            match request.validate() {
+                                Ok(()) if request.playlist => {
+                                    self.import_ui.scroll = 0;
+                                    self.import_ui.modal = Some(imports::Modal::Preview {
+                                        request: request.clone(),
+                                        result: None,
+                                    });
+                                    self.send(commands, Command::ImportPreview { request });
+                                }
+                                Ok(()) => self.send(commands, Command::ImportStart { request }),
+                                Err(e) => self.notice(e.to_string()),
+                            }
+                            return Ok(false);
+                        }
                         match platform::absolute(&PathBuf::from(path)) {
                             Ok(path) => self.send(commands, Command::LibraryAdd { path }),
                             Err(error) => self.notice(error.to_string()),
@@ -891,6 +1059,25 @@ impl App {
                 self.input = Some(Input::Search(String::new()));
             }
             KeyCode::Char('a') => self.input = Some(Input::Folder(String::new())),
+            KeyCode::Char('i') if self.import_ui.enabled => {
+                self.import_ui.scroll = 0;
+                self.import_ui.modal = Some(imports::Modal::Jobs);
+                self.send(commands, Command::Imports);
+            }
+            KeyCode::Char('m') if self.import_ui.enabled => {
+                self.import_ui.scroll = 0;
+                if let Some(t) = self.selected_track() {
+                    self.import_ui.modal = Some(imports::Modal::Edit {
+                        id: t.id.clone(),
+                        title: t.title.clone(),
+                        artist: t.artist.clone(),
+                        field: false,
+                    });
+                }
+            }
+            KeyCode::Char('o' | 'O') if self.import_ui.enabled => {
+                self.open_source(key.code == KeyCode::Char('O'))
+            }
             KeyCode::Char('r') => self.send(commands, Command::LibraryScan),
             KeyCode::Char(' ') => self.send(commands, Command::Toggle),
             KeyCode::Char('n') => self.send(commands, Command::Next),
@@ -1185,10 +1372,14 @@ impl App {
             self.notice.clone()
         } else if let Some(warning) = &self.settings_warning {
             warning.clone()
-        } else if self.state.scanning {
-            "Scanning folders… playback stays available.".into()
         } else if self.notice_at.elapsed() < Duration::from_secs(6) {
             self.notice.clone()
+        } else if self.state.scanning {
+            "Scanning folders… playback stays available.".into()
+        } else if self.import_ui.enabled
+            && let Some(job) = self.import_ui.jobs.iter().find(|j| !j.terminal())
+        {
+            format!("{} · i details", job.summary())
         } else {
             self.state
                 .last_error
@@ -1225,7 +1416,14 @@ impl App {
                     " Search title / artist / album · Enter applies · Esc cancels ",
                     s,
                 ),
-                Input::Folder(s) => (" Add music folder · Enter scans · Esc cancels ", s),
+                Input::Folder(s) => (
+                    if self.import_ui.enabled {
+                        " Add folder or YouTube URL · Enter adds · Esc cancels "
+                    } else {
+                        " Add music folder · Enter scans · Esc cancels "
+                    },
+                    s,
+                ),
             };
             let popup = Rect::new(
                 area.x + 2,
@@ -1241,6 +1439,7 @@ impl App {
                 popup,
             );
         }
+        self.draw_imports(frame, area);
         if self.help {
             self.draw_help(frame, area);
         }
@@ -1637,6 +1836,7 @@ mod tests {
                 track_number: i as u32,
                 duration_ms: 180_000,
                 cover: None,
+                source: None,
             })
             .collect();
         app.total = count;
@@ -1841,6 +2041,7 @@ mod tests {
                 track_number: i,
                 duration_ms: 180_000,
                 cover: None,
+                source: None,
             })
             .collect();
         app.state.queue = app.tracks.iter().cloned().map(QueueItem::new).collect();
@@ -2161,6 +2362,7 @@ mod tests {
             track_number: 1,
             duration_ms: 180_000,
             cover: None,
+            source: None,
         };
         app.tracks = vec![track.clone()];
         app.total = 1;
@@ -2310,6 +2512,7 @@ mod tests {
     fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
         App {
+            import_ui: imports::ImportUi::default(),
             spectrum: SpectrumView::new(false),
             viewport: Rect::default(),
             theme: Theme::default(),
@@ -2340,6 +2543,134 @@ mod tests {
             cover_key: None,
             show_art: false,
         }
+    }
+
+    #[test]
+    fn optional_import_ui_is_silent_without_downloader() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        let (commands, mut requests) = mpsc::channel(16);
+        for key in ['i', 'm', 'o', 'O'] {
+            app.key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                &commands,
+            )
+            .unwrap();
+        }
+        assert!(app.import_ui.modal.is_none());
+        assert!(requests.try_recv().is_err());
+        app.help = true;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.to_lowercase().contains("youtube"));
+        app.help = false;
+        app.key(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("URL"));
+        assert!(text.contains("folder"));
+    }
+
+    #[test]
+    fn dismissed_preview_failure_cannot_close_a_new_dialog() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Edit {
+            id: "track".into(),
+            title: "Song".into(),
+            artist: "Singer".into(),
+            field: false,
+        });
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, _) = mpsc::channel(8);
+        let command = Command::ImportPreview {
+            request: crate::imports::ImportRequest {
+                url: "https://youtube.com/playlist?list=PLold".into(),
+                ..Default::default()
+            },
+        };
+        app.message(
+            Message::Reply(command, Err("Old preview failed".into())),
+            &messages,
+            &commands,
+        );
+        assert!(matches!(
+            app.import_ui.modal,
+            Some(imports::Modal::Edit { .. })
+        ));
+        assert!(app.notice.is_empty());
+    }
+
+    #[test]
+    fn import_details_scroll_on_minimum_terminal_and_do_not_control_playback() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        app.import_ui.enabled = true;
+        let request = crate::imports::ImportRequest {
+            url: "https://youtube.com/playlist?list=PLtest".into(),
+            ..Default::default()
+        };
+        let mut job = crate::imports::ImportJob::new(&request);
+        job.total = Some(2);
+        app.import_ui.detail = Some(
+            serde_json::json!({"job":job,"items":[{"index":0,"title":"First","status":"failed","error":format!("{} END-OF-ERROR", "diagnostic ".repeat(40))}]}),
+        );
+        app.import_ui.jobs.push(job);
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        for _ in 0..20 {
+            app.key(
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                &commands,
+            )
+            .unwrap();
+        }
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("END-OF-ERROR"), "{text}");
+        app.key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(requests.try_recv().is_err());
+        app.key(
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::ImportStatus {
+                offset: 1,
+                limit: 1,
+                ..
+            }
+        ));
     }
 
     #[test]

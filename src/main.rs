@@ -1,8 +1,7 @@
-use clap::Parser;
 use vtamp::cli::{Action, Args, report};
 
 fn main() {
-    let args = match Args::try_parse() {
+    let args = match vtamp::cli::parse_args() {
         Ok(args) => args,
         Err(error) => {
             if error.use_stderr() && std::env::args().any(|a| a == "--json") {

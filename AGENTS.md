@@ -30,6 +30,9 @@ playing when a TUI exits or a tmux client detaches.
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
 | `src/library.rs`, `src/store.rs` | Metadata/art extraction, catalog scans/search, SQLite persistence |
+| `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs` | Optional installed-tool imports, staging, progress, bounded/cancellable child processes |
+| `src/import_config.rs`, `src/metadata.rs` | Import configuration, Keychain references, metadata rules and optional LLM adapters |
+| `src/daemon/imports.rs`, `src/store/imports.rs`, `src/tui/imports.rs` | Import ownership, transactional reports/overrides, optional TUI overlays |
 | `src/platform.rs` | Paths, instance isolation, private runtime directories |
 | `src/cli.rs`, `src/main.rs` | CLI parsing, command dispatch, output and process entry point |
 | `src/tui.rs` | Input/event loop, client state, responsive layout, navigation and overlays |
@@ -145,8 +148,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
 
 ## Agent CLI contracts
 
-- Protocol and database versions are 2. New server startup migrates v1 databases
-  atomically, preserving IDs; old binaries reject v2. Do not restart the listener
+- Protocol and database versions are 3. New server startup migrates v1/v2 databases
+  with transactional migration steps, preserving IDs; old binaries reject v3. Do not restart the listener
   just to upgrade during an active user listening session.
 - `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
   status are read-only and never auto-start a server. Dry-run edits also must not
@@ -206,7 +209,7 @@ missing-art cases, but their presence is not a portable test prerequisite.
   Use bounded lossy storage and latest-value streams; no subscribers means no FFT.
   Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
   pause/resume, track changes, and output recovery. SpectrumWatch is an optional
-  protocol-2 stream separate from State/Event, without database or revision writes.
+  protocol-3 stream separate from State/Event, without database or revision writes.
   `v` toggles a client preference. Hidden-list keys must not affect playback/queue;
   Tab returns to the previous list and slash opens Library search. Theme saves and
   spectrum toggles must preserve each other's stored preference.
@@ -333,3 +336,24 @@ commit in `sh -c` / `zsh -lc`.
 Report what changed, relevant checks and their limits, the commit, and any needed
 reattach/server restart. Do not claim live playback or visual verification from
 unit tests alone. Keep this guide aligned with the implementation as it evolves.
+
+## Optional import integration
+
+- Detect yt-dlp at runtime; never install or bundle it. Without an executable,
+  omit integration hints, help entries, TUI controls, and doctor messages. Keep
+  ordinary local playback unchanged. No Cargo feature flag is required.
+- Imports belong to the server, with one download worker and bounded jobs. Keep
+  child processes off playback/input loops; cancel their process groups and reap.
+  Wait timeouts and client detachment do not cancel jobs. Restart marks unfinished
+  jobs interrupted; no automatic resume. Retain 100 terminal reports.
+- Deduplicate library imports by video ID, never queue entries. Stage downloads
+  privately, defer publication during catalog work, and transactionally register
+  source, effective metadata, track and successful item report. Preserve stable
+  IDs and manual overrides across rescans, retagging, missing files, and retries.
+- Config lives in imports.json. LLM defaults to deterministic code; only the
+  selected backend may run. API credentials use Keychain or an environment name,
+  never plaintext config. Chrome cookies are opt-in via yt-dlp itself.
+- `tests/imports.rs` uses fake installed tools and isolated servers. Metadata tests
+  use local mock HTTP/CLI backends. Real extraction and graphics checks are
+  separate; never test against the user's active session or authenticated browser
+  profile unless explicitly requested.

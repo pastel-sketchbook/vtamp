@@ -234,6 +234,7 @@ mod tests {
             track_number: 1,
             duration_ms: 60_000,
             cover: None,
+            source: None,
         };
         let item = QueueItem::new(track);
         State {

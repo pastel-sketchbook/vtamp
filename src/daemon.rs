@@ -1,3 +1,4 @@
+mod imports;
 use crate::{
     audio::RodioBackend,
     engine::Engine,
@@ -29,6 +30,12 @@ struct Observers {
     spectrum: Arc<Spectrum>,
 }
 enum Work {
+    Youtube(Box<crate::imports::Message>),
+    Retag {
+        id: String,
+        result: crate::metadata::Metadata,
+        answer: Answer,
+    },
     Request(Command, Answer),
     Catalog {
         scan: Scan,
@@ -59,6 +66,10 @@ pub async fn run(paths: Paths) -> Result<()> {
     }
     let mut store = Store::open(&paths.database())?;
     store.interrupt_scans(unix_ms())?;
+    store.interrupt_imports()?;
+    if paths.data.join("imports/youtube").is_dir() {
+        store.add_root(&paths.data.join("imports/youtube"))?;
+    }
     let state = store.restore()?;
     let listener = UnixListener::bind(&socket).context("Cannot bind the control socket")?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
@@ -197,10 +208,36 @@ async fn connection(
     .await;
     tokio::time::timeout(Duration::from_secs(5), wire::write(&mut stream, &reply)).await??;
     if watch && reply.ok {
+        let available = dispatch(&sender, Command::ImportAvailable)
+            .await
+            .into_data()?["available"]
+            == true;
+        if available {
+            let jobs = dispatch(&sender, Command::Imports).await.into_data()?;
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                wire::write(
+                    &mut stream,
+                    &Reply::success(Event::Imports(serde_json::from_value(jobs)?)),
+                ),
+            )
+            .await??;
+        }
         loop {
             let event = match subscription.recv().await {
                 Ok(event) => event,
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if available {
+                        let jobs = dispatch(&sender, Command::Imports).await.into_data()?;
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            wire::write(
+                                &mut stream,
+                                &Reply::success(Event::Imports(serde_json::from_value(jobs)?)),
+                            ),
+                        )
+                        .await??;
+                    }
                     let reply = dispatch(&sender, Command::Status).await;
                     Event::State(serde_json::from_value(reply.into_data()?)?)
                 }
@@ -261,220 +298,342 @@ fn worker(
     let mut last_progress = Instant::now();
     let mut imports = 0usize;
     let mut active_scan: Option<String> = None;
+    let mut youtube = imports::Runtime::new(&store)?;
     loop {
         let mut changed = false;
         match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(Work::Request(command, answer)) => match command {
-                Command::Shutdown => {
-                    store.save(&engine.state)?;
-                    engine.stop();
-                    let _ = answer.send(Reply::success(json!({"stopped": true})));
-                    break;
+            Ok(Work::Youtube(message)) => {
+                if let Err(error) = youtube.message(*message, &mut store, events) {
+                    tracing::error!("Cannot persist import update: {error:#}");
                 }
-                Command::Status | Command::Watch | Command::Volume { value: None } => {
-                    let _ = answer.send(Reply::success(&engine.state));
-                }
-                Command::Now => {
-                    let _ = answer.send(Reply::success(engine.state.now()));
-                }
-                Command::SleepStatus => {
-                    let _ = answer.send(Reply::success(
-                        json!({"scheduled_stop":engine.state.scheduled_stop}),
-                    ));
-                }
-                Command::QueuePage { offset, limit } => {
-                    let items: Vec<_> = engine
-                        .state
-                        .queue
-                        .iter()
-                        .skip(offset)
-                        .take(limit.clamp(1, 1000))
-                        .collect();
-                    let _ = answer.send(Reply::success(json!({"items":items,"total":engine.state.queue.len(),"offset":offset,"queue_revision":engine.state.queue_revision})));
-                }
-                Command::QueueEdit {
-                    edit,
-                    dry_run,
-                    if_queue_revision,
-                    request_id,
-                } => {
-                    let revision = engine.state.revision;
-                    let reply = match edit_queue(
-                        &mut engine,
-                        &mut store,
-                        &edit,
-                        dry_run,
-                        if_queue_revision,
-                        request_id.as_deref(),
-                    ) {
-                        Ok(reply) => reply,
-                        Err(error) => failure(error),
-                    };
-                    if engine.state.revision != revision {
-                        let _ = events.send(Event::State(engine.state.clone()));
-                    }
-                    let _ = answer.send(reply);
-                }
-                Command::LibrarySearch {
-                    filter,
-                    offset,
-                    limit,
-                } => {
-                    let reply = match store.search_filtered(&filter, offset, limit) {
-                        Ok((tracks, total)) => {
-                            Reply::success(json!({"tracks":tracks,"total":total,"offset":offset}))
-                        }
-                        Err(error) => failure(error),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::LibraryTrack { id } => {
-                    let reply = match store.track(&id) {
-                        Ok(Some(track)) => Reply::success(track),
-                        Ok(None) => Reply::failure(ApiError::new(
-                            "track_not_found",
-                            "Library track not found",
-                        )),
-                        Err(error) => failure(error),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::ScanStatus { id } => {
-                    let reply = match store.scan_job(&id) {
-                        Ok(job) => Reply::success(job),
-                        Err(error) => failure(error),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::LibraryList {
-                    query,
-                    offset,
-                    limit,
-                } => {
-                    let reply = match store.search(&query, offset, limit) {
-                        Ok((tracks, total)) => Reply::success(
-                            json!({"tracks": tracks, "total": total, "offset": offset}),
-                        ),
-                        Err(e) => failure(e),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::LibraryRoots => {
-                    let reply = match store.roots() {
-                        Ok(roots) => Reply::success(roots),
-                        Err(e) => failure(e),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::LibraryAdd { .. }
-                | Command::LibraryRemove { .. }
-                | Command::LibraryScan => {
-                    let result = (|| -> Result<String> {
-                        if engine.state.scanning {
-                            return Err(ApiError::new(
-                                "scan_in_progress",
-                                "A library scan is already running",
-                            )
-                            .with_details(json!({"job_id":active_scan}))
-                            .into());
-                        }
-                        match &command {
-                            Command::LibraryAdd { path } => {
-                                let path = path
-                                    .canonicalize()
-                                    .context("Music directory does not exist")?;
-                                if !path.is_dir() {
-                                    anyhow::bail!("Library roots must be directories");
-                                }
-                                store.add_root(&path)?;
-                            }
-                            Command::LibraryRemove { path } => {
-                                store.remove_root(&path.canonicalize().unwrap_or(path.clone()))?;
-                            }
-                            _ => (),
-                        }
-                        let roots = store.roots()?;
-                        let old = store.records()?;
-                        let cache = paths.cache.clone();
-                        let tx = tx.clone();
-                        let mut job = ScanJob {
-                            job_id: uuid::Uuid::new_v4().to_string(),
-                            status: "running".into(),
-                            started_at_ms: unix_ms(),
-                            finished_at_ms: None,
-                            summary: None,
-                            error: None,
-                        };
-                        store.save_scan(&job, None)?;
-                        let id = job.job_id.clone();
-                        std::thread::spawn(move || {
-                            let scan = library::scan(&roots, &old, &cache);
-                            job.summary = Some(library::scan_summary(&scan, &old));
-                            let _ = tx.send(Work::Catalog { scan, job });
-                        });
-                        engine.state.scanning = true;
-                        active_scan = Some(id.clone());
-                        Ok(id)
-                    })();
-                    changed = result.is_ok();
-                    let reply = match result {
-                        Ok(id) => Reply::success(json!({"scanning": true, "job_id":id})),
-                        Err(e) => failure(e),
-                    };
-                    let _ = answer.send(reply);
-                }
-                Command::QueueAdd {
-                    paths: ref input_paths,
-                    ..
-                }
-                | Command::Play {
-                    paths: ref input_paths,
-                    ..
-                } if !input_paths.is_empty() => {
-                    if imports >= 4 {
-                        let _ = answer.send(Reply::failure(ApiError::new(
-                            "server_busy",
-                            "Too many imports in progress",
-                        )));
-                        continue;
-                    }
-                    let inputs = input_paths.clone();
-                    let play = matches!(command, Command::Play { .. });
-                    let cache = paths.cache.clone();
-                    let old = store.records()?;
-                    let tx = tx.clone();
-                    imports += 1;
-                    std::thread::spawn(move || {
-                        let scan = library::scan(&inputs, &old, &cache);
-                        let _ = tx.send(Work::Imported { scan, play, answer });
+            }
+            Ok(Work::Retag { id, result, answer }) => {
+                let result = store
+                    .edit_metadata(&id, None, None, Some(result))
+                    .and_then(|track| {
+                        imports::update_queue_metadata(&track, &mut engine, &store, events)?;
+                        Ok(Reply::success(track))
                     });
-                }
-                Command::QueueAdd {
-                    track: Some(ref id),
-                    ..
-                }
-                | Command::Play {
-                    track: Some(ref id),
-                    ..
-                } => {
-                    let result = (|| -> Result<()> {
-                        let track = store.track(id)?.ok_or_else(|| {
-                            ApiError::new("track_not_found", "Library track not found")
-                        })?;
-                        if matches!(command, Command::Play { .. }) {
-                            engine.play_track(track)?;
-                        } else {
-                            engine.add(vec![track])?;
+                let _ = answer.send(result.unwrap_or_else(failure));
+            }
+            Ok(Work::Request(command, answer)) => {
+                if let Some(result) = youtube.command(&command, &paths, &mut store, events) {
+                    let _ = answer.send(result.unwrap_or_else(failure));
+                } else if matches!(
+                    command,
+                    Command::ImportPreview { .. }
+                        | Command::ImportCapabilities
+                        | Command::LibraryRetag { .. }
+                ) && youtube.tasks_busy()
+                {
+                    let _ = answer.send(failure(anyhow::anyhow!(
+                        "Too many metadata or preview requests; try again shortly"
+                    )));
+                } else {
+                    match command {
+                        Command::Shutdown => {
+                            store.save(&engine.state)?;
+                            engine.stop();
+                            let _ = answer.send(Reply::success(json!({"stopped": true})));
+                            break;
                         }
-                        Ok(())
-                    })();
-                    finish_command(result, answer, &mut engine, &store, events)?;
+                        Command::ImportPreview { request } => {
+                            let paths = paths.clone();
+                            youtube.spawn_task(move |stop| {
+                                let result = (|| -> Result<Reply> {
+                                    let config = crate::import_config::Config::load(&paths)?;
+                                    let preview = crate::youtube::preview(
+                                        &request.url,
+                                        request.playlist,
+                                        &config,
+                                        &stop,
+                                    )?;
+                                    Ok(Reply::success(json!({"preview":preview})))
+                                })();
+                                let _ = answer.send(result.unwrap_or_else(failure));
+                            });
+                        }
+                        Command::ImportAvailable => {
+                            let _=answer.send(Reply::success(json!({"available":crate::import_config::youtube_available(&paths)})));
+                        }
+                        Command::ImportCapabilities => {
+                            let paths = paths.clone();
+                            youtube.spawn_task(move |stop| {
+                                let result = crate::import_config::Config::load(&paths).map(|c| {
+                                    Reply::success(crate::import_config::capabilities_with_cancel(
+                                        &c, &stop,
+                                    ))
+                                });
+                                let _ = answer.send(result.unwrap_or_else(failure));
+                            });
+                        }
+                        Command::LibraryEdit { id, title, artist } => {
+                            let result =
+                                store
+                                    .edit_metadata(&id, title, artist, None)
+                                    .and_then(|track| {
+                                        imports::update_queue_metadata(
+                                            &track,
+                                            &mut engine,
+                                            &store,
+                                            events,
+                                        )?;
+                                        Ok(Reply::success(track))
+                                    });
+                            let _ = answer.send(result.unwrap_or_else(failure));
+                        }
+                        Command::LibraryRetag { id } => {
+                            let source = store.track(&id).and_then(|t| {
+                                t.and_then(|t| t.source)
+                                    .context("Track has no YouTube source")
+                            });
+                            match source {
+                                Ok(source) => {
+                                    let tx = tx.clone();
+                                    let paths = paths.clone();
+                                    youtube.spawn_task(move |stop| {
+                                        match crate::import_config::Config::load(&paths) {
+                                            Ok(config) => {
+                                                let result = crate::metadata::resolve(
+                                                    &source, &config, &paths, &stop,
+                                                );
+                                                let mut work = Work::Retag { id, result, answer };
+                                                while !stop
+                                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                                {
+                                                    match tx.try_send(work) {
+                                                        Ok(())
+                                                        | Err(mpsc::TrySendError::Disconnected(
+                                                            _,
+                                                        )) => break,
+                                                        Err(mpsc::TrySendError::Full(w)) => {
+                                                            work = w;
+                                                            std::thread::sleep(
+                                                                Duration::from_millis(10),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let _ = answer.send(failure(e));
+                                            }
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = answer.send(failure(e));
+                                }
+                            }
+                        }
+                        Command::Status | Command::Watch | Command::Volume { value: None } => {
+                            let _ = answer.send(Reply::success(&engine.state));
+                        }
+                        Command::Now => {
+                            let _ = answer.send(Reply::success(engine.state.now()));
+                        }
+                        Command::SleepStatus => {
+                            let _ = answer.send(Reply::success(
+                                json!({"scheduled_stop":engine.state.scheduled_stop}),
+                            ));
+                        }
+                        Command::QueuePage { offset, limit } => {
+                            let items: Vec<_> = engine
+                                .state
+                                .queue
+                                .iter()
+                                .skip(offset)
+                                .take(limit.clamp(1, 1000))
+                                .collect();
+                            let _ = answer.send(Reply::success(json!({"items":items,"total":engine.state.queue.len(),"offset":offset,"queue_revision":engine.state.queue_revision})));
+                        }
+                        Command::QueueEdit {
+                            edit,
+                            dry_run,
+                            if_queue_revision,
+                            request_id,
+                        } => {
+                            let revision = engine.state.revision;
+                            let reply = match edit_queue(
+                                &mut engine,
+                                &mut store,
+                                &edit,
+                                dry_run,
+                                if_queue_revision,
+                                request_id.as_deref(),
+                            ) {
+                                Ok(reply) => reply,
+                                Err(error) => failure(error),
+                            };
+                            if engine.state.revision != revision {
+                                let _ = events.send(Event::State(engine.state.clone()));
+                            }
+                            let _ = answer.send(reply);
+                        }
+                        Command::LibrarySearch {
+                            filter,
+                            offset,
+                            limit,
+                        } => {
+                            let reply = match store.search_filtered(&filter, offset, limit) {
+                                Ok((tracks, total)) => Reply::success(
+                                    json!({"tracks":tracks,"total":total,"offset":offset}),
+                                ),
+                                Err(error) => failure(error),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::LibraryTrack { id } => {
+                            let reply = match store.track(&id) {
+                                Ok(Some(track)) => Reply::success(track),
+                                Ok(None) => Reply::failure(ApiError::new(
+                                    "track_not_found",
+                                    "Library track not found",
+                                )),
+                                Err(error) => failure(error),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::ScanStatus { id } => {
+                            let reply = match store.scan_job(&id) {
+                                Ok(job) => Reply::success(job),
+                                Err(error) => failure(error),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::LibraryList {
+                            query,
+                            offset,
+                            limit,
+                        } => {
+                            let reply = match store.search(&query, offset, limit) {
+                                Ok((tracks, total)) => Reply::success(
+                                    json!({"tracks": tracks, "total": total, "offset": offset}),
+                                ),
+                                Err(e) => failure(e),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::LibraryRoots => {
+                            let reply = match store.roots() {
+                                Ok(roots) => Reply::success(roots),
+                                Err(e) => failure(e),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::LibraryAdd { .. }
+                        | Command::LibraryRemove { .. }
+                        | Command::LibraryScan => {
+                            let result = (|| -> Result<String> {
+                                if engine.state.scanning {
+                                    return Err(ApiError::new(
+                                        "scan_in_progress",
+                                        "A library scan is already running",
+                                    )
+                                    .with_details(json!({"job_id":active_scan}))
+                                    .into());
+                                }
+                                match &command {
+                                    Command::LibraryAdd { path } => {
+                                        let path = path
+                                            .canonicalize()
+                                            .context("Music directory does not exist")?;
+                                        if !path.is_dir() {
+                                            anyhow::bail!("Library roots must be directories");
+                                        }
+                                        store.add_root(&path)?;
+                                    }
+                                    Command::LibraryRemove { path } => {
+                                        store.remove_root(
+                                            &path.canonicalize().unwrap_or(path.clone()),
+                                        )?;
+                                    }
+                                    _ => (),
+                                }
+                                let roots = store.roots()?;
+                                let old = store.records()?;
+                                let cache = paths.cache.clone();
+                                let tx = tx.clone();
+                                let mut job = ScanJob {
+                                    job_id: uuid::Uuid::new_v4().to_string(),
+                                    status: "running".into(),
+                                    started_at_ms: unix_ms(),
+                                    finished_at_ms: None,
+                                    summary: None,
+                                    error: None,
+                                };
+                                store.save_scan(&job, None)?;
+                                let id = job.job_id.clone();
+                                std::thread::spawn(move || {
+                                    let scan = library::scan(&roots, &old, &cache);
+                                    job.summary = Some(library::scan_summary(&scan, &old));
+                                    let _ = tx.send(Work::Catalog { scan, job });
+                                });
+                                engine.state.scanning = true;
+                                active_scan = Some(id.clone());
+                                Ok(id)
+                            })();
+                            changed = result.is_ok();
+                            let reply = match result {
+                                Ok(id) => Reply::success(json!({"scanning": true, "job_id":id})),
+                                Err(e) => failure(e),
+                            };
+                            let _ = answer.send(reply);
+                        }
+                        Command::QueueAdd {
+                            paths: ref input_paths,
+                            ..
+                        }
+                        | Command::Play {
+                            paths: ref input_paths,
+                            ..
+                        } if !input_paths.is_empty() => {
+                            if imports >= 4 {
+                                let _ = answer.send(Reply::failure(ApiError::new(
+                                    "server_busy",
+                                    "Too many imports in progress",
+                                )));
+                                continue;
+                            }
+                            let inputs = input_paths.clone();
+                            let play = matches!(command, Command::Play { .. });
+                            let cache = paths.cache.clone();
+                            let old = store.records()?;
+                            let tx = tx.clone();
+                            imports += 1;
+                            std::thread::spawn(move || {
+                                let scan = library::scan(&inputs, &old, &cache);
+                                let _ = tx.send(Work::Imported { scan, play, answer });
+                            });
+                        }
+                        Command::QueueAdd {
+                            track: Some(ref id),
+                            ..
+                        }
+                        | Command::Play {
+                            track: Some(ref id),
+                            ..
+                        } => {
+                            let result = (|| -> Result<()> {
+                                let track = store.track(id)?.ok_or_else(|| {
+                                    ApiError::new("track_not_found", "Library track not found")
+                                })?;
+                                if matches!(command, Command::Play { .. }) {
+                                    engine.play_track(track)?;
+                                } else {
+                                    engine.add(vec![track])?;
+                                }
+                                Ok(())
+                            })();
+                            finish_command(result, answer, &mut engine, &store, events)?;
+                        }
+                        command => {
+                            let result = engine.apply(&command);
+                            finish_command(result, answer, &mut engine, &store, events)?;
+                        }
+                    }
                 }
-                command => {
-                    let result = engine.apply(&command);
-                    finish_command(result, answer, &mut engine, &store, events)?;
-                }
-            },
+            }
             Ok(Work::Catalog { scan, mut job }) => {
                 engine.state.scanning = false;
                 active_scan = None;
@@ -529,6 +688,15 @@ fn worker(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => (),
+        }
+        if let Err(error) = youtube.poll(
+            &paths,
+            &mut store,
+            &tx,
+            engine.state.scanning || imports > 0,
+            events,
+        ) {
+            tracing::error!("Import scheduler: {error:#}");
         }
         changed |= engine.tick();
         if changed {
@@ -685,6 +853,7 @@ mod agent_tests {
             track_number: 1,
             duration_ms: 10000,
             cover: None,
+            source: None,
         };
         store
             .replace_catalog(&[Record {

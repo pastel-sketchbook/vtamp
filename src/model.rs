@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
@@ -14,6 +14,8 @@ pub struct Track {
     pub track_number: u32,
     pub duration_ms: u64,
     pub cover: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::youtube::Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -101,6 +103,37 @@ impl State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    ImportPreview {
+        request: crate::imports::ImportRequest,
+    },
+    ImportStart {
+        request: crate::imports::ImportRequest,
+    },
+    Imports,
+    ImportStatus {
+        id: String,
+        offset: usize,
+        limit: usize,
+    },
+    ImportCancel {
+        id: String,
+    },
+    ImportRetry {
+        id: String,
+    },
+    ImportLookup {
+        video_ids: Vec<String>,
+    },
+    LibraryEdit {
+        id: String,
+        title: Option<String>,
+        artist: Option<String>,
+    },
+    LibraryRetag {
+        id: String,
+    },
+    ImportCapabilities,
+    ImportAvailable,
     Status,
     Now,
     QueuePage {
@@ -259,6 +292,8 @@ impl Reply {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
+    Imports(Vec<crate::imports::ImportJob>),
+    ImportProgress(crate::imports::ImportJob),
     State(State),
     Progress { position_ms: u64, revision: u64 },
     LibraryChanged,

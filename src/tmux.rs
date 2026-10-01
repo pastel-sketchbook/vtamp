@@ -103,6 +103,7 @@ mod tests {
             track_number: 0,
             duration_ms: 219_103,
             cover: None,
+            source: None,
         });
         State {
             current_id: Some(item.id.clone()),

@@ -56,7 +56,7 @@ Make sure `~/.cargo/bin` is on your `PATH`. Or run directly from the checkout:
 cargo run --release
 ```
 
-There is no published crates.io package or Homebrew formula yet. The application does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite is bundled.
+There is no published crates.io package or Homebrew formula yet. Local playback does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite is bundled. Optional installed-tool imports are described in [the integration guide](docs/imports.md).
 
 ## First listen
 
@@ -207,7 +207,7 @@ holding up playback. Pause, stop, and missing data let the bars settle to zero.
 Animation stays at 20 fps while needed; settled bars stop the animation timer,
 and unchanged screens send no terminal updates.
 After upgrading from a server without spectrum support, restart the server with
-the new binary and reattach. Regular protocol-2 commands remain compatible.
+the new binary and reattach. Client and server must use the same protocol version.
 
 ## Make it yours
 
@@ -383,11 +383,11 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":2,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":3,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":2,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":3,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
 `status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
@@ -397,7 +397,7 @@ Every JSON response has a protocol version and `ok`. Successful responses have `
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":2,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":3,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -545,9 +545,9 @@ cancelling, or restarting the server clears the reservation. Closing the CLI or
 TUI does not. `scheduled_stop` is null or an object with `kind: "after_current"`
 and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds).
 
-### Updating from protocol 1
+### Updating from protocol 1 or 2
 
-This build uses **protocol 2** and migrates the library to **database version 2**
+This build uses **protocol 3** and migrates the library to **database version 3**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,
@@ -558,7 +558,7 @@ open the migrated database.
 
 On macOS, persistent data lives under `~/Library/Application Support/vtamp/`; cover thumbnails are under `~/Library/Caches/vtamp/covers/`. The control socket is `/tmp/vtamp-<uid>/control.sock`. Directories are private to the current user. A held advisory lock ensures one server, and a later launch recovers stale sockets left by crashes.
 
-`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library and session. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
+`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library, session, metadata overrides, and background job reports. Optional integration settings live in `imports.json`, separate from `ui.json`. `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
 
 For isolated development or independent test instances, set an absolute, short `VTAMP_HOME`:
 

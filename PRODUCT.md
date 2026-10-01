@@ -36,6 +36,12 @@ per client preference. It is not an equalizer and does not modify audio.
 
 The macOS server integrates with media keys and Now Playing, including track metadata and artwork in Control Center. Controls remain available after the TUI detaches; macOS chooses the active media player.
 
+An installed `yt-dlp` enables optional audio imports. Without it, the interface,
+help, and diagnostics show no integration controls or prompts. Imports run in the
+server with visible progress, per-item failures, cancellation, and retry. Metadata
+uses deterministic rules by default; users can opt into an API or installed CLI
+for metadata cleanup. Users retain source links and can edit title/artist.
+
 ## Brand Commitments
 
 Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.
