@@ -390,7 +390,10 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
 - Opening TUI Imports reveals the status-line job, or the newest finished job,
   and resets item paging. Preserve an open reader's selected job by ID across
   snapshots and progress events, not by row index. Delayed list replies must not
-  regress job revisions or remove jobs created after that snapshot.
+  regress job revisions or remove jobs created after that snapshot. Enter on the
+  selected import plays the track shown in its details — the first added track
+  while that page loads — and selects it in Library; an import with no Library
+  track only reports that and keeps the dialog open.
 - Show Imports as a selectable history list above its details. Keep the selected
   row and navigation hints visible at small sizes and while scrolling diagnostics.
   Label source and saved titles; do not reuse the compact status-line summary as

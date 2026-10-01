@@ -25,6 +25,15 @@ pub(super) struct LibraryReveal {
     requested_query: Option<String>,
     notice: String,
 }
+/// What Enter resolves to on the selected import row.
+enum ImportTarget {
+    /// Play this library track.
+    Play(String),
+    /// The item shown in the details is not in Library.
+    Missing,
+    /// This import has no track in Library to play.
+    Empty,
+}
 pub(super) enum Modal {
     Jobs,
     Preview {
@@ -193,6 +202,42 @@ impl App {
             .map(|j| j.job_id.clone())
     }
 
+    /// Item page currently shown in the details pane, when it belongs to the
+    /// selected job. The request uses `limit: 1`, so this is the visible row.
+    fn import_detail_item(&self) -> Option<&Value> {
+        let job = self.import_ui.jobs.get(self.import_ui.selected)?;
+        let detail = self.import_ui.detail.as_ref()?;
+        if detail["job"]["job_id"].as_str() != Some(job.job_id.as_str()) {
+            return None;
+        }
+        let offset = self.import_ui.offset as u64;
+        detail["items"]
+            .as_array()?
+            .iter()
+            .find(|item| item["index"].as_u64() == Some(offset))
+    }
+
+    /// Enter plays the track the details show: the row the user selected.
+    /// While that page is still loading, use the job's first added track, the
+    /// same one the automatic completion reveal selects.
+    fn import_target(&self) -> ImportTarget {
+        match self.import_detail_item() {
+            Some(item) => match item["track_id"].as_str() {
+                Some(id) => ImportTarget::Play(id.to_owned()),
+                None => ImportTarget::Missing,
+            },
+            None => match self
+                .import_ui
+                .jobs
+                .get(self.import_ui.selected)
+                .and_then(|job| job.first_added_track_id.clone())
+            {
+                Some(id) => ImportTarget::Play(id),
+                None => ImportTarget::Empty,
+            },
+        }
+    }
+
     /// Preserve an open reader's job identity, not its shifting row number.
     /// Opening/reopening reveals the status-line job, or the newest finished job.
     fn import_selection(&mut self, previous: Option<String>) -> bool {
@@ -339,6 +384,25 @@ impl App {
                     self.clear_import_detail();
                     self.import_detail(commands);
                 }
+                KeyCode::Enter => match self.import_target() {
+                    ImportTarget::Play(id) => {
+                        self.import_ui.modal = None;
+                        self.import_ui.reveal_on_snapshot = false;
+                        self.send(
+                            commands,
+                            Command::Play {
+                                paths: vec![],
+                                track: Some(id.clone()),
+                                queue_item: None,
+                            },
+                        );
+                        self.select_library_when_ready(id, "Playing imported track.".into());
+                    }
+                    ImportTarget::Missing => self.notice("That track is not in Library."),
+                    ImportTarget::Empty => {
+                        self.notice("Nothing from this import is in Library yet.")
+                    }
+                },
                 KeyCode::Char('c') => {
                     if let Some(job) = self.import_ui.jobs.get(self.import_ui.selected)
                         && !job.terminal()
@@ -509,6 +573,9 @@ impl App {
             } else {
                 "PgUp/Dn details"
             });
+            if matches!(self.import_target(), ImportTarget::Play(_)) {
+                hints.push("Enter play in Library");
+            }
             if !job.terminal() && job.stage != "cancelling" {
                 hints.push("c cancel import");
             } else if retryable(job) {

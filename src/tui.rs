@@ -617,7 +617,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nm   Edit title / artist / album\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -3807,6 +3807,118 @@ mod tests {
             assert!(app.library_reveal.is_none());
             assert!(requests.try_recv().is_err());
         }
+    }
+
+    #[test]
+    fn imports_enter_plays_the_shown_track_and_reveals_it_in_library() {
+        let mut app = navigation_app(3);
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        app.focus = Focus::Queue;
+        app.viewport = Rect::new(0, 0, 80, 24);
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(32);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.title = "Playlist import".into();
+        job.total = Some(4);
+        job.added = 2;
+        job.first_added_track_id = Some("0".into());
+        job.finish("completed");
+        app.import_ui.jobs = vec![job.clone()];
+        app.import_ui.offset = 2;
+        app.import_ui.detail = Some(serde_json::json!({
+            "job": job,
+            "items": [{"index": 2, "title": "Third song", "status": "completed", "track_id": "2"}],
+        }));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Enter play in Library"), "{text}");
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(app.import_ui.modal.is_none());
+        // The shown track wins over the job's first added track.
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::Play { track: Some(id), .. } if id == "2")
+        );
+        let request = requests.try_recv().unwrap();
+        assert!(matches!(&request, Command::LibraryList { anchor: Some(id), .. } if id == "2"));
+        app.message(
+            Message::Reply(
+                request,
+                Ok(serde_json::json!({
+                    "tracks": app.tracks.clone(), "total": 3, "offset": 0, "query": app.query.clone()
+                })),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.focus, Focus::Library);
+        assert_eq!(app.selected_track().unwrap().id, "2");
+        assert!(app.notice.contains("Playing imported track"));
+    }
+
+    #[test]
+    fn imports_enter_without_a_library_track_explains_and_keeps_the_dialog_open() {
+        let mut app = app();
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        app.viewport = Rect::new(0, 0, 80, 24);
+        let (commands, mut requests) = mpsc::channel(32);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.total = Some(2);
+        app.import_ui.jobs = vec![job.clone()];
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        app.import_ui.detail = Some(serde_json::json!({
+            "job": job,
+            "items": [{"index": 0, "title": "Failed song", "status": "failed"}],
+        }));
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!text.contains("Enter play in Library"), "{text}");
+        app.key(key, &commands).unwrap();
+        assert!(app.import_ui.modal.is_some());
+        assert_eq!(app.notice, "That track is not in Library.");
+        // Without a detail page, a job that added nothing only explains itself.
+        app.import_ui.detail = None;
+        app.key(key, &commands).unwrap();
+        assert!(app.import_ui.modal.is_some());
+        assert_eq!(app.notice, "Nothing from this import is in Library yet.");
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn imports_enter_without_details_plays_the_first_added_track() {
+        let mut app = navigation_app(3);
+        app.import_ui.enabled = true;
+        app.import_ui.modal = Some(imports::Modal::Jobs);
+        let (commands, mut requests) = mpsc::channel(32);
+        let mut job = crate::imports::ImportJob::new(&Default::default());
+        job.total = Some(3);
+        job.added = 1;
+        job.first_added_track_id = Some("1".into());
+        app.import_ui.jobs = vec![job];
+        app.import_ui.detail = None;
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(app.import_ui.modal.is_none());
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::Play { track: Some(id), .. } if id == "1")
+        );
+        assert!(app.library_reveal.is_some());
     }
 
     #[test]

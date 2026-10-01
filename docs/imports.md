@@ -60,11 +60,15 @@ open a preview; Enter confirms all entries, Esc closes it. Press `i` for the
 import history: each row shows a source title and its status, with the selected
 import's results and full title below. Use `j`/`k` to select a job, `[`/`]` to
 select a track within a playlist, PgUp/PgDn to scroll the details,
-`c` to cancel, or `r` to retry. Playback controls remain available after closing
-the overlay. Each time you open `i`, it starts at the active job shown in the
-bottom status line, or the newest job when all are finished, with item paging
-reset. New arrivals preserve the job you are reading while the dialog is open.
-Detaching the TUI leaves the job running.
+`c` to cancel, or `r` to retry. Enter closes the dialog, selects the track shown
+in the details in Library, and plays it; while that page is still loading, it
+plays the import's first added track. A track that is not in Library yet, or an
+import that added nothing, only reports that and leaves the dialog open.
+Playback controls remain available after closing the overlay. Each time you open
+`i`, it starts at the active job shown in the bottom status line, or the newest
+job when all are finished, with item paging reset. New arrivals preserve the job
+you are reading while the dialog is open. Detaching the TUI leaves the job
+running.
 
 When an import finishes while the TUI is attached, Library focuses and selects
 the first successfully added track, scrolling to it even on another page. For a
