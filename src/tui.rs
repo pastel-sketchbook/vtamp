@@ -22,7 +22,7 @@ use ratatui::{
     Frame, Terminal,
     backend::Backend,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
@@ -35,10 +35,12 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, watch};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nEsc     Clear search      Ctrl-U  Clear typed text\nr       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -52,23 +54,27 @@ struct HelpScroll {
 #[derive(Default)]
 struct Presentation {
     previous: Option<Buffer>,
+    caret: Option<Position>,
 }
 impl Presentation {
     fn invalidate(&mut self) {
         self.previous = None;
     }
 
+    /// `render` returns the text caret, if any. The terminal cursor is shown
+    /// only there, so input methods draw their composition inside the field.
     fn draw<B: Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
-        render: impl FnOnce(&mut Frame),
+        render: impl FnOnce(&mut Frame) -> Option<Position>,
     ) -> std::result::Result<bool, B::Error> {
         terminal.autoresize()?;
-        render(&mut terminal.get_frame());
+        let caret = render(&mut terminal.get_frame());
         let next = terminal.current_buffer_mut();
-        let changed = self.previous.as_ref().is_none_or(|previous| {
-            previous.area != next.area || previous.diff_iter(next).next().is_some()
-        });
+        let changed = caret != self.caret
+            || self.previous.as_ref().is_none_or(|previous| {
+                previous.area != next.area || previous.diff_iter(next).next().is_some()
+            });
         if !changed {
             next.reset();
             return Ok(false);
@@ -77,10 +83,68 @@ impl Presentation {
             Some(previous) => previous.clone_from(next),
             None => self.previous = Some(next.clone()),
         }
-        // The TUI uses an inline text caret; the terminal cursor stays hidden.
-        terminal.apply_buffer()?;
+        self.caret = caret;
+        terminal.apply_buffer_with_cursor(caret)?;
         Ok(true)
     }
+}
+
+/// Applies a single-line editing key. Returns false for keys a field ignores.
+fn edit_line(text: &mut String, key: KeyEvent) -> bool {
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('u') if control => text.clear(),
+        KeyCode::Char(c) if !control => text.push(c),
+        // Remove what the user sees as one character, including decomposed
+        // Hangul syllables pasted from macOS file names.
+        KeyCode::Backspace => {
+            let end = text
+                .grapheme_indices(true)
+                .next_back()
+                .map_or(0, |(i, _)| i);
+            text.truncate(end);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// The end of `text` that fits in `width` cells with room left for a caret,
+/// and its width. Long input scrolls so the caret stays visible.
+fn caret_tail(text: &str, width: u16) -> (&str, u16) {
+    let room = usize::from(width.saturating_sub(1));
+    let mut used = 0;
+    let mut start = text.len();
+    for (index, grapheme) in text.grapheme_indices(true).rev() {
+        let next = used + grapheme.width();
+        if next > room {
+            break;
+        }
+        used = next;
+        start = index;
+    }
+    (&text[start..], used as u16)
+}
+
+/// Hard-wraps `text` into rows of at most `width` cells. A trailing empty row
+/// is added when the last row is full, so the caret always has a cell.
+fn caret_rows(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for grapheme in text.graphemes(true) {
+        let cells = grapheme.width();
+        if used + cells > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        rows.last_mut().unwrap().push_str(grapheme);
+        used += cells;
+    }
+    if used >= width {
+        rows.push(String::new());
+    }
+    rows
 }
 
 enum Message {
@@ -153,6 +217,8 @@ struct App {
     cover: Cover,
     cover_key: Option<PathBuf>,
     show_art: bool,
+    /// Text caret from the latest draw; the terminal cursor is shown only here.
+    caret: Option<Position>,
 }
 
 struct TerminalGuard;
@@ -255,6 +321,7 @@ pub async fn run(
         cover,
         cover_key: None,
         show_art: !matches!(art, Art::None),
+        caret: None,
     };
     let watch_client = client.clone();
     let watch_messages = messages.clone();
@@ -445,7 +512,10 @@ pub async fn run(
                 terminal.clear()?;
                 presentation.invalidate();
             }
-            presentation.draw(&mut terminal, |frame| app.draw(frame))?;
+            presentation.draw(&mut terminal, |frame| {
+                app.draw(frame);
+                app.caret
+            })?;
             last_draw = Instant::now();
             let wanted = app.spectrum_visible() && app.connected;
             spectrum_enabled.send_if_modified(|value| {
@@ -761,6 +831,13 @@ impl App {
             self.notice("Too many pending commands; try again shortly.");
         }
     }
+    fn apply_search(&mut self, query: String, commands: &mpsc::Sender<Command>) {
+        self.query = query;
+        self.offset = 0;
+        self.library_jump = None;
+        self.library_selection.select(Some(0));
+        self.refresh(commands);
+    }
     fn refresh(&mut self, commands: &mpsc::Sender<Command>) {
         self.send(
             commands,
@@ -1032,20 +1109,13 @@ impl App {
             let text = match input {
                 Input::Search(text) | Input::Folder(text) => text,
             };
+            if edit_line(text, key) {
+                return Ok(false);
+            }
             match key.code {
                 KeyCode::Esc => self.input = None,
-                KeyCode::Backspace => {
-                    text.pop();
-                }
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
                 KeyCode::Enter => match self.input.take().unwrap() {
-                    Input::Search(query) => {
-                        self.query = query;
-                        self.offset = 0;
-                        self.library_jump = None;
-                        self.library_selection.select(Some(0));
-                        self.refresh(commands);
-                    }
+                    Input::Search(query) => self.apply_search(query, commands),
                     Input::Folder(path) if !path.trim().is_empty() => {
                         if self.import_ui.enabled
                             && (path.trim().starts_with("https://")
@@ -1126,6 +1196,12 @@ impl App {
             }
             KeyCode::Char('G') if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.jump_selection(ListEdge::Last, commands);
+            }
+            // Esc clears an applied search before it detaches.
+            KeyCode::Esc if !self.query.is_empty() => {
+                self.import_ui.reveal = None;
+                self.apply_search(String::new(), commands);
+                self.notice("Search cleared. Esc again or q detaches.");
             }
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('?') => {
@@ -1381,6 +1457,13 @@ impl App {
         (self.state.position_ms + elapsed).min(duration)
     }
     fn draw(&mut self, frame: &mut Frame) {
+        self.caret = None;
+        self.draw_screen(frame);
+        if let Some(caret) = self.caret {
+            frame.set_cursor_position(caret);
+        }
+    }
+    fn draw_screen(&mut self, frame: &mut Frame) {
         let p = self.theme.palette();
         let area = frame.area();
         self.viewport = area;
@@ -1539,19 +1622,27 @@ impl App {
                 area.width.saturating_sub(4),
                 3,
             );
+            let field = block(p, label, true);
+            let inner = field.inner(popup);
+            let (visible, caret) = caret_tail(text, inner.width);
             frame.render_widget(Clear, popup);
             frame.render_widget(
-                Paragraph::new(format!("{text}█"))
-                    .block(block(p, label, true))
+                Paragraph::new(visible)
+                    .block(field)
                     .style(Style::default().fg(p.text).bg(p.panel)),
                 popup,
             );
+            if !inner.is_empty() {
+                self.caret = Some(Position::new(inner.x + caret, inner.y));
+            }
         }
         self.draw_imports(frame, area);
         if self.help {
+            self.caret = None;
             self.draw_help(frame, area);
         }
         if self.theme_picker.is_some() {
+            self.caret = None;
             self.draw_theme_picker(frame, content);
         }
     }
@@ -1737,7 +1828,7 @@ impl App {
         );
         let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change or clear the search." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with a folder of music.\n\n  Press a to add ~/Music\n  Or: vtamp library add ~/Music\n\n  Already added a folder? Press r to rescan." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
@@ -2474,6 +2565,147 @@ mod tests {
     }
 
     #[test]
+    fn escape_clears_an_applied_search_before_detaching() {
+        let mut app = app();
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.query = "사랑".into();
+        app.offset = PAGE_SIZE;
+        app.library_selection.select(Some(3));
+        app.focus = Focus::Queue;
+        assert!(!app.key(key(KeyCode::Esc), &commands).unwrap());
+        assert!(app.query.is_empty());
+        assert_eq!(app.offset, 0);
+        assert_eq!(app.library_selection.selected(), Some(0));
+        assert_eq!(app.focus, Focus::Queue, "Clearing does not move focus");
+        assert!(app.notice.contains("Search cleared"));
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::LibraryList { query, offset: 0, .. } if query.is_empty())
+        );
+        assert!(app.key(key(KeyCode::Esc), &commands).unwrap());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn line_editing_clears_with_ctrl_u_and_deletes_whole_characters() {
+        let edit =
+            |text: &mut String, code, modifiers| edit_line(text, KeyEvent::new(code, modifiers));
+        let (none, control) = (KeyModifiers::NONE, KeyModifiers::CONTROL);
+        // Decomposed Hangul, as in macOS file names, is one visible character.
+        let mut text = String::from("사랑\u{1100}\u{1161}");
+        assert!(edit(&mut text, KeyCode::Backspace, none));
+        assert_eq!(text, "사랑");
+        assert!(edit(&mut text, KeyCode::Backspace, none));
+        assert_eq!(text, "사");
+        assert!(edit(&mut text, KeyCode::Char('u'), control));
+        assert!(text.is_empty());
+        assert!(edit(&mut text, KeyCode::Backspace, none));
+        assert!(!edit(&mut text, KeyCode::Char('w'), control));
+        assert!(!edit(&mut text, KeyCode::Enter, none));
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn caret_layout_counts_wide_characters() {
+        assert_eq!(caret_tail("love", 10), ("love", 4));
+        // Five cells leave four for text before the caret.
+        assert_eq!(caret_tail("가나다", 5), ("나다", 4));
+        assert_eq!(caret_tail("a가", 3), ("가", 2));
+        assert_eq!(caret_tail("가", 0), ("", 0));
+        assert_eq!(caret_rows("", 4), [""]);
+        assert_eq!(caret_rows("가나다", 4), ["가나", "다"]);
+        assert_eq!(caret_rows("가나", 4), ["가나", ""]);
+        assert_eq!(caret_rows("a가", 2), ["a", "가", ""]);
+    }
+
+    #[test]
+    fn prompts_show_the_terminal_cursor_after_korean_text() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        let (commands, _requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!terminal.backend().cursor_visible());
+        for input in ['/', 'a'] {
+            app.key(key(KeyCode::Char(input)), &commands).unwrap();
+            for c in "사랑".chars() {
+                app.key(key(KeyCode::Char(c)), &commands).unwrap();
+            }
+            // The prompt's inner row starts at (3, 19); each syllable is two cells.
+            terminal.draw(|f| app.draw(f)).unwrap();
+            assert!(terminal.backend().cursor_visible());
+            terminal.backend_mut().assert_cursor_position((7, 19));
+            assert_eq!(terminal.backend().buffer()[(3, 19)].symbol(), "사");
+            assert_eq!(terminal.backend().buffer()[(7, 19)].symbol(), " ");
+            app.key(
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                &commands,
+            )
+            .unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            terminal.backend_mut().assert_cursor_position((3, 19));
+            // Long input scrolls so the caret stays on the prompt's last cell.
+            for _ in 0..50 {
+                app.key(key(KeyCode::Char('가')), &commands).unwrap();
+            }
+            terminal.draw(|f| app.draw(f)).unwrap();
+            terminal.backend_mut().assert_cursor_position((75, 19));
+            assert_eq!(terminal.backend().buffer()[(73, 19)].symbol(), "가");
+            app.key(key(KeyCode::Esc), &commands).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            assert!(!terminal.backend().cursor_visible());
+        }
+    }
+
+    #[test]
+    fn track_editor_cursor_follows_the_focused_wrapped_field() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        app.import_ui.enabled = true;
+        let (commands, _requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // A 50×20 pane gives a 44-cell-wide modal body starting at (3, 2).
+        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
+        app.import_ui.modal = Some(imports::Modal::Edit {
+            id: "1".into(),
+            title: "가".repeat(30),
+            artist: String::new(),
+            album: String::new(),
+            field: 0,
+        });
+        let mut caret = |app: &mut App| {
+            terminal.draw(|f| app.draw(f)).unwrap();
+            assert!(terminal.backend().cursor_visible());
+            let position = terminal.backend().cursor_position();
+            (position.x, position.y)
+        };
+        // Sixty cells wrap to 22 syllables, then 8 syllables on the next row.
+        assert_eq!(caret(&mut app), (19, 4));
+        app.key(key(KeyCode::Tab), &commands).unwrap();
+        assert_eq!(caret(&mut app), (3, 6));
+        app.key(key(KeyCode::Char('아')), &commands).unwrap();
+        assert_eq!(caret(&mut app), (5, 6));
+        app.key(key(KeyCode::Tab), &commands).unwrap();
+        assert_eq!(caret(&mut app), (3, 8), "The caret sits on the placeholder");
+        app.key(key(KeyCode::Tab), &commands).unwrap();
+        app.key(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &commands,
+        )
+        .unwrap();
+        for _ in 0..22 {
+            app.key(key(KeyCode::Char('나')), &commands).unwrap();
+        }
+        // A full row moves the caret to the start of the next row.
+        assert_eq!(caret(&mut app), (3, 4));
+        assert_eq!(terminal.backend().buffer()[(45, 3)].symbol(), "나");
+        app.key(key(KeyCode::Esc), &commands).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!terminal.backend().cursor_visible());
+    }
+
+    #[test]
     fn short_panes_keep_pixel_art_beside_the_active_browser_through_resizes() {
         use ratatui_image::{FontSize, picker::ProtocolType};
         let mut app = app();
@@ -2925,6 +3157,7 @@ mod tests {
             cover: Cover::new(tx, None),
             cover_key: None,
             show_art: false,
+            caret: None,
         }
     }
 
@@ -3937,14 +4170,20 @@ mod tests {
             )
             .unwrap();
             let mut presentation = Presentation::default();
-            let draw = |f: &mut Frame| f.render_widget("same screen", f.area());
+            let draw = |f: &mut Frame| {
+                f.render_widget("same screen", f.area());
+                None
+            };
             assert!(presentation.draw(&mut terminal, draw).unwrap());
             for _ in 0..20 {
                 assert!(!presentation.draw(&mut terminal, draw).unwrap());
             }
             assert!(
                 presentation
-                    .draw(&mut terminal, |f| f.render_widget("changed", f.area()))
+                    .draw(&mut terminal, |f| {
+                        f.render_widget("changed", f.area());
+                        None
+                    })
                     .unwrap()
             );
         }
@@ -3952,11 +4191,36 @@ mod tests {
     }
 
     #[test]
+    fn presentation_moves_the_cursor_even_when_cells_are_unchanged() {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let mut presentation = Presentation::default();
+        let draw = |caret: Option<Position>| {
+            move |f: &mut Frame| {
+                f.render_widget("same screen", f.area());
+                caret
+            }
+        };
+        assert!(presentation.draw(&mut terminal, draw(None)).unwrap());
+        assert!(!terminal.backend().cursor_visible());
+        let caret = Some(Position::new(2, 1));
+        assert!(presentation.draw(&mut terminal, draw(caret)).unwrap());
+        assert!(terminal.backend().cursor_visible());
+        terminal.backend_mut().assert_cursor_position((2, 1));
+        assert!(!presentation.draw(&mut terminal, draw(caret)).unwrap());
+        assert!(presentation.draw(&mut terminal, draw(None)).unwrap());
+        assert!(!terminal.backend().cursor_visible());
+    }
+
+    #[test]
     fn clearing_and_resizing_force_presentation_of_identical_content() {
         use ratatui::backend::TestBackend;
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
         let mut presentation = Presentation::default();
-        let draw = |f: &mut Frame| f.render_widget("same screen", f.area());
+        let draw = |f: &mut Frame| {
+            f.render_widget("same screen", f.area());
+            None
+        };
         assert!(presentation.draw(&mut terminal, draw).unwrap());
         assert!(!presentation.draw(&mut terminal, draw).unwrap());
         terminal.clear().unwrap();

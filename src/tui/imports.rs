@@ -294,18 +294,12 @@ impl App {
                     1 => &mut *artist,
                     _ => &mut *album,
                 };
+                if super::edit_line(value, key) {
+                    return true;
+                }
                 match key.code {
                     KeyCode::Tab => *field = (*field + 1) % 3,
                     KeyCode::BackTab => *field = (*field + 2) % 3,
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        value.push(c);
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        value.clear();
-                    }
-                    KeyCode::Backspace => {
-                        value.pop();
-                    }
                     KeyCode::Enter => {
                         let command = Command::LibraryEdit {
                             id: id.clone(),
@@ -731,6 +725,8 @@ impl App {
             width,
             height,
         );
+        // A modal covers any prompt below it, including that prompt's caret.
+        self.caret = None;
         frame.render_widget(Clear, rect);
         let border = block(
             p,
@@ -750,6 +746,7 @@ impl App {
         }
         let mut lines = Vec::new();
         let mut focused_rows = None;
+        let mut caret_column = 0;
         let hint = match modal {
             Modal::Preview { result, .. } => {
                 if let Some(v) = result {
@@ -796,16 +793,23 @@ impl App {
                         Line::from(format!("{} {label}", if *field == i { "›" } else { " " }))
                             .style(Style::default().fg(p.accent)),
                     );
-                    lines.push(if i == 2 && value.is_empty() {
-                        Line::styled("Leave blank to hide", Style::default().fg(p.muted))
+                    // Rows are wrapped by cell, not word, so the caret can
+                    // follow the last character of the field exactly.
+                    let rows = super::caret_rows(value, inner.width);
+                    if i == 2 && value.is_empty() {
+                        lines.push(Line::styled(
+                            "Leave blank to hide",
+                            Style::default().fg(p.muted),
+                        ));
                     } else {
-                        Line::from(value.clone())
-                    });
+                        lines.extend(rows.iter().cloned().map(Line::from));
+                    }
                     if *field == i {
                         let end = Paragraph::new(lines.clone())
                             .wrap(Wrap { trim: false })
                             .line_count(inner.width);
                         focused_rows = Some((start, end));
+                        caret_column = rows.last().map_or(0, |row| row.width()) as u16;
                     }
                 }
                 "Tab field · Ctrl-U clear\nEnter save · Esc cancel"
@@ -841,6 +845,14 @@ impl App {
         self.import_ui.page_height = body.height.max(1);
         self.import_ui.max_scroll = max_scroll;
         self.import_ui.scroll = scroll;
+        if let Some((_, end)) = focused_rows
+            && let Some(row) = end
+                .checked_sub(1)
+                .and_then(|row| row.checked_sub(scroll.into()))
+            && row < usize::from(body.height)
+        {
+            self.caret = Some(Position::new(body.x + caret_column, body.y + row as u16));
+        }
         frame.render_widget(content.scroll((scroll, 0)), body);
         frame.render_widget(hint, footer);
     }

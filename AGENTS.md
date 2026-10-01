@@ -196,8 +196,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
 
 ## Behavior to preserve
 
-- `q`, Escape, and Ctrl+C detach the TUI. `vtamp stop` stops playback and resets
-  position; **`vtamp server stop` stops the daemon**. Restart restores paused.
+- `q`, Escape, and Ctrl+C detach the TUI; Escape first clears an applied search.
+  `vtamp stop` stops playback and resets position; **`vtamp server stop` stops
+  the daemon**. Restart restores paused.
 - TUI-only changes need a new attachment, not a daemon restart. Engine/audio/server
   changes need the running daemon restarted to take effect. Explain this clearly
   when delivering a rebuilt binary; rebuilding does not replace a running process.
@@ -263,7 +264,12 @@ missing-art cases, but their presence is not a portable test prerequisite.
   later state updates/reconnections preserve navigation. Ctrl-W w and Ctrl-W
   Ctrl-W share Tab's list-switch behavior outside prompts and overlays.
   `/` opens a blank search draft; Esc preserves the applied filter, while Enter
-  applies the draft (an empty draft clears the filter).
+  applies the draft (an empty draft clears the filter). Outside prompts, Esc
+  clears an applied filter before it detaches.
+- Text fields (search/folder prompts, track editor) share one line editor:
+  Ctrl-U clears, Backspace removes a grapheme. Show the real terminal cursor at
+  the caret, never a drawn block; otherwise IME composition (Korean) renders at
+  whichever cell changed last. Long prompt input scrolls to keep the caret visible.
 - Keep terminal input and incoming server/artwork messages immediately actionable
   through the event loop. Do not reintroduce a 100 ms polling gate for keys or
   image completion; redraw deadlines are for time-based updates. Suppress empty

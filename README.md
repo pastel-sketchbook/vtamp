@@ -89,7 +89,7 @@ The first-run volume is 70% of system output. `vtamp volume 35` sets the player 
 
 `vtamp` and `vtamp attach` start a per-user background server if none is running. It is a detached process using the same binary, with no controlling terminal. Exiting the interface, closing its pane, or detaching tmux leaves playback running.
 
-`q`, `Esc`, and `Ctrl+C` close the TUI. `Esc` first closes an open search or folder prompt. **Stopping playback and stopping the server are separate actions:**
+`q`, `Esc`, and `Ctrl+C` close the TUI. `Esc` first closes an open search or folder prompt, then clears an applied search; once no search is applied, it closes the TUI. **Stopping playback and stopping the server are separate actions:**
 
 ```sh
 vtamp stop          # Keep the server and queue; reset playback position.
@@ -154,7 +154,7 @@ the desktop integration cannot initialize.
 
 | Key | Action |
 | --- | --- |
-| `q`, `Esc`, `Ctrl+C` | Detach the interface |
+| `q`, `Esc`, `Ctrl+C` | Detach the interface (`Esc` clears an applied search first) |
 | `Space` | Play / pause |
 | `n` / `b` | Next / previous track |
 | `←` / `→` | Seek backward / forward 10 seconds |
@@ -165,7 +165,8 @@ the desktop integration cannot initialize.
 | `j` / `k`, `↓` / `↑` | Move selection |
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
-| `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter |
+| `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears the filter |
+| `Ctrl-U` | Clear the text in a search, folder, or track-editor field |
 | `a` | Add a music folder |
 | `r` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |
