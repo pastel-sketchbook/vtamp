@@ -58,6 +58,7 @@ client preference (default off). Bars run from low to high frequencies, using
 fixed height zones: green below 55%, yellow up to 80%, and red above. Each theme
 provides three spectrum roles; Latte uses darker inks. Unicode eighth blocks and
 briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R meters.
+Adjacent bars touch and fill the full plot width; narrow views merge frequency bands.
 
 At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
 with a cover and compact metadata/controls on the left. Keep the lists below.
