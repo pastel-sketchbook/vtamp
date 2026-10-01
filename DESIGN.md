@@ -82,6 +82,11 @@ The V-meter source is `assets/icon.png`. Use derived PNGs for the website header
 
 The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. Help and theme overlays hide pixel art and restore it on close so graphics cannot cover dialog text. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft; Enter applies it (empty clears the filter), while Esc keeps the current filter. Theme selection is client-local; saved preferences apply to future attachments.
 
+Help scrolls through wrapped text at small pane sizes. Keep scroll/page controls,
+close keys, and the visible row range in a fixed two-line footer. Arrow keys and
+j/k scroll; PageUp/PageDown or Ctrl-B/F page; Home/End jump. Esc/q/? close help,
+other playback/list keys stay inside the modal, and reopening starts at the top.
+
 Keyboard focus is explicit; reduced motion removes web transitions. The public screenshots use the maintainer’s selected real library and original album colors. Refresh them with `scripts/capture-site.py`, using isolated playback and terminal sessions.
 
 ## Do's and Don'ts

@@ -238,6 +238,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
   Layout resizing may need to hide an image that no longer fits. Hide pixel art
   under help/theme overlays and restore it when they close. Bottom search/folder
   prompts do not overlap the cover; keep it visible without clearing the terminal.
+- Help scrolls by wrapped rows with a fixed footer. Keep scrolling keys local to
+  the modal, clamp its offset on resize, and reset to the top when reopening.
+  Esc/q/? close help; Ctrl+C still detaches the TUI.
 
 ## Terminal and UI verification
 

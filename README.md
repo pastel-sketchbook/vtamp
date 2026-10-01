@@ -177,6 +177,10 @@ the desktop integration cannot initialize.
 | `t` | Preview and choose a color theme |
 | `?` | Show key reference |
 
+Help scrolls with `↑`/`↓` or `j`/`k`; `PageUp`/`PageDown` and `Ctrl-B`/`Ctrl-F`
+move by a page, and `Home`/`End` jump to the top/bottom. Press `Esc`, `q`, or `?`
+to close help. The scroll position and key hints stay visible in short panes.
+
 When playing a library track, vtamp reuses the current queue entry if it matches, otherwise the first matching entry from the top. It appends only when the track is absent. Existing duplicates stay in place; use `e` to add another copy intentionally.
 
 Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.

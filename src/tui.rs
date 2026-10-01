@@ -37,6 +37,15 @@ use tokio::sync::{mpsc, watch};
 
 const PAGE_SIZE: usize = 200;
 
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nv       Toggle spectrum\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop";
+
+#[derive(Default)]
+struct HelpScroll {
+    offset: u16,
+    max: u16,
+    page_height: u16,
+}
+
 // Even an empty Ratatui diff writes cursor/style escapes through Crossterm.
 // Present only changed cells so an idle client doesn't keep waking the terminal.
 #[derive(Default)]
@@ -131,6 +140,7 @@ struct App {
     library_jump: Option<ListEdge>,
     input: Option<Input>,
     help: bool,
+    help_scroll: HelpScroll,
     connected: bool,
     notice: String,
     notice_at: Instant,
@@ -210,6 +220,7 @@ pub async fn run(
         library_jump: None,
         input: None,
         help: false,
+        help_scroll: HelpScroll::default(),
         connected: false,
         notice: "Connecting…".into(),
         notice_at: Instant::now(),
@@ -421,6 +432,63 @@ async fn spectrum_stream(
 }
 
 impl App {
+    fn help_key(&mut self, key: KeyEvent) {
+        let page = self.help_scroll.page_height.saturating_sub(1).max(1);
+        let offset = self.help_scroll.offset;
+        self.help_scroll.offset = match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | '?') => {
+                self.help = false;
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => offset.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => offset.saturating_sub(1),
+            KeyCode::PageDown => offset.saturating_add(page),
+            KeyCode::PageUp => offset.saturating_sub(page),
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                offset.saturating_add(page)
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                offset.saturating_sub(page)
+            }
+            KeyCode::Home => 0,
+            KeyCode::End => self.help_scroll.max,
+            _ => offset,
+        }
+        .min(self.help_scroll.max);
+    }
+
+    fn draw_help(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
+        let popup = centered(area, 78, 26);
+        frame.render_widget(Clear, popup);
+        let panel = block(p, " vtamp / key reference ", true)
+            .style(Style::default().fg(p.text).bg(p.panel));
+        let inner = panel.inner(popup);
+        frame.render_widget(panel, popup);
+        let [body, hint] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(inner);
+        let paragraph = Paragraph::new(HELP_TEXT).wrap(Wrap { trim: false });
+        // Count the actual wrapped rows so narrow panes can reach every line.
+        let rows = paragraph.line_count(body.width).min(u16::MAX as usize) as u16;
+        self.help_scroll.page_height = body.height;
+        self.help_scroll.max = rows.saturating_sub(body.height);
+        self.help_scroll.offset = self.help_scroll.offset.min(self.help_scroll.max);
+        frame.render_widget(paragraph.scroll((self.help_scroll.offset, 0)), body);
+        let start = self.help_scroll.offset.saturating_add(1).min(rows);
+        let end = self
+            .help_scroll
+            .offset
+            .saturating_add(body.height)
+            .min(rows);
+        frame.render_widget(
+            Paragraph::new(format!(
+                "↑/↓ j/k scroll · PgUp/PgDn page\nEsc/q/? close · {start}–{end}/{rows}"
+            ))
+            .style(Style::default().fg(p.muted).bg(p.panel)),
+            hint,
+        );
+    }
+
     fn spectrum_visible(&self) -> bool {
         self.spectrum.enabled
             && !self.cover_hidden()
@@ -721,7 +789,7 @@ impl App {
             return Ok(false);
         }
         if self.help {
-            self.help = false;
+            self.help_key(key);
             return Ok(false);
         }
         if let Some(input) = &mut self.input {
@@ -790,7 +858,10 @@ impl App {
                 self.jump_selection(ListEdge::Last, commands);
             }
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.help_scroll = HelpScroll::default();
+            }
             KeyCode::Char('t') => self.open_theme_picker(),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = if self.focus == Focus::Library {
@@ -1165,16 +1236,7 @@ impl App {
             );
         }
         if self.help {
-            let popup = centered(area, 78, 24);
-            frame.render_widget(Clear, popup);
-            let text = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           R       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add music folder\nr       Rescan folders    [ / ]   Library pages\nEnter   Play selection    e       Enqueue library selection\nx / d   Remove queue item J / K   Move queue item down / up\n\nv       Toggle spectrum\nt       Choose theme (preview, then Enter to save)\n\nStop the server explicitly with: vtamp server stop\nAny key closes help.";
-            frame.render_widget(
-                Paragraph::new(text)
-                    .block(block(p, " vtamp / key reference ", true))
-                    .style(Style::default().fg(p.text).bg(p.panel))
-                    .wrap(Wrap { trim: false }),
-                popup,
-            );
+            self.draw_help(frame, area);
         }
         if self.theme_picker.is_some() {
             self.draw_theme_picker(frame, area);
@@ -1647,7 +1709,10 @@ mod tests {
         app.key(key('g'), &commands).unwrap();
         assert_eq!(app.queue_selection.selected(), Some(12));
         app.key(key('?'), &commands).unwrap();
-        app.key(key('g'), &commands).unwrap(); // Close help, without starting gg.
+        app.key(key('g'), &commands).unwrap(); // Ignore list keys inside help.
+        assert!(app.help);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+            .unwrap();
         app.key(key('g'), &commands).unwrap();
         assert_eq!(app.queue_selection.selected(), Some(12));
 
@@ -2259,6 +2324,7 @@ mod tests {
             library_jump: None,
             input: None,
             help: false,
+            help_scroll: HelpScroll::default(),
             connected: true,
             notice: String::new(),
             notice_at: Instant::now(),
@@ -2268,6 +2334,92 @@ mod tests {
             cover_key: None,
             show_art: false,
         }
+    }
+
+    #[test]
+    fn help_scrolls_to_the_last_wrapped_line_without_playback_actions() {
+        use ratatui::backend::TestBackend;
+        let (commands, mut requests) = mpsc::channel(16);
+        let draw = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        for (width, height) in [(40, 12), (72, 12), (100, 20), (100, 24), (120, 28)] {
+            let mut app = app();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let press = |app: &mut App, key| app.key(key, &commands).unwrap();
+            let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+            press(&mut app, key(KeyCode::Char('?')));
+            let top = draw(&mut app, &mut terminal);
+            assert!(top.contains("ATTACH / DETACH"));
+            assert!(top.contains("↑/↓ j/k scroll"));
+            assert!(top.contains("Esc/q/? close"));
+            for code in [KeyCode::Down, KeyCode::Char('j'), KeyCode::PageDown] {
+                press(&mut app, key(code));
+                draw(&mut app, &mut terminal);
+                assert!(app.help);
+            }
+            press(&mut app, key(KeyCode::End));
+            let bottom = draw(&mut app, &mut terminal);
+            assert!(bottom.contains("vtamp server stop"), "{width}x{height}");
+            for code in [KeyCode::Down, KeyCode::PageDown, KeyCode::Char('j')] {
+                press(&mut app, key(code));
+                assert_eq!(draw(&mut app, &mut terminal), bottom);
+            }
+            // Commands behind the modal must neither run nor dismiss it.
+            for code in [' ', 'v', 'e', 'r', 'b'] {
+                press(&mut app, key(KeyCode::Char(code)));
+                assert!(app.help);
+            }
+            press(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            );
+            if app.help_scroll.max > 0 {
+                assert!(app.help_scroll.offset < app.help_scroll.max);
+            }
+            press(&mut app, key(KeyCode::Home));
+            assert_eq!(draw(&mut app, &mut terminal), top);
+            press(&mut app, key(KeyCode::End));
+            draw(&mut app, &mut terminal);
+            press(&mut app, key(KeyCode::Esc));
+            assert!(!app.help);
+            press(&mut app, key(KeyCode::Char('?')));
+            assert_eq!(draw(&mut app, &mut terminal), top);
+            press(&mut app, key(KeyCode::Char('q')));
+            assert!(!app.help);
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn help_scroll_clamps_after_resize_and_keeps_close_controls_visible() {
+        use ratatui::backend::TestBackend;
+        let mut app = app();
+        app.help = true;
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        app.help_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(app.help_scroll.offset > 0);
+        terminal.backend_mut().resize(120, 28);
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.help_scroll.offset, 0);
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("ATTACH / DETACH"));
+        assert!(text.contains("vtamp server stop"));
+        assert!(text.contains("Esc/q/? close"));
     }
 
     #[test]

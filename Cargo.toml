@@ -24,7 +24,8 @@ lofty = "0.25"
 # Handles extended-size mdat atoms found in real-world m4a files.
 mp4ameta = "0.13"
 rand = "0.9"
-ratatui = "0.30"
+# Count wrapped help rows to bound scrolling at every pane width.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-isomp4", "symphonia-alac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
