@@ -97,7 +97,7 @@ vtamp server stop   # Save the session and stop the server.
 vtamp server start  # Restore the session, paused.
 ```
 
-The server saves queue/configuration changes immediately and checkpoints position every five seconds. A normal server stop saves the latest position. After an unexpected crash, up to five seconds of position may be lost. A server restart always restores the current track **paused**, so merely inspecting or attaching does not unexpectedly start sound. The server is not a login service and does not restart itself after logout or a crash.
+The server saves queue/configuration changes immediately and checkpoints a changing position every five seconds. Unchanged paused/stopped sessions do not keep writing checkpoints. A normal server stop saves the latest position. After an unexpected crash, up to five seconds of position may be lost. A server restart always restores the current track **paused**, so merely inspecting or attaching does not unexpectedly start sound. The server is not a login service and does not restart itself after logout or a crash.
 
 Read-only commands (`status`, `watch`, volume without a value, queue listing, library queries, and server status/stop) do not start a server. Playback and library mutation commands do. A disconnected TUI waits for the server to return; it does not replay commands whose outcome might be unknown.
 
@@ -591,6 +591,8 @@ This places data, covers, and the runtime socket under that directory. Keep the 
 
 - **No sound:** inspect `vtamp doctor`, system output selection, player volume, and `last_error`. Sandboxed development shells may not see CoreAudio devices even when decoding succeeds. Run the built binary in a normal terminal for output-device access.
 - **A changed output device:** vtamp follows the system default output, including AirPods-to-speaker changes. It checks the device every 500 ms and reopens playback at the saved position, preserving volume, queue, and pause state. Stream errors or three seconds without playback progress also trigger recovery. If an output is temporarily unavailable, it retries once a second; `last_error` explains the wait. Pause and stop remain available during recovery.
+- **Brief playback interruptions:** decoding runs ahead on a separate worker, with about half a second of PCM buffered for ordinary outputs and a fixed memory limit. The output callback consumes prepared samples; it does not read or decode files. If decoding falls behind, it emits silence without advancing the song position. `Audio decode buffer underrun` in `server.log` records the number of starvation episodes and silence duration, aggregated at most once every five seconds and on track cleanup. This diagnoses vtamp's PCM supply, not every CoreAudio or Bluetooth interruption. Output-open logs include the stream configuration.
+- **Idle audio and power:** pause and stop release the audio output and decoder worker. Resume reopens the current default output at the saved position; paused seeking does not open a device. The OS chooses its output buffer size. Spectrum analysis sleeps without viewers or while paused, and unchanged inactive frames are not repeatedly transmitted. These reduce unnecessary work; battery-life improvements depend on the device and workload.
 - **Missing songs:** rescan with `vtamp library scan`, wait for `scanning` to become false, and inspect `last_error` or the server log. Only supported local formats are scanned.
 - **Client/server version mismatch after rebuilding:** stop the old server with its matching binary before replacing it. `doctor` reports paths; `server run` is also available as a foreground diagnostic command.
 - **Terminal looks wrong:** try `--art halfblocks` or `--art none`. Normal errors and panics restore terminal modes; after an uncatchable kill, your shell's `reset` command can restore the terminal.
@@ -617,7 +619,7 @@ Optional local-media verification, without redistributing your music:
 VTAMP_TEST_MUSIC_DIR=/path/to/m4a/files cargo test --test media -- --ignored
 ```
 
-An optional muted output test checks stream reopening and seeking on a real audio device. Supply a track at least 15 seconds long and run outside an audio-restricted sandbox. Device changes and stream errors are injected; the test does not change your system output or physically disconnect headphones.
+An optional muted output test checks stream reopening, pause/stop resource release, resume, and seeking on a real audio device. Supply a track at least 15 seconds long and run outside an audio-restricted sandbox. Device changes and stream errors are injected; the test does not change your system output or physically disconnect headphones.
 
 ```sh
 VTAMP_TEST_AUDIO_FILE=/path/to/track.m4a cargo test --lib audio::tests::real_output -- --ignored
@@ -630,6 +632,11 @@ reduce the patent-licensing concerns associated with distributing an AAC codec
 implementation. No AAC software decoder is bundled in the macOS build. ALAC, MP3,
 FLAC, WAV, and Vorbis continue to use Symphonia; rodio handles playback, volume,
 and output recovery.
+
+The decoder worker also converts samples to the output format, then supplies a
+bounded PCM queue. Buffering tests deliberately block the producer to check
+continued consumption, underrun recovery, exact sample ordering, and position
+accounting. Native decoder disposal never runs in the output callback.
 
 The synthesized AAC, ALAC, and WAV fixtures cover decoder selection, stereo
 samples, EOF, and AAC seeking without opening an output device. Native AAC tests

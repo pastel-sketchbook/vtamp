@@ -7,6 +7,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -20,7 +21,7 @@ const FLOOR_DB: f32 = -70.0;
 const CEILING_DB: f32 = -10.0;
 const INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpectrumFrame {
     pub generation: u64,
     pub current_id: Option<String>,
@@ -39,6 +40,7 @@ struct Samples {
 }
 
 pub struct Spectrum {
+    wake: Option<mpsc::SyncSender<()>>,
     samples: ArrayQueue<Samples>,
     generation: AtomicU64,
     epoch: AtomicU64,
@@ -50,44 +52,74 @@ pub struct Spectrum {
 
 impl Spectrum {
     pub fn start() -> std::io::Result<Arc<Self>> {
-        let spectrum = Arc::new(Self::default());
+        let (wake, notifications) = mpsc::sync_channel(1);
+        let spectrum = Arc::new(Self {
+            wake: Some(wake),
+            ..Self::default()
+        });
         let weak = Arc::downgrade(&spectrum);
         std::thread::Builder::new()
             .name("vtamp-spectrum".into())
             .spawn(move || {
                 let mut analyzer = Analyzer::new();
                 loop {
-                    {
+                    let active = {
                         let Some(spectrum) = weak.upgrade() else {
                             break;
                         };
                         analyzer.update(&spectrum);
+                        spectrum.enabled()
+                    };
+                    // Keep no strong reference while asleep. Dropping the last
+                    // owner disconnects the channel and terminates this worker.
+                    if active {
+                        if matches!(
+                            notifications.recv_timeout(INTERVAL),
+                            Err(mpsc::RecvTimeoutError::Disconnected)
+                        ) {
+                            break;
+                        }
+                    } else if notifications.recv().is_err() {
+                        break;
                     }
-                    std::thread::sleep(INTERVAL);
                 }
             })?;
         Ok(spectrum)
     }
 
-    pub fn context(&self, id: Option<String>) {
-        *self.current_id.lock().unwrap() = id;
+    fn wake(&self) {
+        if let Some(wake) = &self.wake {
+            let _ = wake.try_send(());
+        }
+    }
+
+    pub fn context(&self, id: Option<&str>) {
+        let mut current = self.current_id.lock().unwrap();
+        if current.as_deref() != id {
+            *current = id.map(str::to_owned);
+            drop(current);
+            self.wake();
+        }
     }
 
     pub(crate) fn playing(&self, playing: bool) {
         if self.playing.swap(playing, Ordering::AcqRel) != playing {
             self.epoch.fetch_add(1, Ordering::AcqRel);
+            self.wake();
         }
     }
 
     pub(crate) fn reset(&self) {
         self.playing(false);
         self.generation.fetch_add(1, Ordering::AcqRel);
+        self.wake();
     }
 
     pub fn subscribe(self: &Arc<Self>) -> Subscription {
         if self.subscribers.fetch_add(1, Ordering::AcqRel) == 0 {
             self.epoch.fetch_add(1, Ordering::AcqRel);
             self.frames.send_replace(SpectrumFrame::default());
+            self.wake();
         }
         Subscription {
             spectrum: self.clone(),
@@ -116,6 +148,7 @@ impl Spectrum {
 impl Default for Spectrum {
     fn default() -> Self {
         Self {
+            wake: None,
             samples: ArrayQueue::new(32),
             generation: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
@@ -133,7 +166,9 @@ pub struct Subscription {
 }
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.spectrum.subscribers.fetch_sub(1, Ordering::AcqRel);
+        if self.spectrum.subscribers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.spectrum.wake();
+        }
     }
 }
 
@@ -329,13 +364,23 @@ impl Analyzer {
         {
             return;
         }
-        spectrum.frames.send_replace(SpectrumFrame {
+        let next = SpectrumFrame {
             generation,
             current_id: spectrum.current_id.lock().unwrap().clone(),
             active,
             low_hz: 40.0,
             high_hz: (self.key.2 as f32 / 2.0).min(16_000.0),
             levels,
+        };
+        spectrum.frames.send_if_modified(|frame| {
+            // Active frames are also liveness heartbeats: clients decay stale
+            // data even when a steady tone produces exactly identical bands.
+            if !next.active && *frame == next {
+                false
+            } else {
+                *frame = next;
+                true
+            }
         });
     }
 }
@@ -343,6 +388,74 @@ impl Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn idle_worker_wakes_for_playback_and_sends_no_repeated_paused_frames() {
+        let spectrum = Spectrum::start().unwrap();
+        let mut subscription = spectrum.subscribe();
+        spectrum.context(Some("test-track"));
+        loop {
+            if subscription
+                .frames
+                .borrow_and_update()
+                .current_id
+                .as_deref()
+                == Some("test-track")
+            {
+                break;
+            }
+            tokio::time::timeout(Duration::from_secs(2), subscription.frames.changed())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert!(
+            tokio::time::timeout(INTERVAL * 3, subscription.frames.changed())
+                .await
+                .is_err()
+        );
+        spectrum.playing(true);
+        let source = rodio::buffer::SamplesBuffer::new(
+            2.try_into().unwrap(),
+            48_000.try_into().unwrap(),
+            tone(48_000, 1000.0, 0.5, 1.0),
+        );
+        spectrum.tap(Box::new(source)).for_each(drop);
+        loop {
+            if subscription.frames.borrow_and_update().active {
+                break;
+            }
+            tokio::time::timeout(Duration::from_secs(2), subscription.frames.changed())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        spectrum.playing(false);
+        loop {
+            if !subscription.frames.borrow_and_update().active {
+                break;
+            }
+            tokio::time::timeout(Duration::from_secs(2), subscription.frames.changed())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert!(
+            tokio::time::timeout(INTERVAL * 3, subscription.frames.changed())
+                .await
+                .is_err()
+        );
+        let weak = Arc::downgrade(&spectrum);
+        drop(subscription);
+        drop(spectrum);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while weak.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     fn tone(rate: u32, frequency: f32, amplitude: f32, phase: f32) -> Vec<f32> {
         (0..FFT_SIZE)
@@ -369,6 +482,24 @@ mod tests {
         assert!(frame.active);
         frame.levels
     }
+    #[test]
+    fn identical_active_frames_still_refresh_client_liveness() {
+        let spectrum = Arc::new(Spectrum::default());
+        let mut subscription = spectrum.subscribe();
+        spectrum.playing(true);
+        let source = rodio::buffer::SamplesBuffer::new(
+            2.try_into().unwrap(),
+            48_000.try_into().unwrap(),
+            tone(48_000, 1000.0, 0.5, 1.0),
+        );
+        spectrum.tap(Box::new(source)).for_each(drop);
+        let mut analyzer = Analyzer::new();
+        analyzer.update(&spectrum);
+        assert!(subscription.frames.borrow_and_update().active);
+        analyzer.update(&spectrum);
+        assert!(subscription.frames.has_changed().unwrap());
+    }
+
     #[test]
     fn fft_locates_tones_and_preserves_opposing_stereo_energy() {
         for rate in [44_100, 48_000, 96_000] {

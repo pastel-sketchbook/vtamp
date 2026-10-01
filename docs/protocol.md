@@ -74,14 +74,17 @@ a −70 to −10 dB display range, not calibrated loudness measurements.
 The stream publishes at up to 20 Hz. Frames are disposable: each subscriber keeps
 the latest value, socket writes have a two-second deadline, and EOF releases its
 subscription. There is no replay, persistence, or playback revision change.
-Analysis is shared across subscribers and skips FFT work without demand. Audio
-capture uses bounded preallocated storage and never waits for analysis or sockets.
+Analysis is shared across subscribers and sleeps without demand or while paused;
+unchanged inactive frames are not retransmitted. Active frames also serve as
+liveness heartbeats. Audio capture uses bounded preallocated
+storage and never waits for analysis or sockets.
 A seek, reload, or output reset changes `generation`; clients discard old results
 and clear their peaks. Pause/resume also flushes internal capture epochs.
 
-Decoded samples are observed before app volume, without changing the samples sent
-to the output. Stereo channels contribute power independently, avoiding phase
-cancellation; multichannel inputs use their front pair. Stale samples produce an
+Prepared PCM in the output format is observed before app volume, without changing
+the samples sent to the output. Stereo channels contribute power independently,
+avoiding phase cancellation; multichannel outputs use their front pair. Stale
+samples produce an
 inactive zero frame. TUI clients additionally reject a frame for a different
 current queue entry and let the display decay if frames stop arriving.
 

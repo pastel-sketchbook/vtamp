@@ -300,11 +300,13 @@ fn worker(
     } = observers;
     let events = &events;
     let mut last_save = Instant::now();
+    let mut checkpoint = (engine.state.revision, engine.state.position_ms);
     let mut last_progress = Instant::now();
     let mut imports = 0usize;
     let mut active_scan: Option<String> = None;
     let mut youtube = imports::Runtime::new(&store)?;
     loop {
+        let revision_before = engine.state.revision;
         let mut changed = false;
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(Work::Youtube(message)) => {
@@ -774,13 +776,21 @@ fn worker(
         ) {
             tracing::error!("Import scheduler: {error:#}");
         }
+        // Commands/catalog changes persist their revisions before replying.
+        // Capture that position before the next tick advances it again.
+        if engine.state.revision != revision_before {
+            checkpoint = (engine.state.revision, engine.state.position_ms);
+            last_save = Instant::now();
+        }
         changed |= engine.tick();
         if changed {
             engine.state.revision += 1;
             store.save(&engine.state)?;
+            checkpoint = (engine.state.revision, engine.state.position_ms);
+            last_save = Instant::now();
             let _ = events.send(Event::State(engine.state.clone()));
         }
-        spectrum.context(engine.state.current_id.clone());
+        spectrum.context(engine.state.current_id.as_deref());
         media.update(&engine.state, engine.output_waiting());
         if last_progress.elapsed() >= Duration::from_secs(1) {
             // Heartbeats also let abandoned watch connections be detected while paused.
@@ -791,7 +801,11 @@ fn worker(
             last_progress = Instant::now();
         }
         if last_save.elapsed() >= Duration::from_secs(5) {
-            store.save(&engine.state)?;
+            let current = (engine.state.revision, engine.state.position_ms);
+            if current != checkpoint {
+                store.save(&engine.state)?;
+                checkpoint = current;
+            }
             last_save = Instant::now();
         }
     }
@@ -898,7 +912,7 @@ mod agent_tests {
         fn pause(&mut self) {
             panic!("Queue edits must not pause output")
         }
-        fn resume(&mut self) {
+        fn resume(&mut self) -> Result<()> {
             panic!("Queue edits must not resume output")
         }
         fn stop(&mut self) {

@@ -365,7 +365,17 @@ impl<B: PlaybackBackend> Engine<B> {
             return Ok(());
         }
         if self.loaded {
-            self.backend.resume();
+            match self.backend.resume() {
+                Ok(()) => (),
+                Err(error) if error.is::<OutputUnavailable>() => {
+                    self.backend.stop();
+                    self.loaded = false;
+                    self.output_retry = Some(Instant::now());
+                    self.state.last_error =
+                        Some(format!("Waiting for audio output; retrying: {error:#}"));
+                }
+                Err(error) => return Err(error),
+            }
             self.state.status = PlaybackStatus::Playing;
         } else {
             if let Some(item) = self.state.direct.clone() {
@@ -653,7 +663,14 @@ mod tests {
             Ok(())
         }
         fn pause(&mut self) {}
-        fn resume(&mut self) {}
+        fn resume(&mut self) -> Result<()> {
+            if self.unavailable {
+                return Err(
+                    anyhow::anyhow!("No output device available").context(OutputUnavailable)
+                );
+            }
+            Ok(())
+        }
         fn stop(&mut self) {}
         fn volume(&mut self, _: u8) {}
         fn seek(&mut self, p: u64) -> Result<()> {
@@ -955,6 +972,28 @@ mod tests {
         e.backend.unavailable = false;
         assert!(e.tick_at(Instant::now() + OUTPUT_RETRY_INTERVAL));
         assert_eq!(e.backend.last_load, Some(("b".into(), 0, 70, false)));
+    }
+
+    #[test]
+    fn resuming_released_output_recovers_without_losing_queue_or_position() {
+        let mut e = engine();
+        e.play_track(track("b")).unwrap();
+        e.backend.position = 12_345;
+        e.pause();
+        let id = e.state.current_id.clone();
+        let queue_revision = e.state.queue_revision;
+        let upcoming = e.upcoming.clone();
+        e.backend.unavailable = true;
+        e.resume().unwrap();
+        assert!(e.output_waiting());
+        assert_eq!(e.state.status, PlaybackStatus::Playing);
+        assert_eq!(e.state.position_ms, 12_345);
+        e.backend.unavailable = false;
+        assert!(e.tick());
+        assert_eq!(e.backend.last_load, Some(("b".into(), 12_345, 70, false)));
+        assert_eq!(e.state.current_id, id);
+        assert_eq!(e.state.queue_revision, queue_revision);
+        assert_eq!(e.upcoming, upcoming);
     }
 
     #[test]

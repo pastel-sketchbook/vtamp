@@ -26,6 +26,7 @@ playing when a TUI exits or a tmux client detaches.
 | `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
 | `src/engine.rs`, `src/queue_edit.rs` | Playback state machine, pure batch queue validation, explicit play-next priority, shuffle/history, stop reservations, output recovery |
 | `src/audio.rs`, `src/audio/macos.rs` | Shared decoder entry point, macOS AudioToolbox AAC source, rodio adapter, default-device and stream monitoring |
+| `src/audio/buffered.rs` | Bounded PCM decode-ahead, output-format conversion, starvation counters and music-position accounting |
 | `src/media_controls.rs`, `src/media_controls/macos.rs`, `src/media_controls/app_bundle.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, private signed app bundle and embedded identity |
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
 | `src/client.rs`, `src/wire.rs` | Client connections, server startup, bounded framed JSON transport |
@@ -204,6 +205,16 @@ missing-art cases, but their presence is not a portable test prerequisite.
   endings; manual next must still advance.
 - Output-device recovery must retain track, position, volume, pause state, queue,
   and shuffle/history. An unavailable output is not an unreadable track to skip.
+- Decode and convert audio on the decoder worker, never in the output callback.
+  Keep PCM bounded (about 500 ms for common formats, at most 128 blocks); do not
+  use rodio's whole-source buffering as decode-ahead. The consumer must not wait
+  for files, decode, allocate blocks, or log. Underflow silence must not advance
+  music position or end the track; aggregate counters on the control thread.
+  Stop/pause release the output and decoder; paused seek/load must not open a
+  device. Resume failures enter ordinary output recovery. Reuse the stream for
+  playing track changes/seeks and keep the OS buffer size. Dispose/join native
+  decoders on the worker/control threads, not from a source dropped by rodio.
+  Unchanged idle sessions must not write periodic position checkpoints.
 - On macOS, only AAC uses AudioToolbox; inspect the actual codec rather than the
   extension so ALAC/m4a remains on Symphonia. Do not add an AAC software fallback.
   Keep `symphonia-codec-aac` out of the macOS target dependency graph (it may remain
@@ -211,7 +222,9 @@ missing-art cases, but their presence is not a portable test prerequisite.
   disposed on every exit; preserve bounded PCM buffering and frame-based seeking.
 - Spectrum visualization is read-only and observes decoded samples before volume.
   Keep FFT, allocation, locks, and socket I/O out of the analysis tap's sample path.
-  Use bounded lossy storage and latest-value streams; no subscribers means no FFT.
+  Use bounded lossy storage and latest-value streams; no subscribers or paused
+  playback means no analysis timer. Wake on demand/state changes, suppress equal
+  inactive frames (active frames remain liveness heartbeats), and release the worker when its last owner disappears.
   Preserve stereo energy without phase cancellation. Flush stale analysis on seek,
   pause/resume, track changes, and output recovery. SpectrumWatch is an optional
   protocol-5 stream separate from State/Event, without database or revision writes.

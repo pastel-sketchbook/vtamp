@@ -119,6 +119,39 @@ fn concurrent_start_watch_and_restore() {
 }
 
 #[test]
+fn idle_session_does_not_write_periodic_checkpoints_but_commands_still_persist() {
+    let server = Server::new();
+    server.ok(&["server", "start"]);
+    server.ok(&["volume", "42"]);
+    let db = rusqlite::Connection::open_with_flags(
+        server.home.path().join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let version = || {
+        db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version();
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(
+        version(),
+        before,
+        "unchanged idle state wrote another checkpoint"
+    );
+    server.ok(&["volume", "43"]);
+    assert_ne!(
+        version(),
+        before,
+        "command changes must persist immediately"
+    );
+    server.ok(&["server", "stop"]);
+    server.wait_stopped();
+    server.ok(&["server", "start"]);
+    assert_eq!(server.ok(&["status"])["volume"], 43);
+}
+
+#[test]
 fn bad_protocol_does_not_damage_server() {
     let server = Server::new();
     server.ok(&["server", "start"]);
