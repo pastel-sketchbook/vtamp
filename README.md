@@ -778,6 +778,12 @@ or `.github/workflows/pages.yml` reach `main`. It can also be run manually with
 `gh workflow run pages.yml`. The static files are uploaded directly, with no
 build step.
 
+Both pages carry canonical, Open Graph, and JSON-LD metadata for the
+`https://vtamp.told.me/` origin and share the preview card `site/og.png`;
+`site/sitemap.xml` and `site/robots.txt` list them for crawlers. On a release,
+update the masthead version badge and the JSON-LD `softwareVersion` in both
+pages; `scripts/test_site_meta.py` compares them with `Cargo.toml`.
+
 GitHub Pages uses the GitHub Actions source and the custom domain
 `vtamp.told.me`, with HTTPS enforced once its certificate is ready. DNS points
 the `vtamp` CNAME to `rath.github.io`. The domain is configured in the repository's
@@ -811,7 +817,7 @@ python3 scripts/capture-site.py --output /tmp/vtamp-screenshots
 
 An existing `VTAMP_HOME` selects the source instance; the script always uses a separate home for its copy. Missing tools, missing artwork, graphics-detection failures, and capture errors leave the existing image set in place. Temporary servers and windows are cleaned up on success, errors, Ctrl-C, and SIGTERM. A graphics-detection failure saves diagnostics from the isolated window under `/tmp/vtamp-capture-failed-*`; remove that directory when finished investigating. It may contain song titles and local paths.
 
-Review the resulting images before committing: screenshots show the selected library's actual song titles and album covers. Music files, source artwork, and databases are never copied into the site. The checked-in captures use the maintainer's selected library; depicted album artwork belongs to its respective owners and is not covered by vtamp's MIT license.
+Review the resulting images before committing: screenshots show the selected library's actual song titles and album covers. Music files, source artwork, and databases are never copied into the site. The checked-in captures use the maintainer's selected library; depicted album artwork belongs to its respective owners and is not covered by vtamp's MIT license. After replacing the captures, run `python3 scripts/build-og.py` to recompose the social preview card `site/og.png` from the wide capture.
 
 Capture-script checks (no GUI or personal music required):
 

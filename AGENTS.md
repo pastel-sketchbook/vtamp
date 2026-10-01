@@ -184,7 +184,8 @@ The documents above hold the full contracts; these are the most common regressio
   `python3 scripts/capture-site.py --output /tmp/vtamp-screenshots`, then publish
   without `--output`. Keep Training Montage by Vince DiCola as the selected track
   unless asked otherwise. Never substitute text captures or mockups, and inspect
-  every PNG before committing.
+  every PNG before committing. After new captures, rebuild the social preview
+  card with `python3 scripts/build-og.py`.
 
 ## Git and delivery
 
@@ -210,3 +211,7 @@ The documents above hold the full contracts; these are the most common regressio
   running daemon restarted (`vtamp server stop`, not `vtamp stop`), because
   rebuilding never replaces a running process. Do not claim live playback or
   visual verification from unit tests alone.
+- A release version lives in four places: `Cargo.toml` (`Cargo.lock` follows on
+  the next build), and the masthead `v…` badge plus the JSON-LD
+  `softwareVersion` in both `site/index.html` and `site/ko/index.html`. Bump them
+  together; `scripts/test_site_meta.py` fails when the pages and the crate disagree.
