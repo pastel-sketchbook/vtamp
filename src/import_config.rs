@@ -35,7 +35,7 @@ pub struct YoutubeConfig {
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
     #[default]
-    Code,
+    Rules,
     Api,
     Codex,
     Claude,
@@ -207,10 +207,11 @@ pub fn setup(paths: &Paths, llm: bool) -> Result<Value> {
     }
     let mut config = Config::load(paths)?;
     if llm {
-        let p = prompt("Metadata provider (code/api/codex/claude)", "code")?;
+        println!("Connect an LLM for metadata cleanup. Select rules to disable LLM cleanup.");
+        let p = prompt("LLM provider (api/codex/claude/rules)", "api")?;
         config.llm = LlmConfig {
             provider: match p.as_str() {
-                "code" => Provider::Code,
+                "rules" => Provider::Rules,
                 "api" => Provider::Api,
                 "codex" => Provider::Codex,
                 "claude" => Provider::Claude,
@@ -218,7 +219,7 @@ pub fn setup(paths: &Paths, llm: bool) -> Result<Value> {
             },
             ..Default::default()
         };
-        if config.llm.provider != Provider::Code {
+        if config.llm.provider != Provider::Rules {
             if config.llm.provider == Provider::Api {
                 config.llm.endpoint = Some(prompt(
                     "Chat Completions base URL",
@@ -237,7 +238,14 @@ pub fn setup(paths: &Paths, llm: bool) -> Result<Value> {
                 )?;
                 config.llm.executable = Some(executable(Some(Path::new(&path)), name)?);
             }
-            let model = prompt("Model ID (blank uses CLI default)", "")?;
+            let model = prompt(
+                if config.llm.provider == Provider::Api {
+                    "Model ID"
+                } else {
+                    "Model ID (blank uses CLI default)"
+                },
+                "",
+            )?;
             if !model.is_empty() {
                 config.llm.model = Some(model);
             }
@@ -297,7 +305,7 @@ pub fn setup(paths: &Paths, llm: bool) -> Result<Value> {
     }
     config.save(paths)?;
     if llm
-        && config.llm.provider != Provider::Code
+        && config.llm.provider != Provider::Rules
         && prompt("Test with the example song? (yes/no)", "yes")? == "yes"
     {
         return crate::metadata::test(&config, paths);
@@ -311,4 +319,48 @@ pub fn youtube_available(paths: &Paths) -> bool {
     Config::load(paths)
         .ok()
         .is_some_and(|c| executable(c.youtube.yt_dlp.as_deref(), "yt-dlp").is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unconfigured_and_rules_settings_never_enable_an_llm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            data: directory.path().into(),
+            runtime: directory.path().join("run"),
+            cache: directory.path().join("covers"),
+        };
+        let config = Config::load(&paths).unwrap();
+        assert_eq!(config.llm.provider, Provider::Rules);
+        assert_eq!(
+            crate::metadata::test(&config, &paths).unwrap()["provider"],
+            "rules"
+        );
+        assert!(!paths.data.join("imports.json").exists());
+
+        // Rules must not use API settings or credentials, even when present.
+        let settings = r#"{"youtube":{"chrome_cookies":true},"llm":{"provider":"rules","endpoint":"invalid-unused-endpoint","key_env":"VTAMP_UNUSED_TEST_KEY"}}"#;
+        fs::write(paths.data.join("imports.json"), settings).unwrap();
+        let config = Config::load(&paths).unwrap();
+        assert_eq!(config.llm.provider, Provider::Rules);
+        assert_eq!(
+            crate::metadata::test(&config, &paths).unwrap()["provider"],
+            "rules"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.data.join("imports.json")).unwrap(),
+            settings
+        );
+        config.save(&paths).unwrap();
+        let saved: Value =
+            serde_json::from_slice(&fs::read(paths.data.join("imports.json")).unwrap()).unwrap();
+        assert_eq!(saved["llm"]["provider"], "rules");
+        assert_eq!(saved["youtube"]["chrome_cookies"], true);
+        assert_eq!(Config::load(&paths).unwrap().llm.provider, Provider::Rules);
+        assert!(!paths.database().exists());
+        assert!(!paths.runtime.exists());
+    }
 }

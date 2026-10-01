@@ -107,8 +107,11 @@ commit. Library deduplication does not remove intentional queue duplicates.
 
 ## Optional LLM cleanup
 
-`vtamp llm setup` selects exactly one provider: `code` (default), `api`, `codex`,
-or `claude`. `vtamp llm status` reports configuration and tool availability;
+`vtamp llm setup` offers `api`, `codex`, `claude`, and `rules`, with `api` selected
+by default in the setup prompt. Choose `rules` to disable LLM cleanup and use
+built-in metadata rules. Without setup, vtamp continues to use `rules` and never
+selects an LLM automatically.
+`vtamp llm status` reports configuration and tool availability;
 `vtamp llm test` explicitly tests the selected provider with bundled sample
 metadata. Missing tools, authentication failures, timeouts, invalid JSON or
 unsupported options fall back to code rules with an item warning. No model or
@@ -156,7 +159,7 @@ For automation, edit the private `imports.json` in the data directory. For examp
 }
 ```
 
-Remove `key_env` for an endpoint without authentication. Set `provider` to `code`
+Remove `key_env` for an endpoint without authentication. Set `provider` to `rules`
 to disable LLM requests. Client preferences remain separate in `ui.json`.
 
 ## Optional Chrome cookies

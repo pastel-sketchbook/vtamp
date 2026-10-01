@@ -353,8 +353,9 @@ unit tests alone. Keep this guide aligned with the implementation as it evolves.
 - Albums are optional. Prefer structured source albums, then audio tags, and do
   not guess missing names. Empty album overrides must survive scans and retagging.
   Omit missing albums and their separators in the TUI; title/artist stay required.
-- Config lives in imports.json. LLM defaults to deterministic code; only the
-  selected backend may run. API credentials use Keychain or an environment name,
+- Config lives in imports.json. Unconfigured metadata cleanup uses `rules`;
+  explicit `llm setup` defaults to `api`. Only the selected backend may run.
+  API credentials use Keychain or an environment name,
   never plaintext config. Chrome cookies are opt-in via yt-dlp itself.
 - `tests/imports.rs` uses fake installed tools and isolated servers. Metadata tests
   use local mock HTTP/CLI backends. Real extraction and graphics checks are

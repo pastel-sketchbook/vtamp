@@ -69,7 +69,7 @@ pub fn rules(source: &Source) -> Metadata {
 }
 pub fn resolve(source: &Source, config: &Config, paths: &Paths, stop: &Cancel) -> Metadata {
     let mut result = rules(source);
-    if config.llm.provider != Provider::Code
+    if config.llm.provider != Provider::Rules
         && (source.music_title.is_none() || source.music_artist.is_none())
     {
         match infer(source, config, paths, stop) {
@@ -99,7 +99,7 @@ pub fn resolve(source: &Source, config: &Config, paths: &Paths, stop: &Cancel) -
                     result.title = format!("{} ({})", result.title, youtube::clean(&version));
                 }
             }
-            Err(e) => result.warning = Some(format!("LLM unavailable; used code rules: {e:#}")),
+            Err(e) => result.warning = Some(format!("LLM unavailable; used built-in rules: {e:#}")),
         }
     }
     result
@@ -114,7 +114,7 @@ fn infer(source: &Source, config: &Config, paths: &Paths, stop: &Cancel) -> Resu
     let data = serde_json::to_string(source)?;
     let prompt = format!("{instruction}\nSchema: {}\nInput: {data}", schema());
     let text = match config.llm.provider {
-        Provider::Code => bail!("Code rules selected"),
+        Provider::Rules => bail!("Built-in rules selected"),
         Provider::Api => {
             let endpoint = config
                 .llm
@@ -208,7 +208,7 @@ fn infer(source: &Source, config: &Config, paths: &Paths, stop: &Cancel) -> Resu
             };
             if required.iter().any(|s| !help.contains(s)) {
                 bail!(
-                    "Installed {name} lacks required isolation/JSON options; update it or select code rules"
+                    "Installed {name} lacks required isolation/JSON options; update it or select rules"
                 );
             }
             let dir = tempfile::Builder::new()
@@ -341,8 +341,8 @@ pub fn test(config: &Config, paths: &Paths) -> Result<Value> {
         channel_name: Some("이승환 LEE SEUNG HWAN".into()),
         ..Default::default()
     };
-    if config.llm.provider == Provider::Code {
-        return Ok(json!({"provider":"code","result":rules(&source)}));
+    if config.llm.provider == Provider::Rules {
+        return Ok(json!({"provider":config.llm.provider,"result":rules(&source)}));
     }
     let v = infer(&source, config, paths, &subprocess::cancel())?;
     Ok(
