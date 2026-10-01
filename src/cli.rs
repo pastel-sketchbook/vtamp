@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::PathBuf,
 };
 
@@ -81,7 +81,16 @@ pub enum Action {
     /// Toggle between playing and paused.
     Toggle,
     /// Stop playback and reset position, keeping the queue.
-    Stop,
+    Stop {
+        /// Stop when this entry ends naturally, even with repeat-one enabled.
+        #[arg(long)]
+        after_current: bool,
+    },
+    /// Schedule a stop in the playback server; survives client exit, not server restart.
+    Sleep {
+        #[command(subcommand)]
+        command: SleepAction,
+    },
     Next,
     Prev,
     /// Seek to seconds; +10 and -10 move relative to the current position.
@@ -114,6 +123,8 @@ pub enum Action {
     },
     /// Read playback state without starting a server.
     Status,
+    /// Read the current track and playback settings without returning the full queue.
+    Now,
     /// Subscribe to playback events without starting a server.
     Watch,
     /// Manage the background playback server.
@@ -123,6 +134,55 @@ pub enum Action {
     },
     /// Inspect runtime paths, server health, and the default audio device.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SleepAction {
+    Set {
+        #[arg(value_parser = parse_sleep)]
+        duration: u64,
+    },
+    Status,
+    Cancel,
+}
+
+fn parse_duration(input: &str) -> Result<u64, String> {
+    let (digits, factor) = if let Some(s) = input.strip_suffix('s') {
+        (s, 1000)
+    } else if let Some(s) = input.strip_suffix('m') {
+        (s, 60_000)
+    } else if let Some(s) = input.strip_suffix('h') {
+        (s, 3_600_000)
+    } else {
+        return Err("Use a positive integer followed by s, m, or h".into());
+    };
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return Err("Expected a positive integer duration".into());
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(factor))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "Duration must be positive and within range".into())
+}
+fn parse_sleep(input: &str) -> Result<u64, String> {
+    parse_duration(input).and_then(|n| {
+        if n <= 86_400_000 {
+            Ok(n)
+        } else {
+            Err("Maximum duration is 24 hours".into())
+        }
+    })
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct ScanWait {
+    #[arg(long)]
+    wait: bool,
+    /// Maximum time to wait; timing out does not cancel the scan.
+    #[arg(long, default_value = "60s", value_parser = parse_sleep, requires = "wait")]
+    timeout: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -170,12 +230,39 @@ fn parse_seek(input: &str) -> Result<Seek, String> {
 
 #[derive(Debug, Subcommand)]
 pub enum Queue {
-    List,
-    Add {
-        #[arg(required_unless_present = "track", conflicts_with = "track")]
-        paths: Vec<PathBuf>,
+    List {
         #[arg(long)]
+        offset: Option<usize>,
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: Option<u16>,
+    },
+    Add {
+        #[arg(required_unless_present_any = ["track", "tracks"], conflicts_with_all = ["track", "tracks"])]
+        paths: Vec<PathBuf>,
+        #[arg(long, conflicts_with = "tracks")]
         track: Option<String>,
+        /// Atomically add library tracks in the supplied order, preserving duplicates.
+        #[arg(long, num_args = 1..)]
+        tracks: Vec<String>,
+        #[arg(long, conflicts_with = "paths")]
+        after_current: bool,
+        #[arg(long, requires = "tracks", conflicts_with_all = ["track", "paths"])]
+        if_queue_revision: Option<u64>,
+        /// Deduplicate this batch for 24 hours, including across server restarts.
+        #[arg(long, requires = "tracks", conflicts_with_all = ["track", "paths"])]
+        request_id: Option<String>,
+    },
+    /// Validate and atomically apply add/remove/move operations, protecting the current entry.
+    Edit {
+        /// JSON edit document; use - to read standard input.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long, conflicts_with = "request_id")]
+        dry_run: bool,
+        #[arg(long)]
+        if_queue_revision: Option<u64>,
+        #[arg(long)]
+        request_id: Option<String>,
     },
     Remove {
         id: String,
@@ -191,20 +278,44 @@ pub enum Queue {
 pub enum Library {
     Add {
         path: PathBuf,
+        #[command(flatten)]
+        wait: ScanWait,
     },
     /// Unregister a folder without deleting any music files.
     Remove {
         path: PathBuf,
+        #[command(flatten)]
+        wait: ScanWait,
     },
-    Scan,
+    Scan {
+        #[command(flatten)]
+        wait: ScanWait,
+    },
+    ScanStatus {
+        id: String,
+    },
+    Track {
+        id: String,
+    },
     List {
         #[arg(long, default_value_t = 0)]
         offset: usize,
         #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u16).range(1..=1000))]
         limit: u16,
     },
+    #[command(group(clap::ArgGroup::new("fields").multiple(true)))]
     Search {
-        query: String,
+        query: Option<String>,
+        #[arg(long, group = "fields")]
+        title: Option<String>,
+        #[arg(long, group = "fields")]
+        artist: Option<String>,
+        #[arg(long, group = "fields")]
+        album: Option<String>,
+        #[arg(long)]
+        exclude: Vec<String>,
+        #[arg(long, requires = "fields")]
+        exact: bool,
         #[arg(long, default_value_t = 0)]
         offset: usize,
         #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u16).range(1..=1000))]
@@ -328,15 +439,33 @@ pub async fn run(args: Args) -> Result<()> {
         }
         _ => (),
     }
+    let scan_wait = match &action {
+        Action::Library {
+            command:
+                Library::Add { wait, .. } | Library::Remove { wait, .. } | Library::Scan { wait },
+        } if wait.wait => Some(wait.clone()),
+        _ => None,
+    };
     let read_only = matches!(
         action,
         Action::Status
+            | Action::Now
+            | Action::Sleep {
+                command: SleepAction::Status
+            }
+            | Action::Queue {
+                command: Queue::Edit { dry_run: true, .. }
+            }
             | Action::Volume { value: None }
             | Action::Queue {
-                command: Queue::List
+                command: Queue::List { .. }
             }
             | Action::Library {
-                command: Library::List { .. } | Library::Search { .. } | Library::Roots
+                command: Library::List { .. }
+                    | Library::Search { .. }
+                    | Library::Roots
+                    | Library::Track { .. }
+                    | Library::ScanStatus { .. }
             }
             | Action::Server {
                 command: Server::Status | Server::Stop
@@ -345,7 +474,10 @@ pub async fn run(args: Args) -> Result<()> {
     let queue_only = matches!(
         action,
         Action::Queue {
-            command: Queue::List
+            command: Queue::List {
+                offset: None,
+                limit: None
+            }
         }
     );
     let command = match action {
@@ -354,7 +486,11 @@ pub async fn run(args: Args) -> Result<()> {
             command: Server::Status,
         }
         | Action::Queue {
-            command: Queue::List,
+            command:
+                Queue::List {
+                    offset: None,
+                    limit: None,
+                },
         } => Command::Status,
         Action::Server {
             command: Server::Stop,
@@ -371,7 +507,21 @@ pub async fn run(args: Args) -> Result<()> {
         Action::Pause => Command::Pause,
         Action::Resume => Command::Resume,
         Action::Toggle => Command::Toggle,
-        Action::Stop => Command::Stop,
+        Action::Stop { after_current } => {
+            if after_current {
+                Command::StopAfterCurrent
+            } else {
+                Command::Stop
+            }
+        }
+        Action::Now => Command::Now,
+        Action::Sleep { command } => match command {
+            SleepAction::Set { duration } => Command::SleepSet {
+                milliseconds: duration,
+            },
+            SleepAction::Status => Command::SleepStatus,
+            SleepAction::Cancel => Command::SleepCancel,
+        },
         Action::Next => Command::Next,
         Action::Prev => Command::Prev,
         Action::Seek { seconds } => Command::Seek {
@@ -384,23 +534,68 @@ pub async fn run(args: Args) -> Result<()> {
         },
         Action::Repeat { mode } => Command::Repeat { mode },
         Action::Queue { command } => match command {
-            Queue::Add { paths, track } => Command::QueueAdd {
-                paths: absolute_paths(paths)?,
+            Queue::Add {
+                paths,
                 track,
+                tracks,
+                after_current,
+                if_queue_revision,
+                request_id,
+            } => {
+                if !tracks.is_empty() || after_current {
+                    let track_ids = if tracks.is_empty() {
+                        track.into_iter().collect()
+                    } else {
+                        tracks
+                    };
+                    Command::QueueEdit {
+                        edit: QueueEdit {
+                            operations: vec![QueueOperation::Add {
+                                track_ids,
+                                after_current,
+                                index: None,
+                            }],
+                        },
+                        dry_run: false,
+                        if_queue_revision,
+                        request_id,
+                    }
+                } else {
+                    Command::QueueAdd {
+                        paths: absolute_paths(paths)?,
+                        track,
+                    }
+                }
+            }
+            Queue::Edit {
+                file,
+                dry_run,
+                if_queue_revision,
+                request_id,
+            } => Command::QueueEdit {
+                edit: read_edit(&file)?,
+                dry_run,
+                if_queue_revision,
+                request_id,
             },
             Queue::Remove { id } => Command::QueueRemove { id },
             Queue::Move { id, index } => Command::QueueMove { id, index },
             Queue::Clear => Command::QueueClear,
-            Queue::List => unreachable!(),
+            Queue::List { offset, limit } => Command::QueuePage {
+                offset: offset.unwrap_or(0),
+                limit: limit.unwrap_or(200).into(),
+            },
         },
         Action::Library { command } => match command {
-            Library::Add { path } => Command::LibraryAdd {
+            Library::Add { path, .. } => Command::LibraryAdd {
                 path: platform::absolute(&path)?,
             },
-            Library::Remove { path } => Command::LibraryRemove {
+            Library::Remove { path, .. } => Command::LibraryRemove {
                 path: platform::absolute(&path)?,
             },
-            Library::Scan => Command::LibraryScan,
+            Library::Scan { .. } => Command::LibraryScan,
+            Library::ScanStatus { id } => Command::ScanStatus { id },
+            Library::Track { id } => Command::LibraryTrack { id },
             Library::Roots => Command::LibraryRoots,
             Library::List { offset, limit } => Command::LibraryList {
                 query: String::new(),
@@ -409,10 +604,22 @@ pub async fn run(args: Args) -> Result<()> {
             },
             Library::Search {
                 query,
+                title,
+                artist,
+                album,
+                exclude,
+                exact,
                 offset,
                 limit,
-            } => Command::LibraryList {
-                query,
+            } => Command::LibrarySearch {
+                filter: SearchFilter {
+                    query: query.unwrap_or_default(),
+                    title,
+                    artist,
+                    album,
+                    exclude,
+                    exact,
+                },
                 offset,
                 limit: limit.into(),
             },
@@ -439,7 +646,68 @@ pub async fn run(args: Args) -> Result<()> {
     if queue_only && reply.ok {
         reply.data = reply.data.and_then(|s| s.get("queue").cloned());
     }
+    if let Some(wait) = scan_wait
+        && reply.ok
+    {
+        let id = reply
+            .data
+            .as_ref()
+            .and_then(|d| d["job_id"].as_str())
+            .ok_or_else(|| ApiError::new("protocol_error", "Scan reply is missing job_id"))?
+            .to_owned();
+        reply = wait_for_scan(&client, &id, wait.timeout).await?;
+    }
     output(reply, args.json)
+}
+
+fn read_edit(path: &std::path::Path) -> Result<QueueEdit> {
+    let input: Box<dyn Read> = if path == std::path::Path::new("-") {
+        Box::new(io::stdin())
+    } else {
+        Box::new(std::fs::File::open(path)?)
+    };
+    let mut bytes = Vec::new();
+    input
+        .take(crate::wire::MAX_FRAME as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > crate::wire::MAX_FRAME {
+        return Err(ApiError::new("invalid_arguments", "Edit file exceeds 16 MiB").into());
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::new("invalid_arguments", format!("Invalid queue edit: {e}")).into())
+}
+
+async fn wait_for_scan(client: &Client, id: &str, timeout_ms: u64) -> Result<Reply> {
+    let wait = async {
+        loop {
+            let reply = client
+                .request(Command::ScanStatus { id: id.into() })
+                .await?;
+            let data = reply.into_data()?;
+            match data["status"].as_str() {
+                Some("completed") => return Ok(Reply::success(data)),
+                Some("failed" | "interrupted") => {
+                    return Err(
+                        ApiError::new("scan_failed", "Scan did not complete successfully")
+                            .with_details(data)
+                            .into(),
+                    );
+                }
+                Some("running") => (),
+                _ => return Err(ApiError::new("protocol_error", "Unknown scan status").into()),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), wait)
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "wait_timeout",
+                "Stopped waiting; the scan has not been cancelled",
+            )
+            .with_details(json!({"job_id":id}))
+        })?
 }
 
 fn absolute_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
@@ -482,7 +750,7 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     if let Ok(state) = serde_json::from_value::<State>(data.clone())
-        && data.get("status").is_some()
+        && data.get("queue").is_some()
     {
         if let Some(item) = state.current() {
             writeln!(
@@ -581,5 +849,93 @@ mod tests {
         assert!(Args::try_parse_from(["vtamp", "play", "a.m4a", "--track", "abc"]).is_err());
         assert!(Args::try_parse_from(["vtamp", "queue", "add"]).is_err());
         assert!(Args::try_parse_from(["vtamp", "seek", "-10", "--json"]).is_ok());
+    }
+    #[test]
+    fn agent_commands_accept_valid_combinations_and_reject_ambiguous_inputs() {
+        for args in [
+            vec![
+                "vtamp", "library", "search", "--title", "HAPPY", "--artist", "DAY6", "--exact",
+            ],
+            vec!["vtamp", "library", "scan"],
+            vec!["vtamp", "library", "scan", "--wait", "--timeout", "2m"],
+            vec![
+                "vtamp",
+                "queue",
+                "add",
+                "--tracks",
+                "a",
+                "b",
+                "--after-current",
+                "--request-id",
+                "r1",
+            ],
+            vec!["vtamp", "queue", "edit", "--file", "-", "--dry-run"],
+            vec!["vtamp", "queue", "list", "--limit", "1"],
+            vec!["vtamp", "stop", "--after-current"],
+            vec!["vtamp", "sleep", "set", "24h"],
+        ] {
+            assert!(Args::try_parse_from(args.clone()).is_ok(), "{args:?}");
+        }
+        for args in [
+            vec!["vtamp", "library", "search", "love", "--exact"],
+            vec!["vtamp", "library", "scan", "--timeout", "1m"],
+            vec!["vtamp", "queue", "add", "a.wav", "--after-current"],
+            vec![
+                "vtamp",
+                "queue",
+                "add",
+                "--track",
+                "a",
+                "--request-id",
+                "r1",
+            ],
+            vec![
+                "vtamp",
+                "queue",
+                "edit",
+                "--file",
+                "-",
+                "--dry-run",
+                "--request-id",
+                "r1",
+            ],
+            vec!["vtamp", "sleep", "set", "0s"],
+            vec!["vtamp", "sleep", "set", "25h"],
+        ] {
+            assert!(Args::try_parse_from(args.clone()).is_err(), "{args:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_wait_timeout_returns_the_job_id_without_cancelling() {
+        use tokio::net::UnixListener;
+        let home = tempfile::Builder::new()
+            .prefix("vtamp-wait-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = Paths {
+            data: home.path().into(),
+            runtime: home.path().into(),
+            cache: home.path().into(),
+        };
+        let listener = UnixListener::bind(paths.socket()).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request: Request = wire::read(&mut stream).await.unwrap();
+            assert!(matches!(request.request, Command::ScanStatus { ref id } if id == "job"));
+            wire::write(
+                &mut stream,
+                &Reply::success(json!({"job_id":"job","status":"running"})),
+            )
+            .await
+            .unwrap();
+        });
+        let error = wait_for_scan(&Client::new(paths), "job", 50)
+            .await
+            .unwrap_err();
+        let error = error.downcast_ref::<ApiError>().unwrap();
+        assert_eq!(error.code, "wait_timeout");
+        assert_eq!(error.details.as_ref().unwrap()["job_id"], "job");
+        server.await.unwrap();
     }
 }

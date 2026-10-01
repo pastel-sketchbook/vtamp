@@ -18,11 +18,33 @@ pub struct Engine<B: PlaybackBackend> {
     upcoming: VecDeque<String>,
     history: Vec<String>,
     output_retry: Option<Instant>,
+    queue_snapshot: QueueSnapshot,
+}
+
+struct QueueSnapshot {
+    current_id: Option<String>,
+    play_next: Vec<String>,
+    ids: Vec<String>,
+}
+impl QueueSnapshot {
+    fn new(state: &State) -> Self {
+        Self {
+            current_id: state.current_id.clone(),
+            play_next: state.play_next.clone(),
+            ids: state.queue.iter().map(|i| i.id.clone()).collect(),
+        }
+    }
+    fn changed(&self, state: &State) -> bool {
+        self.current_id != state.current_id
+            || self.play_next != state.play_next
+            || self.ids.iter().ne(state.queue.iter().map(|i| &i.id))
+    }
 }
 
 impl<B: PlaybackBackend> Engine<B> {
     pub fn new(state: State, backend: B) -> Self {
         let mut engine = Self {
+            queue_snapshot: QueueSnapshot::new(&state),
             state,
             backend,
             loaded: false,
@@ -54,6 +76,7 @@ impl<B: PlaybackBackend> Engine<B> {
             self.upcoming.make_contiguous().shuffle(rng);
         }
         self.state.queue.extend(items);
+        self.note_queue_change();
         Ok(first)
     }
     pub fn play_track(&mut self, track: Track) -> Result<()> {
@@ -78,7 +101,47 @@ impl<B: PlaybackBackend> Engine<B> {
             queue_item: id,
         })
     }
+    fn note_queue_change(&mut self) {
+        if self.queue_snapshot.changed(&self.state) {
+            self.state.queue_revision += 1;
+            self.queue_snapshot = QueueSnapshot::new(&self.state);
+        }
+        if let Some(ScheduledStop::AfterCurrent { queue_item_id }) = &self.state.scheduled_stop
+            && self.state.current_id.as_ref() != Some(queue_item_id)
+        {
+            self.state.scheduled_stop = None;
+        }
+    }
+    /// Publish a persisted edit without loading, seeking, or pausing the output.
+    pub(crate) fn accept_queue_edit(&mut self, state: State) {
+        let existing: std::collections::HashSet<_> =
+            self.state.queue.iter().map(|i| i.id.clone()).collect();
+        let valid: std::collections::HashSet<_> =
+            state.queue.iter().map(|i| i.id.clone()).collect();
+        self.upcoming
+            .retain(|id| valid.contains(id) && !state.play_next.contains(id));
+        self.history.retain(|id| valid.contains(id));
+        // Preserve the relative order of the old shuffle pool. Mix only new,
+        // ordinary additions into it; explicit play-next entries stay separate.
+        for item in &state.queue {
+            if !existing.contains(&item.id) && !state.play_next.contains(&item.id) {
+                let index = if state.shuffle {
+                    rand::Rng::random_range(&mut rand::rng(), 0..=self.upcoming.len())
+                } else {
+                    self.upcoming.len()
+                };
+                self.upcoming.insert(index, item.id.clone());
+            }
+        }
+        self.queue_snapshot = QueueSnapshot::new(&state);
+        self.state = state;
+    }
     pub fn apply(&mut self, command: &Command) -> Result<()> {
+        let result = self.apply_inner(command);
+        self.note_queue_change();
+        result
+    }
+    fn apply_inner(&mut self, command: &Command) -> Result<()> {
         match command {
             Command::Play {
                 queue_item: Some(id),
@@ -97,6 +160,34 @@ impl<B: PlaybackBackend> Engine<B> {
                 }
             }
             Command::Stop => self.stop(),
+            Command::StopAfterCurrent => {
+                let item = self
+                    .state
+                    .current()
+                    .filter(|_| self.state.status != PlaybackStatus::Stopped)
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            "no_active_track",
+                            "Play or pause a track before scheduling its end",
+                        )
+                    })?;
+                self.state.scheduled_stop = Some(ScheduledStop::AfterCurrent {
+                    queue_item_id: item.id.clone(),
+                });
+            }
+            Command::SleepSet { milliseconds } => {
+                if *milliseconds == 0 || *milliseconds > 86_400_000 {
+                    return Err(ApiError::new(
+                        "invalid_arguments",
+                        "Sleep duration must be positive and at most 24 hours",
+                    )
+                    .into());
+                }
+                self.state.scheduled_stop = Some(ScheduledStop::Deadline {
+                    deadline_ms: unix_ms().saturating_add(*milliseconds),
+                });
+            }
+            Command::SleepCancel => self.state.scheduled_stop = None,
             Command::Next => self.advance(false)?,
             Command::Prev => self.previous()?,
             Command::Seek {
@@ -145,11 +236,18 @@ impl<B: PlaybackBackend> Engine<B> {
                 let was_playing = self.state.status == PlaybackStatus::Playing;
                 self.state.queue.remove(index);
                 self.upcoming.retain(|i| i != id);
+                self.state.play_next.retain(|i| i != id);
                 self.history.retain(|i| i != id);
                 if current {
+                    let deadline = self
+                        .state
+                        .scheduled_stop
+                        .clone()
+                        .filter(|stop| matches!(stop, ScheduledStop::Deadline { .. }));
                     self.stop();
                     self.state.current_id = None;
                     if !self.state.queue.is_empty() {
+                        self.state.scheduled_stop = deadline;
                         self.play_at(index.min(self.state.queue.len() - 1), 0, !was_playing)?;
                     }
                 }
@@ -167,6 +265,7 @@ impl<B: PlaybackBackend> Engine<B> {
                 self.state.queue.clear();
                 self.state.current_id = None;
                 self.upcoming.clear();
+                self.state.play_next.clear();
                 self.history.clear();
             }
             _ => bail!("Not a playback command"),
@@ -178,7 +277,13 @@ impl<B: PlaybackBackend> Engine<B> {
             .queue
             .iter()
             .position(|q| q.id == id)
-            .ok_or_else(|| anyhow::anyhow!("Queue item not found: {id}"))
+            .ok_or_else(|| {
+                ApiError::new(
+                    "queue_item_not_found",
+                    format!("Queue item not found: {id}"),
+                )
+                .into()
+            })
     }
     fn pause(&mut self) {
         if self.state.status == PlaybackStatus::Playing {
@@ -211,6 +316,7 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     pub fn stop(&mut self) {
+        self.state.scheduled_stop = None;
         self.output_retry = None;
         self.backend.stop();
         self.loaded = false;
@@ -218,13 +324,27 @@ impl<B: PlaybackBackend> Engine<B> {
         self.state.position_ms = 0;
     }
     fn play_at(&mut self, index: usize, position_ms: u64, paused: bool) -> Result<()> {
+        self.play_candidates(
+            (index..self.state.queue.len()).collect(),
+            position_ms,
+            paused,
+        )
+    }
+    fn play_candidates(
+        &mut self,
+        candidates: Vec<usize>,
+        position_ms: u64,
+        paused: bool,
+    ) -> Result<()> {
         self.output_retry = None;
         let old = self.state.current_id.clone();
         let mut last_error = None;
         // Every candidate is attempted at most once, even with repeat-all enabled.
-        for candidate in index..self.state.queue.len() {
+        for (attempt, candidate) in candidates.into_iter().enumerate() {
             let item = &self.state.queue[candidate];
-            let position = if candidate == index { position_ms } else { 0 };
+            let position = if attempt == 0 { position_ms } else { 0 };
+            self.upcoming.retain(|id| id != &item.id);
+            self.state.play_next.retain(|id| id != &item.id);
             match self
                 .backend
                 .load(&item.track.path, position, self.state.volume, paused)
@@ -273,7 +393,10 @@ impl<B: PlaybackBackend> Engine<B> {
             .state
             .queue
             .iter()
-            .filter(|q| Some(&q.id) != self.state.current_id.as_ref())
+            .filter(|q| {
+                Some(&q.id) != self.state.current_id.as_ref()
+                    && !self.state.play_next.contains(&q.id)
+            })
             .map(|q| q.id.clone())
             .collect();
         ids.shuffle(&mut rand::rng());
@@ -287,28 +410,36 @@ impl<B: PlaybackBackend> Engine<B> {
         if natural && self.state.repeat == Repeat::One {
             return self.play_at(self.state.current_index().unwrap_or(0), 0, false);
         }
-        let next = if self.state.shuffle {
-            if self.upcoming.is_empty() && self.state.repeat == Repeat::All {
-                self.refill_shuffle();
+        if self.state.shuffle
+            && self.upcoming.is_empty()
+            && self.state.play_next.is_empty()
+            && self.state.repeat == Repeat::All
+        {
+            self.refill_shuffle();
+        }
+        let mut ids = self.state.play_next.clone();
+        if self.state.shuffle {
+            ids.extend(self.upcoming.iter().cloned());
+            if ids.is_empty() && self.state.repeat == Repeat::All && self.state.queue.len() == 1 {
+                ids.push(self.state.queue[0].id.clone());
             }
-            self.upcoming
-                .pop_front()
-                .and_then(|id| self.index(&id).ok())
-                .or_else(|| {
-                    (self.state.repeat == Repeat::All && self.state.queue.len() == 1).then_some(0)
-                })
         } else {
-            match self.state.current_index() {
-                None => Some(0),
-                Some(i) if i + 1 < self.state.queue.len() => Some(i + 1),
-                _ if self.state.repeat == Repeat::All => Some(0),
-                _ => None,
+            let start = self.state.current_index().map_or(0, |i| i + 1);
+            ids.extend(self.state.queue[start..].iter().map(|i| i.id.clone()));
+            if self.state.repeat == Repeat::All {
+                ids.extend(self.state.queue[..start].iter().map(|i| i.id.clone()));
             }
-        };
-        if let Some(index) = next {
-            self.play_at(index, 0, false)?;
-        } else {
+        }
+        let mut seen = std::collections::HashSet::new();
+        let candidates = ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .filter_map(|id| self.index(id).ok())
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
             self.stop();
+        } else {
+            self.play_candidates(candidates, 0, false)?;
         }
         Ok(())
     }
@@ -336,6 +467,21 @@ impl<B: PlaybackBackend> Engine<B> {
         self.output_retry.is_some()
     }
     fn tick_at(&mut self, now: Instant) -> bool {
+        self.tick_with_clock(now, unix_ms())
+    }
+    fn tick_with_clock(&mut self, now: Instant, wall_ms: u64) -> bool {
+        let changed = self.tick_inner(now, wall_ms);
+        if changed {
+            self.note_queue_change();
+        }
+        changed
+    }
+    fn tick_inner(&mut self, now: Instant, wall_ms: u64) -> bool {
+        if matches!(self.state.scheduled_stop, Some(ScheduledStop::Deadline { deadline_ms }) if wall_ms >= deadline_ms)
+        {
+            self.stop();
+            return true;
+        }
         // output_event may discard the old player, so save its position first.
         if self.loaded {
             self.state.position_ms = self.backend.position();
@@ -384,6 +530,11 @@ impl<B: PlaybackBackend> Engine<B> {
         }
         self.state.position_ms = self.backend.position();
         if self.backend.finished() {
+            if matches!(&self.state.scheduled_stop, Some(ScheduledStop::AfterCurrent { queue_item_id }) if self.state.current_id.as_ref() == Some(queue_item_id))
+            {
+                self.stop();
+                return true;
+            }
             if let Err(e) = self.advance(true) {
                 self.state.last_error = Some(e.to_string());
             }
@@ -790,5 +941,135 @@ mod tests {
         .unwrap();
         e.apply(&Command::QueueRemove { id: original }).unwrap();
         assert!(e.state.queue.iter().any(|q| q.id == duplicate));
+    }
+    #[test]
+    fn explicit_next_preserves_shuffle_pool_and_skips_bad_entries() {
+        for natural in [false, true] {
+            let mut e = engine();
+            e.apply(&Command::Shuffle { enabled: true }).unwrap();
+            e.apply(&Command::Resume).unwrap();
+            let pool = e.upcoming.clone();
+            let mut candidate = e.state.clone();
+            let added: Vec<_> = ["bad-new", "first", "second"]
+                .into_iter()
+                .map(|name| QueueItem::new(track(name)))
+                .collect();
+            candidate.play_next = added.iter().map(|i| i.id.clone()).collect();
+            candidate.queue.splice(1..1, added);
+            e.accept_queue_edit(candidate);
+            assert_eq!(e.upcoming, pool);
+            assert_eq!(e.backend.loads, 1);
+            for expected in ["first", "second"] {
+                if natural {
+                    e.backend.ended.store(true, Ordering::SeqCst);
+                    assert!(e.tick());
+                } else {
+                    e.apply(&Command::Next).unwrap();
+                }
+                assert_eq!(e.state.current().unwrap().track.id, expected);
+            }
+            assert_eq!(e.upcoming, pool);
+            assert!(e.state.play_next.is_empty());
+            e.apply(&Command::Next).unwrap();
+            assert_eq!(e.state.current_id.as_ref(), pool.front());
+            let revision = e.state.queue_revision;
+            e.apply(&Command::Volume { value: Some(17) }).unwrap();
+            e.apply(&Command::Pause).unwrap();
+            assert_eq!(e.state.queue_revision, revision);
+        }
+    }
+
+    #[test]
+    fn explicit_next_survives_repeat_one_and_shuffle_switches() {
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        let first = e.state.current_id.clone();
+        let mut candidate = e.state.clone();
+        candidate.play_next = vec![candidate.queue[2].id.clone(), candidate.queue[1].id.clone()];
+        e.accept_queue_edit(candidate);
+        e.apply(&Command::Shuffle { enabled: true }).unwrap();
+        assert!(e.upcoming.is_empty());
+        e.apply(&Command::Repeat { mode: Repeat::One }).unwrap();
+        e.backend.ended.store(true, Ordering::SeqCst);
+        e.tick();
+        assert_eq!(e.state.current_id, first);
+        assert_eq!(e.state.play_next.len(), 2);
+        e.apply(&Command::Shuffle { enabled: false }).unwrap();
+        e.apply(&Command::Next).unwrap();
+        assert_eq!(e.state.current().unwrap().track.id, "c");
+        let id = e.state.play_next[0].clone();
+        e.apply(&Command::QueueRemove { id }).unwrap();
+        assert!(e.state.play_next.is_empty());
+    }
+
+    #[test]
+    fn end_of_current_stop_overrides_repeat_and_cancels_on_manual_selection() {
+        let mut e = engine();
+        assert_eq!(
+            e.apply(&Command::StopAfterCurrent)
+                .unwrap_err()
+                .downcast_ref::<ApiError>()
+                .unwrap()
+                .code,
+            "no_active_track"
+        );
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::Repeat { mode: Repeat::One }).unwrap();
+        e.apply(&Command::StopAfterCurrent).unwrap();
+        e.apply(&Command::Pause).unwrap();
+        e.backend.ended.store(true, Ordering::SeqCst);
+        assert!(!e.tick());
+        e.apply(&Command::Resume).unwrap();
+        assert!(e.tick());
+        assert_eq!(e.state.status, PlaybackStatus::Stopped);
+        assert_eq!(e.state.position_ms, 0);
+        assert!(e.state.scheduled_stop.is_none());
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::StopAfterCurrent).unwrap();
+        e.apply(&Command::Next).unwrap();
+        assert!(e.state.scheduled_stop.is_none());
+        assert_eq!(e.state.status, PlaybackStatus::Playing);
+    }
+
+    #[test]
+    fn removing_current_preserves_deadline_when_playback_continues() {
+        let mut e = engine();
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::SleepSet { milliseconds: 5000 }).unwrap();
+        let reservation = e.state.scheduled_stop.clone();
+        let id = e.state.current_id.clone().unwrap();
+        e.apply(&Command::QueueRemove { id }).unwrap();
+        assert_eq!(e.state.status, PlaybackStatus::Playing);
+        assert_eq!(e.state.current().unwrap().track.id, "b");
+        assert_eq!(e.state.scheduled_stop, reservation);
+        e.apply(&Command::QueueClear).unwrap();
+        assert!(e.state.scheduled_stop.is_none());
+    }
+
+    #[test]
+    fn deadline_stops_during_pause_and_output_recovery_with_injected_clock() {
+        for recovering in [false, true] {
+            let mut e = engine();
+            e.apply(&Command::Resume).unwrap();
+            e.apply(&Command::Pause).unwrap();
+            if recovering {
+                e.backend.output_event = Some("gone".into());
+                e.backend.unavailable = true;
+                e.tick();
+            }
+            e.state.scheduled_stop = Some(ScheduledStop::Deadline { deadline_ms: 1000 });
+            e.tick_with_clock(Instant::now(), 999);
+            assert_eq!(e.state.status, PlaybackStatus::Paused);
+            assert!(e.tick_with_clock(Instant::now(), 1000));
+            assert_eq!(e.state.status, PlaybackStatus::Stopped);
+            assert!(e.state.scheduled_stop.is_none());
+            assert!(!e.output_waiting());
+            e.apply(&Command::SleepSet { milliseconds: 5000 }).unwrap();
+            e.apply(&Command::SleepCancel).unwrap();
+            assert!(e.state.scheduled_stop.is_none());
+            for milliseconds in [0, 86_400_001] {
+                assert!(e.apply(&Command::SleepSet { milliseconds }).is_err());
+            }
+        }
     }
 }

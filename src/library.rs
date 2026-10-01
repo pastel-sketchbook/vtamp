@@ -1,4 +1,4 @@
-use crate::model::Track;
+use crate::model::{ScanWarning, Track};
 use anyhow::{Context, Result, bail};
 use lofty::{
     file::{AudioFile, TaggedFileExt},
@@ -27,6 +27,46 @@ pub struct Record {
 pub struct Scan {
     pub records: Vec<Record>,
     pub warnings: Vec<String>,
+    pub warning_count: usize,
+    pub warning_details: Vec<ScanWarning>,
+}
+
+impl Scan {
+    fn warn(&mut self, path: Option<PathBuf>, message: String) {
+        self.warning_count += 1;
+        if self.warnings.len() < 100 {
+            self.warnings.push(match &path {
+                Some(path) => format!("{}: {message}", path.display()),
+                None => message.clone(),
+            });
+            self.warning_details.push(ScanWarning { path, message });
+        }
+    }
+}
+
+pub fn scan_summary(scan: &Scan, old: &[Record]) -> crate::model::ScanSummary {
+    let before: HashMap<_, _> = old.iter().map(|r| (&r.track.id, r)).collect();
+    let after: HashSet<_> = scan.records.iter().map(|r| &r.track.id).collect();
+    let mut summary = crate::model::ScanSummary {
+        removed: before.keys().filter(|id| !after.contains(**id)).count(),
+        warning_count: scan.warning_count,
+        warnings: scan.warning_details.clone(),
+        ..Default::default()
+    };
+    for record in &scan.records {
+        match before.get(&record.track.id) {
+            None => summary.added += 1,
+            Some(old)
+                if old.modified == record.modified
+                    && old.bytes == record.bytes
+                    && old.track == record.track =>
+            {
+                summary.unchanged += 1
+            }
+            Some(_) => summary.updated += 1,
+        }
+    }
+    summary
 }
 
 pub fn normalized(text: &str) -> String {
@@ -83,11 +123,7 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
                         Ok(Some(record)) => result.records.push(record),
                         Ok(None) => (),
                         Err(error) => {
-                            if result.warnings.len() < 100 {
-                                result
-                                    .warnings
-                                    .push(format!("{}: {error:#}", entry.path().display()));
-                            }
+                            result.warn(Some(entry.path().to_path_buf()), format!("{error:#}"));
                             // Keep an already indexed file if a transient read fails.
                             if let Ok(path) = entry.path().canonicalize()
                                 && let Some(old) = previous.get(&path)
@@ -98,9 +134,7 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
                     }
                 }
                 Err(error) => {
-                    if result.warnings.len() < 100 {
-                        result.warnings.push(error.to_string());
-                    }
+                    result.warn(error.path().map(Path::to_path_buf), error.to_string());
                     // A disconnected volume must not erase its catalog.
                     if let Some(path) = error.path() {
                         for record in old.iter().filter(|r| r.track.path.starts_with(path)) {

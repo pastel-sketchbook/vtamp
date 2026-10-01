@@ -24,7 +24,10 @@ use tokio::{
 type Answer = oneshot::Sender<Reply>;
 enum Work {
     Request(Command, Answer),
-    Catalog(Scan),
+    Catalog {
+        scan: Scan,
+        job: ScanJob,
+    },
     Imported {
         scan: Scan,
         play: bool,
@@ -48,7 +51,8 @@ pub async fn run(paths: Paths) -> Result<()> {
     if socket.exists() {
         fs::remove_file(&socket)?;
     }
-    let store = Store::open(&paths.database())?;
+    let mut store = Store::open(&paths.database())?;
+    store.interrupt_scans(unix_ms())?;
     let state = store.restore()?;
     let listener = UnixListener::bind(&socket).context("Cannot bind the control socket")?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
@@ -212,6 +216,7 @@ fn worker(
     let mut last_save = Instant::now();
     let mut last_progress = Instant::now();
     let mut imports = 0usize;
+    let mut active_scan: Option<String> = None;
     loop {
         let mut changed = false;
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -224,6 +229,78 @@ fn worker(
                 }
                 Command::Status | Command::Watch | Command::Volume { value: None } => {
                     let _ = answer.send(Reply::success(&engine.state));
+                }
+                Command::Now => {
+                    let _ = answer.send(Reply::success(engine.state.now()));
+                }
+                Command::SleepStatus => {
+                    let _ = answer.send(Reply::success(
+                        json!({"scheduled_stop":engine.state.scheduled_stop}),
+                    ));
+                }
+                Command::QueuePage { offset, limit } => {
+                    let items: Vec<_> = engine
+                        .state
+                        .queue
+                        .iter()
+                        .skip(offset)
+                        .take(limit.clamp(1, 1000))
+                        .collect();
+                    let _ = answer.send(Reply::success(json!({"items":items,"total":engine.state.queue.len(),"offset":offset,"queue_revision":engine.state.queue_revision})));
+                }
+                Command::QueueEdit {
+                    edit,
+                    dry_run,
+                    if_queue_revision,
+                    request_id,
+                } => {
+                    let revision = engine.state.revision;
+                    let reply = match edit_queue(
+                        &mut engine,
+                        &mut store,
+                        &edit,
+                        dry_run,
+                        if_queue_revision,
+                        request_id.as_deref(),
+                    ) {
+                        Ok(reply) => reply,
+                        Err(error) => failure(error),
+                    };
+                    if engine.state.revision != revision {
+                        let _ = events.send(Event::State(engine.state.clone()));
+                    }
+                    let _ = answer.send(reply);
+                }
+                Command::LibrarySearch {
+                    filter,
+                    offset,
+                    limit,
+                } => {
+                    let reply = match store.search_filtered(&filter, offset, limit) {
+                        Ok((tracks, total)) => {
+                            Reply::success(json!({"tracks":tracks,"total":total,"offset":offset}))
+                        }
+                        Err(error) => failure(error),
+                    };
+                    let _ = answer.send(reply);
+                }
+                Command::LibraryTrack { id } => {
+                    let reply = match store.track(&id) {
+                        Ok(Some(track)) => Reply::success(track),
+                        Ok(None) => Reply::failure(ApiError::new(
+                            "track_not_found",
+                            "Library track not found",
+                        )),
+                        Err(error) => failure(error),
+                    };
+                    let _ = answer.send(reply);
+                }
+                Command::ScanStatus { id } => {
+                    let reply = match store.scan_job(&id) {
+                        Ok(job) => Reply::success(job),
+                        Err(error) => failure(error),
+                    };
+                    let _ = answer.send(reply);
                 }
                 Command::LibraryList {
                     query,
@@ -248,9 +325,14 @@ fn worker(
                 Command::LibraryAdd { .. }
                 | Command::LibraryRemove { .. }
                 | Command::LibraryScan => {
-                    let result = (|| -> Result<()> {
+                    let result = (|| -> Result<String> {
                         if engine.state.scanning {
-                            anyhow::bail!("A library scan is already running");
+                            return Err(ApiError::new(
+                                "scan_in_progress",
+                                "A library scan is already running",
+                            )
+                            .with_details(json!({"job_id":active_scan}))
+                            .into());
                         }
                         match &command {
                             Command::LibraryAdd { path } => {
@@ -271,15 +353,28 @@ fn worker(
                         let old = store.records()?;
                         let cache = paths.cache.clone();
                         let tx = tx.clone();
+                        let mut job = ScanJob {
+                            job_id: uuid::Uuid::new_v4().to_string(),
+                            status: "running".into(),
+                            started_at_ms: unix_ms(),
+                            finished_at_ms: None,
+                            summary: None,
+                            error: None,
+                        };
+                        store.save_scan(&job, None)?;
+                        let id = job.job_id.clone();
                         std::thread::spawn(move || {
-                            let _ = tx.send(Work::Catalog(library::scan(&roots, &old, &cache)));
+                            let scan = library::scan(&roots, &old, &cache);
+                            job.summary = Some(library::scan_summary(&scan, &old));
+                            let _ = tx.send(Work::Catalog { scan, job });
                         });
                         engine.state.scanning = true;
-                        Ok(())
+                        active_scan = Some(id.clone());
+                        Ok(id)
                     })();
                     changed = result.is_ok();
                     let reply = match result {
-                        Ok(()) => Reply::success(json!({"scanning": true})),
+                        Ok(id) => Reply::success(json!({"scanning": true, "job_id":id})),
                         Err(e) => failure(e),
                     };
                     let _ = answer.send(reply);
@@ -319,7 +414,9 @@ fn worker(
                     ..
                 } => {
                     let result = (|| -> Result<()> {
-                        let track = store.track(id)?.context("Library track not found")?;
+                        let track = store.track(id)?.ok_or_else(|| {
+                            ApiError::new("track_not_found", "Library track not found")
+                        })?;
                         if matches!(command, Command::Play { .. }) {
                             engine.play_track(track)?;
                         } else {
@@ -334,25 +431,35 @@ fn worker(
                     finish_command(result, answer, &mut engine, &store, events)?;
                 }
             },
-            Ok(Work::Catalog(scan)) => {
+            Ok(Work::Catalog { scan, mut job }) => {
                 engine.state.scanning = false;
+                active_scan = None;
                 engine.state.last_error = None;
-                match store.replace_catalog(&scan.records) {
+                job.status = "completed".into();
+                job.finished_at_ms = Some(unix_ms());
+                match store.save_scan(&job, Some(&scan.records)) {
                     Ok(()) => {
                         let _ = events.send(Event::LibraryChanged);
                     }
-                    Err(e) => engine.state.last_error = Some(format!("Cannot save library: {e:#}")),
+                    Err(error) => {
+                        job.status = "failed".into();
+                        job.error = Some(format!("Cannot save library: {error:#}"));
+                        engine.state.last_error = job.error.clone();
+                        store.save_scan(&job, None)?;
+                    }
                 }
-                if !scan.warnings.is_empty() {
-                    engine.state.last_error = Some(format!(
-                        "Scan completed with {} warning(s): {}",
-                        scan.warnings.len(),
-                        scan.warnings[0]
-                    ));
-                    for warning in scan.warnings {
+                if scan.warning_count > 0 {
+                    engine.state.last_error.get_or_insert_with(|| {
+                        format!(
+                            "Scan completed with {} warning(s): {}",
+                            scan.warning_count, scan.warnings[0]
+                        )
+                    });
+                    for warning in &scan.warnings {
                         tracing::warn!("{warning}");
                     }
                 }
+                let _ = events.send(Event::ScanCompleted(job));
                 changed = true;
             }
             Ok(Work::Imported { scan, play, answer }) => {
@@ -423,5 +530,302 @@ fn finish_command(
     Ok(())
 }
 fn failure(error: anyhow::Error) -> Reply {
-    Reply::failure(ApiError::new("operation_failed", format!("{error:#}")))
+    Reply::failure(
+        error
+            .downcast_ref::<ApiError>()
+            .cloned()
+            .unwrap_or_else(|| ApiError::new("operation_failed", format!("{error:#}"))),
+    )
+}
+
+fn edit_queue<B: crate::audio::PlaybackBackend>(
+    engine: &mut Engine<B>,
+    store: &mut Store,
+    edit: &QueueEdit,
+    dry_run: bool,
+    expected: Option<u64>,
+    request_id: Option<&str>,
+) -> Result<Reply> {
+    if let Some(id) = request_id
+        && (dry_run
+            || id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c)))
+    {
+        return Err(ApiError::new("invalid_arguments", "Request IDs require 1–128 ASCII letters, digits, -, _, ., or : and cannot be used with dry run").into());
+    }
+    let payload = serde_json::to_string(&(edit, expected))?;
+    let now = unix_ms();
+    if let Some(id) = request_id
+        && let Some(reply) = store.replay(id, &payload, now)?
+    {
+        return Ok(reply);
+    }
+    if let Some(expected) = expected
+        && expected != engine.state.queue_revision
+    {
+        return Err(
+            ApiError::new("queue_conflict", "Queue changed; inspect it before editing")
+                .with_details(json!({"expected":expected,"actual":engine.state.queue_revision}))
+                .into(),
+        );
+    }
+    let (state, changes) = crate::queue_edit::prepare(&engine.state, edit, store)?;
+    let reply = Reply::success(
+        json!({"applied":!dry_run,"previous_queue_revision":engine.state.queue_revision,
+        "queue_revision":state.queue_revision,"changes":changes}),
+    );
+    if serde_json::to_vec(&reply)?.len() > wire::MAX_FRAME {
+        return Err(ApiError::new(
+            "response_too_large",
+            "Edit response exceeds the transport limit; use smaller batches",
+        )
+        .into());
+    }
+    if !dry_run {
+        store.commit_edit(
+            &state,
+            request_id.map(|id| (id, payload.as_str(), &reply)),
+            now,
+        )?;
+        engine.accept_queue_edit(state);
+    }
+    Ok(reply)
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+    use crate::{audio::PlaybackBackend, library::Record};
+    use std::path::Path;
+    #[derive(Default)]
+    struct Silent;
+    impl PlaybackBackend for Silent {
+        fn load(&mut self, _: &Path, _: u64, _: u8, _: bool) -> Result<()> {
+            panic!("Queue edits must never reload output")
+        }
+        fn pause(&mut self) {
+            panic!("Queue edits must not pause output")
+        }
+        fn resume(&mut self) {
+            panic!("Queue edits must not resume output")
+        }
+        fn stop(&mut self) {
+            panic!("Queue edits must not stop output")
+        }
+        fn volume(&mut self, _: u8) {
+            panic!("Queue edits must not change volume")
+        }
+        fn seek(&mut self, _: u64) -> Result<()> {
+            panic!("Queue edits must not seek")
+        }
+        fn position(&self) -> u64 {
+            0
+        }
+        fn finished(&self) -> bool {
+            false
+        }
+    }
+    fn setup() -> (tempfile::TempDir, Store, Engine<Silent>) {
+        let home = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&home.path().join("state.db")).unwrap();
+        let track = Track {
+            id: "song".into(),
+            path: "/song.wav".into(),
+            title: "Song".into(),
+            artist: "Artist".into(),
+            album: "Album".into(),
+            track_number: 1,
+            duration_ms: 10000,
+            cover: None,
+        };
+        store
+            .replace_catalog(&[Record {
+                track: track.clone(),
+                modified: 1,
+                bytes: 1,
+            }])
+            .unwrap();
+        let item = QueueItem::new(track);
+        let state = State {
+            current_id: Some(item.id.clone()),
+            queue: vec![item],
+            position_ms: 1234,
+            status: PlaybackStatus::Playing,
+            ..State::default()
+        };
+        store.save(&state).unwrap();
+        (home, store, Engine::new(state, Silent))
+    }
+    fn add() -> QueueEdit {
+        QueueEdit {
+            operations: vec![QueueOperation::Add {
+                track_ids: vec!["song".into(), "song".into()],
+                after_current: true,
+                index: None,
+            }],
+        }
+    }
+    #[test]
+    fn batch_replay_precedes_revision_check_and_survives_restart() {
+        let (home, mut store, mut engine) = setup();
+        let original = engine.state.current_id.clone();
+        let preview = edit_queue(&mut engine, &mut store, &add(), true, Some(0), None).unwrap();
+        assert_eq!(preview.data.unwrap()["applied"], false);
+        assert_eq!(engine.state.queue.len(), 1);
+        let first = edit_queue(
+            &mut engine,
+            &mut store,
+            &add(),
+            false,
+            Some(0),
+            Some("batch-1"),
+        )
+        .unwrap();
+        assert_eq!(engine.state.queue.len(), 3);
+        assert_eq!(engine.state.current_id, original);
+        assert_eq!(engine.state.position_ms, 1234);
+        assert_eq!(engine.state.status, PlaybackStatus::Playing);
+        assert_ne!(engine.state.queue[1].id, engine.state.queue[2].id);
+        let replay = edit_queue(
+            &mut engine,
+            &mut store,
+            &add(),
+            false,
+            Some(0),
+            Some("batch-1"),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(replay).unwrap()
+        );
+        drop(store);
+        let mut store = Store::open(&home.path().join("state.db")).unwrap();
+        let mut engine = Engine::new(store.restore().unwrap(), Silent);
+        let replay = edit_queue(
+            &mut engine,
+            &mut store,
+            &add(),
+            false,
+            Some(0),
+            Some("batch-1"),
+        )
+        .unwrap();
+        assert_eq!(replay.data, first.data);
+        assert_eq!(engine.state.queue.len(), 3);
+        assert_eq!(engine.state.play_next.len(), 2);
+        assert!(
+            edit_queue(&mut engine, &mut store, &add(), false, Some(0), None)
+                .unwrap_err()
+                .is::<ApiError>()
+        );
+        let error = edit_queue(
+            &mut engine,
+            &mut store,
+            &add(),
+            false,
+            Some(1),
+            Some("batch-1"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<ApiError>().unwrap().code,
+            "request_id_conflict"
+        );
+    }
+    #[test]
+    fn invalid_edit_and_storage_failure_leave_engine_and_receipt_unchanged() {
+        let (home, mut store, mut engine) = setup();
+        let original = serde_json::to_value(&engine.state).unwrap();
+        for operation in [
+            QueueOperation::Remove {
+                queue_item_ids: vec![engine.state.current_id.clone().unwrap()],
+            },
+            QueueOperation::Move {
+                queue_item_id: "missing".into(),
+                index: 0,
+            },
+            QueueOperation::Add {
+                track_ids: vec!["missing".into()],
+                after_current: false,
+                index: None,
+            },
+        ] {
+            let mut edit = add();
+            edit.operations.push(operation);
+            assert!(
+                edit_queue(&mut engine, &mut store, &edit, false, None, Some("failed")).is_err()
+            );
+            assert_eq!(serde_json::to_value(&engine.state).unwrap(), original);
+            assert!(
+                store
+                    .replay("failed", "unused", unix_ms())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let connection = rusqlite::Connection::open(home.path().join("state.db")).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_session BEFORE UPDATE ON session BEGIN SELECT RAISE(FAIL,'injected failure'); END;").unwrap();
+        assert!(
+            edit_queue(
+                &mut engine,
+                &mut store,
+                &add(),
+                false,
+                None,
+                Some("db-failed")
+            )
+            .is_err()
+        );
+        assert_eq!(serde_json::to_value(&engine.state).unwrap(), original);
+        assert!(
+            store
+                .replay("db-failed", "unused", unix_ms())
+                .unwrap()
+                .is_none()
+        );
+        connection
+            .execute_batch("DROP TRIGGER fail_session;")
+            .unwrap();
+        assert!(
+            edit_queue(
+                &mut engine,
+                &mut store,
+                &add(),
+                false,
+                None,
+                Some("db-failed")
+            )
+            .is_ok()
+        );
+    }
+    #[test]
+    fn mixed_edits_apply_in_order_and_protect_current_even_when_paused() {
+        let (_home, mut store, mut engine) = setup();
+        edit_queue(&mut engine, &mut store, &add(), false, None, None).unwrap();
+        engine.state.status = PlaybackStatus::Paused;
+        let current = engine.state.current_id.clone().unwrap();
+        let remove = engine.state.queue[1].id.clone();
+        let remaining = engine.state.queue[2].id.clone();
+        let edit = QueueEdit {
+            operations: vec![
+                QueueOperation::Remove {
+                    queue_item_ids: vec![remove],
+                },
+                QueueOperation::Move {
+                    queue_item_id: current.clone(),
+                    index: 1,
+                },
+            ],
+        };
+        edit_queue(&mut engine, &mut store, &edit, false, None, None).unwrap();
+        assert_eq!(engine.state.queue[0].id, remaining);
+        assert_eq!(engine.state.queue[1].id, current);
+        assert_eq!(engine.state.position_ms, 1234);
+        assert_eq!(engine.state.status, PlaybackStatus::Paused);
+        assert_eq!(engine.state.play_next, vec![remaining]);
+    }
 }

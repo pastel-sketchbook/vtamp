@@ -24,7 +24,7 @@ playing when a TUI exits or a tmux client detaches.
 | Location | Responsibility |
 | --- | --- |
 | `src/model.rs` | Shared state, commands, replies, events, protocol version, queue identity |
-| `src/engine.rs` | Playback state machine, queue edits, shuffle/history, repeat, output recovery |
+| `src/engine.rs`, `src/queue_edit.rs` | Playback state machine, pure batch queue validation, explicit play-next priority, shuffle/history, stop reservations, output recovery |
 | `src/audio.rs`, `src/audio/macos.rs` | Shared decoder entry point, macOS AudioToolbox AAC source, rodio adapter, default-device and stream monitoring |
 | `src/media_controls.rs`, `src/media_controls/macos.rs`, `src/media_controls/app_bundle.rs`, `build.rs` | Media command mapping, Now Playing publication, main-thread AppKit loop, private signed app bundle and embedded identity |
 | `src/daemon.rs` | Server lifecycle, serialized command handling, authoritative state and database writes, background scans |
@@ -142,6 +142,39 @@ modify them or commit music, databases, caches, logs, or standalone album art.
 Some tracks genuinely have no cover: inspect metadata and sidecar files before
 diagnosing a graphics failure. Bills and Liebestraum have been useful local
 missing-art cases, but their presence is not a portable test prerequisite.
+
+## Agent CLI contracts
+
+- Protocol and database versions are 2. New server startup migrates v1 databases
+  atomically, preserving IDs; old binaries reject v2. Do not restart the listener
+  just to upgrade during an active user listening session.
+- `now`, paginated `queue list`, field search, track lookup, scan-status, and sleep
+  status are read-only and never auto-start a server. Dry-run edits also must not
+  start a server or write state. Unpaginated queue list retains its array response.
+- Batch queue edits validate a candidate before any mutation. Protect the current
+  entry from removal and preserve output/position. Commit the session and optional
+  request receipt in the same DB transaction before publishing the candidate.
+- Request IDs cover parsed edits plus their revision guard. Replay before checking
+  the guard; preserve successful receipts for 24 hours across restarts. Do not
+  evict unexpired receipts to make room. This applies to new batch edits/adds,
+  not legacy playback or path-import commands. Report the limits accurately.
+- Queue revision tracks entry membership/order, explicit play-next entries, and
+  current entry identity across every mutation path and natural advancement.
+  Position/volume/pause do not invalidate queue guards. Avoid cloning the full
+  queue in the periodic playback tick when nothing changed.
+- Explicit play-next entries precede shuffle in their supplied order; repeat-one
+  still wins on natural endings unless after-current stop is scheduled. Preserve
+  the remaining shuffle pool and persist pending entries across restart.
+- Scan jobs run off the owner thread. Commit successful catalog replacement and
+  the terminal report together; retain 100 terminal jobs. On startup mark running
+  jobs interrupted. Wait timeouts do not cancel work. Count all warnings but cap
+  detailed path/message records at 100.
+- Stop reservations run in the server, including during output recovery. A new
+  reservation replaces the old one. After-current binds to an entry and is cleared
+  when that identity changes; deadlines use wall time, including pause/system sleep.
+  Stop/cancel/restart clears reservations. No timer may resume playback.
+- Use fake clocks/backend tests for ordering and timers, transaction failure
+  injection for edits, and isolated process tests for receipts and scan reports.
 
 ## Behavior to preserve
 

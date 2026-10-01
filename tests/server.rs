@@ -97,7 +97,7 @@ fn concurrent_start_watch_and_restore() {
         .unwrap();
     send(
         &mut watch,
-        json!({"version":1, "request":{"command":"watch"}}),
+        json!({"version":vtamp::model::PROTOCOL_VERSION, "request":{"command":"watch"}}),
     );
     assert_eq!(receive(&mut watch)["ok"], true);
     server.ok(&["volume", "42"]);
@@ -167,4 +167,187 @@ fn crash_leaves_socket_that_next_launch_recovers() {
     assert!(server.socket().exists());
     server.ok(&["server", "start"]);
     server.ok(&["status"]);
+}
+
+#[test]
+fn agent_cli_search_scan_queue_and_timer_contracts() {
+    let server = Server::new();
+    for args in [
+        vec!["now"],
+        vec!["sleep", "status"],
+        vec!["library", "track", "missing"],
+        vec!["queue", "list", "--limit", "1"],
+    ] {
+        assert!(!server.cmd(&args).status.success());
+        assert!(!server.socket().exists());
+    }
+    let music = server.home.path().join("music");
+    std::fs::create_dir(&music).unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav"),
+        music.join("Love.wav"),
+    )
+    .unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav"),
+        music.join("Love live.wav"),
+    )
+    .unwrap();
+    std::fs::write(music.join("broken.wav"), b"bad audio").unwrap();
+    let scan = server.ok(&["library", "add", music.to_str().unwrap(), "--wait"]);
+    assert_eq!(scan["status"], "completed");
+    assert_eq!(scan["summary"]["added"], 2);
+    assert_eq!(scan["summary"]["warning_count"], 1);
+    assert!(
+        scan["summary"]["warnings"][0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("broken.wav")
+    );
+    assert_eq!(
+        server.ok(&["library", "scan-status", scan["job_id"].as_str().unwrap()]),
+        scan
+    );
+    let search = server.ok(&["library", "search", "--title", "love", "--exclude", "live"]);
+    assert_eq!(search["total"], 1);
+    let id = search["tracks"][0]["id"].as_str().unwrap();
+    assert_eq!(server.ok(&["library", "track", id])["title"], "Love");
+    assert_eq!(
+        server.ok(&["library", "search", "--title", "LOVE", "--exact"])["total"],
+        1
+    );
+    let now = server.ok(&["now"]);
+    assert!(now["current"].is_null());
+    assert!(now.get("queue").is_none());
+    let added = server.ok(&[
+        "queue",
+        "add",
+        "--tracks",
+        id,
+        id,
+        "--after-current",
+        "--if-queue-revision",
+        "0",
+        "--request-id",
+        "batch",
+    ]);
+    assert_eq!(added["changes"][0]["items"].as_array().unwrap().len(), 2);
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 2);
+    let page = server.ok(&["queue", "list", "--offset", "1", "--limit", "1"]);
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    let edit = server.home.path().join("edit.json");
+    std::fs::write(
+        &edit,
+        serde_json::to_vec(
+            &json!({"operations":[{"op":"remove","queue_item_ids":[page["items"][0]["id"]]}]}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let before = server.ok(&["status"]);
+    assert_eq!(
+        server.ok(&[
+            "queue",
+            "edit",
+            "--file",
+            edit.to_str().unwrap(),
+            "--dry-run"
+        ])["applied"],
+        false
+    );
+    assert_eq!(server.ok(&["status"]), before);
+    let conflict = server.cmd(&[
+        "queue",
+        "edit",
+        "--file",
+        edit.to_str().unwrap(),
+        "--if-queue-revision",
+        "0",
+    ]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&conflict.stdout).unwrap()["error"]["code"],
+        "queue_conflict"
+    );
+    server.ok(&["queue", "edit", "--file", edit.to_str().unwrap()]);
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 1);
+    // Replaying an old success must not undo later edits or trip its old guard.
+    assert_eq!(
+        server.ok(&[
+            "queue",
+            "add",
+            "--tracks",
+            id,
+            id,
+            "--after-current",
+            "--if-queue-revision",
+            "0",
+            "--request-id",
+            "batch"
+        ]),
+        added
+    );
+    server.ok(&["sleep", "set", "30m"]);
+    assert_eq!(
+        server.ok(&["sleep", "status"])["scheduled_stop"]["kind"],
+        "deadline"
+    );
+    server.ok(&["server", "stop"]);
+    server.ok(&["server", "start"]);
+    assert!(server.ok(&["sleep", "status"])["scheduled_stop"].is_null());
+    assert_eq!(
+        server.ok(&[
+            "queue",
+            "add",
+            "--tracks",
+            id,
+            id,
+            "--after-current",
+            "--if-queue-revision",
+            "0",
+            "--request-id",
+            "batch"
+        ]),
+        added
+    );
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 1);
+    let second = server.ok(&["library", "scan", "--wait"]);
+    assert_eq!(second["summary"]["unchanged"], 2);
+    server.ok(&["sleep", "set", "1s"]);
+    std::thread::sleep(Duration::from_millis(1150));
+    assert!(server.ok(&["now"])["scheduled_stop"].is_null());
+}
+
+#[test]
+fn concurrent_and_disconnected_batch_requests_apply_once() {
+    let server = Server::new();
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    server.ok(&["library", "add", fixtures, "--wait"]);
+    let list = server.ok(&["library", "list"]);
+    let id = list["tracks"][0]["id"].as_str().unwrap();
+    let request = json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{
+        "command":"queue_edit","edit":{"operations":[{"op":"add","track_ids":[id]}]},
+        "dry_run":false,"if_queue_revision":0,"request_id":"disconnected"}});
+    let mut stream = UnixStream::connect(server.socket()).unwrap();
+    send(&mut stream, request.clone());
+    drop(stream); // The caller loses its response, not the accepted edit.
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..6)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut stream = UnixStream::connect(server.socket()).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    send(&mut stream, request.clone());
+                    let result = receive(&mut stream);
+                    assert_eq!(result["ok"], true, "{result}");
+                    result
+                })
+            })
+            .collect();
+        let replies: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(replies.windows(2).all(|w| w[0] == w[1]));
+    });
+    assert_eq!(server.ok(&["queue", "list"]).as_array().unwrap().len(), 1);
 }

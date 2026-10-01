@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Track {
@@ -60,6 +60,9 @@ pub struct State {
     pub shuffle: bool,
     pub repeat: Repeat,
     pub revision: u64,
+    pub queue_revision: u64,
+    pub play_next: Vec<String>,
+    pub scheduled_stop: Option<ScheduledStop>,
     pub scanning: bool,
     pub last_error: Option<String>,
 }
@@ -75,6 +78,9 @@ impl Default for State {
             shuffle: false,
             repeat: Repeat::Off,
             revision: 0,
+            queue_revision: 0,
+            play_next: vec![],
+            scheduled_stop: None,
             scanning: false,
             last_error: None,
         }
@@ -96,6 +102,34 @@ impl State {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
     Status,
+    Now,
+    QueuePage {
+        offset: usize,
+        limit: usize,
+    },
+    QueueEdit {
+        edit: QueueEdit,
+        dry_run: bool,
+        if_queue_revision: Option<u64>,
+        request_id: Option<String>,
+    },
+    LibrarySearch {
+        filter: SearchFilter,
+        offset: usize,
+        limit: usize,
+    },
+    LibraryTrack {
+        id: String,
+    },
+    ScanStatus {
+        id: String,
+    },
+    StopAfterCurrent,
+    SleepSet {
+        milliseconds: u64,
+    },
+    SleepStatus,
+    SleepCancel,
     Watch,
     Shutdown,
     Play {
@@ -159,13 +193,21 @@ pub struct Request {
 pub struct ApiError {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl ApiError {
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
     pub fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
     }
 }
@@ -219,9 +261,111 @@ pub enum Event {
     State(State),
     Progress { position_ms: u64, revision: u64 },
     LibraryChanged,
+    ScanCompleted(ScanJob),
     Shutdown,
 }
 
 pub fn display_time(ms: u64) -> String {
     format!("{}:{:02}", ms / 60_000, ms / 1000 % 60)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScheduledStop {
+    AfterCurrent { queue_item_id: String },
+    Deadline { deadline_ms: u64 },
+}
+
+pub fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchFilter {
+    pub query: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub exclude: Vec<String>,
+    pub exact: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueueEdit {
+    pub operations: Vec<QueueOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueueOperation {
+    Add {
+        track_ids: Vec<String>,
+        #[serde(default)]
+        after_current: bool,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    Remove {
+        queue_item_ids: Vec<String>,
+    },
+    Move {
+        queue_item_id: String,
+        index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanWarning {
+    pub path: Option<PathBuf>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanSummary {
+    pub added: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+    pub warning_count: usize,
+    pub warnings: Vec<ScanWarning>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanJob {
+    pub job_id: String,
+    pub status: String,
+    pub started_at_ms: u64,
+    pub finished_at_ms: Option<u64>,
+    pub summary: Option<ScanSummary>,
+    pub error: Option<String>,
+}
+
+impl State {
+    pub fn now(&self) -> serde_json::Value {
+        let duration_ms = self.current().map_or(0, |item| item.track.duration_ms);
+        serde_json::json!({
+            "current": self.current(), "status": self.status,
+            "position_ms": self.position_ms, "duration_ms": duration_ms,
+            "remaining_ms": duration_ms.saturating_sub(self.position_ms),
+            "volume": self.volume, "shuffle": self.shuffle, "repeat": self.repeat,
+            "queue_length": self.queue.len(), "revision": self.revision,
+            "queue_revision": self.queue_revision, "scheduled_stop": self.scheduled_stop,
+            "last_error": self.last_error
+        })
+    }
+    pub fn queue_changed_since(&self, old: &Self) -> bool {
+        self.current_id != old.current_id
+            || self.play_next != old.play_next
+            || self
+                .queue
+                .iter()
+                .map(|i| &i.id)
+                .ne(old.queue.iter().map(|i| &i.id))
+    }
 }

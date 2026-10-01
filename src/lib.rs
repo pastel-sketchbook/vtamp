@@ -9,6 +9,7 @@ pub mod library;
 pub mod media_controls;
 pub mod model;
 pub mod platform;
+mod queue_edit;
 pub mod settings;
 pub mod store;
 pub mod theme;

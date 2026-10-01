@@ -27,7 +27,7 @@ fn absent_server_is_quiet_and_does_not_create_runtime_files() {
     let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         reply,
-        json!({"version": 1, "ok": true, "data": {"text": ""}})
+        json!({"version": vtamp::model::PROTOCOL_VERSION, "ok": true, "data": {"text": ""}})
     );
     assert!(!home.path().join("run").exists());
     assert!(!home.path().join("state.db").exists());
@@ -81,7 +81,7 @@ fn renders_existing_protocol_without_starting_or_mutating_playback() {
     for (status, prefix) in [("playing", "▶"), ("paused", "Ⅱ"), ("stopped", "")] {
         let (output, _) = fake_server(
             |mut stream| {
-                let reply = json!({"version": 1, "ok": true, "data": {
+                let reply = json!({"version": vtamp::model::PROTOCOL_VERSION, "ok": true, "data": {
                     "status": status, "position_ms": 56_000, "current_id": "entry",
                     "queue": [{"id": "entry", "track": {
                         "id": "track", "path": "/music/song.m4a", "title": "Training Montage",

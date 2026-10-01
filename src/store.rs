@@ -1,6 +1,6 @@
 use crate::{
     library::{Record, normalized},
-    model::{PlaybackStatus, State, Track},
+    model::{ApiError, PlaybackStatus, Reply, ScanJob, SearchFilter, State, Track},
 };
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -12,19 +12,42 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Connection::open(path)?;
+        let mut db = Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
-        db.execute_batch("BEGIN;
-            CREATE TABLE IF NOT EXISTS session (id INTEGER PRIMARY KEY CHECK(id = 1), json TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS roots (path TEXT PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, search TEXT NOT NULL, json TEXT NOT NULL);
-            PRAGMA user_version = 1;
-            COMMIT;")?;
+        if version == 0 {
+            db.execute_batch("BEGIN;
+                CREATE TABLE session (id INTEGER PRIMARY KEY CHECK(id = 1), json TEXT NOT NULL);
+                CREATE TABLE roots (path TEXT PRIMARY KEY);
+                CREATE TABLE tracks (id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, search TEXT NOT NULL, json TEXT NOT NULL);
+                PRAGMA user_version = 1;
+                COMMIT;")?;
+        }
+        if version < 2 {
+            let tx = db.transaction()?;
+            tx.execute_batch("ALTER TABLE tracks ADD COLUMN title_search TEXT NOT NULL DEFAULT '';
+                ALTER TABLE tracks ADD COLUMN artist_search TEXT NOT NULL DEFAULT '';
+                ALTER TABLE tracks ADD COLUMN album_search TEXT NOT NULL DEFAULT '';
+                CREATE TABLE requests (id TEXT PRIMARY KEY, payload TEXT NOT NULL, reply TEXT NOT NULL, expires_ms INTEGER NOT NULL);
+                CREATE INDEX requests_expiry ON requests(expires_ms);
+                CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, json TEXT NOT NULL, finished_ms INTEGER);
+                PRAGMA user_version = 2;")?;
+            let rows = tx
+                .prepare("SELECT json FROM tracks")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for json in rows {
+                let record: Record = serde_json::from_str(&json)?;
+                let t = record.track;
+                tx.execute("UPDATE tracks SET title_search=?1,artist_search=?2,album_search=?3 WHERE id=?4",
+                    params![normalized(&t.title), normalized(&t.artist), normalized(&t.album), t.id])?;
+            }
+            tx.commit()?;
+        }
         Ok(Self { db })
     }
     pub fn restore(&self) -> Result<State> {
@@ -43,6 +66,7 @@ impl Store {
             PlaybackStatus::Stopped
         };
         state.scanning = false;
+        state.scheduled_stop = None;
         state.volume = state.volume.min(100);
         Ok(state)
     }
@@ -84,20 +108,7 @@ impl Store {
     }
     pub fn replace_catalog(&mut self, records: &[Record]) -> Result<()> {
         let tx = self.db.transaction()?;
-        tx.execute("DELETE FROM tracks", [])?;
-        {
-            let mut stmt =
-                tx.prepare("INSERT INTO tracks(id,path,search,json) VALUES(?1,?2,?3,?4)")?;
-            for record in records {
-                let t = &record.track;
-                stmt.execute(params![
-                    t.id,
-                    t.path.to_string_lossy(),
-                    normalized(&format!("{} {} {}", t.title, t.artist, t.album)),
-                    serde_json::to_string(record)?
-                ])?;
-            }
-        }
+        write_catalog(&tx, records)?;
         tx.commit()?;
         Ok(())
     }
@@ -116,6 +127,171 @@ impl Store {
             .collect::<Result<_, _>>()?;
         Ok((tracks, total as usize))
     }
+    pub fn search_filtered(
+        &self,
+        filter: &SearchFilter,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<Track>, usize)> {
+        if filter.exact
+            && filter.title.is_none()
+            && filter.artist.is_none()
+            && filter.album.is_none()
+        {
+            return Err(ApiError::new(
+                "invalid_arguments",
+                "Exact matching requires a field filter",
+            )
+            .into());
+        }
+        let mut predicates = vec!["instr(search,?)>0".to_string()];
+        let mut values = vec![normalized(&filter.query)];
+        for (column, value) in [
+            ("title_search", &filter.title),
+            ("artist_search", &filter.artist),
+            ("album_search", &filter.album),
+        ] {
+            if let Some(value) = value {
+                predicates.push(if filter.exact {
+                    format!("{column}=?")
+                } else {
+                    format!("instr({column},?)>0")
+                });
+                values.push(normalized(value));
+            }
+        }
+        for value in &filter.exclude {
+            predicates.push("instr(search,?)=0".into());
+            values.push(normalized(value));
+        }
+        let condition = predicates.join(" AND ");
+        let total: i64 = self.db.query_row(
+            &format!("SELECT count(*) FROM tracks WHERE {condition}"),
+            rusqlite::params_from_iter(&values),
+            |row| row.get(0),
+        )?;
+        let offset = i64::try_from(offset)?;
+        let sql = format!(
+            "SELECT json FROM tracks WHERE {condition} ORDER BY search,path LIMIT {} OFFSET {offset}",
+            limit.clamp(1, 1000)
+        );
+        let records = self
+            .db
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(&values), |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((
+            records
+                .into_iter()
+                .map(|s| serde_json::from_str::<Record>(&s).map(|r| r.track))
+                .collect::<Result<Vec<_>, _>>()?,
+            total as usize,
+        ))
+    }
+
+    pub fn replay(&self, id: &str, payload: &str, now: u64) -> Result<Option<Reply>> {
+        let row: Option<(String, String)> = self
+            .db
+            .query_row(
+                "SELECT payload,reply FROM requests WHERE id=?1 AND expires_ms>?2",
+                params![id, i64::try_from(now)?],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((previous, reply)) if previous == payload => {
+                Ok(Some(serde_json::from_str(&reply)?))
+            }
+            Some(_) => Err(ApiError::new(
+                "request_id_conflict",
+                "Request ID already belongs to a different edit",
+            )
+            .into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Persist the candidate and receipt together before publishing any in-memory change.
+    pub fn commit_edit(
+        &mut self,
+        state: &State,
+        receipt: Option<(&str, &str, &Reply)>,
+        now: u64,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        if let Some((id, payload, reply)) = receipt {
+            tx.execute(
+                "DELETE FROM requests WHERE expires_ms<=?1",
+                [i64::try_from(now)?],
+            )?;
+            let count: i64 = tx.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
+            if count >= 10_000 {
+                return Err(ApiError::new(
+                    "request_log_full",
+                    "Unexpired request log is full; retry after records expire",
+                )
+                .into());
+            }
+            tx.execute(
+                "INSERT INTO requests(id,payload,reply,expires_ms) VALUES(?1,?2,?3,?4)",
+                params![
+                    id,
+                    payload,
+                    serde_json::to_string(reply)?,
+                    i64::try_from(now.saturating_add(86_400_000))?
+                ],
+            )?;
+        }
+        tx.execute("INSERT INTO session(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", [serde_json::to_string(state)?])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn save_scan(&mut self, job: &ScanJob, records: Option<&[Record]>) -> Result<()> {
+        let tx = self.db.transaction()?;
+        if let Some(records) = records {
+            write_catalog(&tx, records)?;
+        }
+        tx.execute("INSERT INTO scan_jobs(id,json,finished_ms) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json,finished_ms=excluded.finished_ms",
+            params![job.job_id, serde_json::to_string(job)?, job.finished_at_ms.map(i64::try_from).transpose()?])?;
+        tx.execute("DELETE FROM scan_jobs WHERE finished_ms IS NOT NULL AND id NOT IN (SELECT id FROM scan_jobs WHERE finished_ms IS NOT NULL ORDER BY finished_ms DESC,rowid DESC LIMIT 100)", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn scan_job(&self, id: &str) -> Result<ScanJob> {
+        let json: Option<String> = self
+            .db
+            .query_row("SELECT json FROM scan_jobs WHERE id=?1", [id], |r| r.get(0))
+            .optional()?;
+        match json {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Err(ApiError::new(
+                "scan_not_found",
+                "Scan job not found or no longer retained",
+            )
+            .into()),
+        }
+    }
+
+    pub fn interrupt_scans(&mut self, now: u64) -> Result<()> {
+        let rows = self
+            .db
+            .prepare("SELECT json FROM scan_jobs WHERE finished_ms IS NULL")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for json in rows {
+            let mut job: ScanJob = serde_json::from_str(&json)?;
+            job.status = "interrupted".into();
+            job.finished_at_ms = Some(now);
+            job.error = Some("Server restarted before the scan completed".into());
+            self.save_scan(&job, None)?;
+        }
+        Ok(())
+    }
+
     pub fn track(&self, id: &str) -> Result<Option<Track>> {
         let json: Option<String> = self
             .db
@@ -125,6 +301,24 @@ impl Store {
             .map(|s| serde_json::from_str::<Record>(&s).map(|r| r.track))
             .transpose()?)
     }
+}
+
+fn write_catalog(tx: &rusqlite::Transaction<'_>, records: &[Record]) -> Result<()> {
+    tx.execute("DELETE FROM tracks", [])?;
+    let mut stmt = tx.prepare("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
+    for record in records {
+        let t = &record.track;
+        stmt.execute(params![
+            t.id,
+            t.path.to_string_lossy(),
+            normalized(&format!("{} {} {}", t.title, t.artist, t.album)),
+            serde_json::to_string(record)?,
+            normalized(&t.title),
+            normalized(&t.artist),
+            normalized(&t.album)
+        ])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -158,5 +352,182 @@ mod tests {
         assert_eq!(restored.status, PlaybackStatus::Paused);
         assert_eq!(restored.position_ms, 12000);
         assert_eq!(restored.volume, 42);
+    }
+    fn record(id: &str, title: &str, artist: &str, album: &str) -> Record {
+        Record {
+            track: Track {
+                id: id.into(),
+                path: format!("/{id}.wav").into(),
+                title: title.into(),
+                artist: artist.into(),
+                album: album.into(),
+                track_number: 1,
+                duration_ms: 1000,
+                cover: None,
+            },
+            modified: 1,
+            bytes: 1,
+        }
+    }
+    #[test]
+    fn v1_migration_backfills_unicode_search_without_changing_ids() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("old.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE session(id INTEGER PRIMARY KEY,json TEXT NOT NULL); CREATE TABLE roots(path TEXT PRIMARY KEY); CREATE TABLE tracks(id TEXT PRIMARY KEY,path TEXT UNIQUE NOT NULL,search TEXT NOT NULL,json TEXT NOT NULL); PRAGMA user_version=1;").unwrap();
+        let r = record("stable", "사랑", "ＤＡＹ６", "Live");
+        db.execute(
+            "INSERT INTO tracks VALUES(?1,?2,?3,?4)",
+            params![
+                r.track.id,
+                "/stable.wav",
+                normalized("사랑 DAY6 Live"),
+                serde_json::to_string(&r).unwrap()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        let store = Store::open(&path).unwrap();
+        let filter = SearchFilter {
+            title: Some("사랑".into()),
+            artist: Some("day6".into()),
+            exact: true,
+            ..Default::default()
+        };
+        let (tracks, total) = store.search_filtered(&filter, 0, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(tracks[0].id, "stable");
+        assert_eq!(
+            store
+                .db
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let filter = SearchFilter {
+            exclude: vec!["LIVE".into()],
+            ..filter
+        };
+        assert_eq!(store.search_filtered(&filter, 0, 10).unwrap().1, 0);
+    }
+    #[test]
+    fn filters_pagination_and_atomic_catalog_failure() {
+        let home = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&home.path().join("state.db")).unwrap();
+        let records = vec![
+            record("a", "Love", "Artist", "Studio"),
+            record("b", "Love live", "Artist", "Live"),
+            record("c", "Love", "Else", "Studio"),
+        ];
+        store.replace_catalog(&records).unwrap();
+        let filter = SearchFilter {
+            query: "LOVE".into(),
+            artist: Some("artist".into()),
+            ..Default::default()
+        };
+        let (page, total) = store.search_filtered(&filter, 1, 1).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(page.len(), 1);
+        assert!(store.search_filtered(&filter, 100, 1).unwrap().0.is_empty());
+        let filter = SearchFilter {
+            exclude: vec!["live".into()],
+            ..filter
+        };
+        assert_eq!(store.search_filtered(&filter, 0, 10).unwrap().0[0].id, "a");
+        assert_eq!(store.search_filtered(&filter, 0, 10).unwrap().1, 1);
+        // A failed replacement must not erase the previous catalog.
+        assert!(
+            store
+                .replace_catalog(&[records[0].clone(), records[0].clone()])
+                .is_err()
+        );
+        assert_eq!(store.search("", 0, 10).unwrap().1, 3);
+    }
+    #[test]
+    fn receipt_expiry_capacity_and_failed_commit_are_transactional() {
+        let home = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&home.path().join("state.db")).unwrap();
+        let reply = Reply::success(serde_json::json!({"applied":true}));
+        store
+            .commit_edit(&State::default(), Some(("one", "payload", &reply)), 100)
+            .unwrap();
+        assert!(
+            store
+                .replay("one", "payload", 86_400_099)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .replay("one", "payload", 86_400_100)
+                .unwrap()
+                .is_none()
+        );
+        store.db.execute_batch("DELETE FROM requests; WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO requests SELECT CAST(x AS TEXT),'p','{}',999999999 FROM n;").unwrap();
+        let state = State {
+            volume: 12,
+            ..State::default()
+        };
+        let err = store
+            .commit_edit(&state, Some(("full", "payload", &reply)), 200)
+            .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<ApiError>().unwrap().code,
+            "request_log_full"
+        );
+        assert_eq!(store.restore().unwrap().volume, 70);
+        assert!(store.replay("full", "payload", 200).unwrap().is_none());
+        store
+            .commit_edit(&state, Some(("new", "payload", &reply)), 1_000_000_000)
+            .unwrap();
+        assert_eq!(store.restore().unwrap().volume, 12);
+    }
+    #[test]
+    fn scan_history_is_bounded_and_restart_interrupts_running_jobs_and_clears_timers() {
+        let home = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&home.path().join("state.db")).unwrap();
+        for i in 0..102 {
+            store
+                .save_scan(
+                    &ScanJob {
+                        job_id: i.to_string(),
+                        status: "completed".into(),
+                        started_at_ms: i,
+                        finished_at_ms: Some(i + 1),
+                        summary: None,
+                        error: None,
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        assert!(store.scan_job("0").is_err());
+        assert!(store.scan_job("2").is_ok());
+        store
+            .save_scan(
+                &ScanJob {
+                    job_id: "active".into(),
+                    status: "running".into(),
+                    started_at_ms: 200,
+                    finished_at_ms: None,
+                    summary: None,
+                    error: None,
+                },
+                None,
+            )
+            .unwrap();
+        store.interrupt_scans(500).unwrap();
+        assert_eq!(store.scan_job("active").unwrap().status, "interrupted");
+        assert!(store.scan_job("2").is_err());
+        store
+            .save(&State {
+                scheduled_stop: Some(crate::model::ScheduledStop::Deadline { deadline_ms: 99999 }),
+                scanning: true,
+                ..State::default()
+            })
+            .unwrap();
+        let state = store.restore().unwrap();
+        assert!(state.scheduled_stop.is_none());
+        assert!(!state.scanning);
     }
 }

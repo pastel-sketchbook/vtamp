@@ -30,7 +30,11 @@ impl Client {
             .await?;
             let reply: Reply = wire::read(&mut stream).await?;
             if reply.version != PROTOCOL_VERSION {
-                bail!("Client and server protocol versions differ; restart the server");
+                return Err(ApiError::new(
+                    "version_mismatch",
+                    "Client and server protocol versions differ; restart the server",
+                )
+                .into());
             }
             Ok(reply)
         })
