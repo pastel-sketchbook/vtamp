@@ -1,8 +1,8 @@
 <div align="center">
   <img src="site/mark.png" width="64" alt="vtamp">
   <h1>vtamp</h1>
-  <p><strong>Music stays. Your terminal moves on.</strong></p>
-  <p>A detachable terminal music player. Rust. Local music and live radio. macOS first.</p>
+  <p><strong>A music player for the terminal that keeps playing after you detach.</strong></p>
+  <p>Local files and live radio. One persistent playback server, any number of terminal clients, and a JSON CLI for scripts and agents. Rust. macOS first.</p>
 </div>
 
 There used to be a little player on the corner of your desktop. A playlist, an album cover, a green display. It did one thing, and it felt like yours.

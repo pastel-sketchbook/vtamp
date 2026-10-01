@@ -17,7 +17,7 @@ use std::{
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Music stays. Your terminal moves on.",
+    about = "A music player for the terminal that keeps playing after you detach.",
     long_about = "A detachable terminal music player. Run vtamp to attach; q closes the interface and keeps music playing."
 )]
 pub struct Args {

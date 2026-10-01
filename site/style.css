@@ -36,7 +36,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 
 /* Real terminal pixels get the full width beneath the headline and invitation. */
 .hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 48px 8%; padding-block: 64px 88px; align-items: center; }
-.hero h1 { font-size: clamp(3.5rem, 5.75vw, 5.65rem); line-height: 1.04; margin: 0; }
+.hero h1 { font-size: clamp(2.75rem, 4.4vw, 4.25rem); line-height: 1.06; margin: 0; }
 .hero h1 em { font-style: normal; color: var(--green); }
 .lede { font-size: 23px; line-height: 1.5; margin-bottom: 17px; }
 .intro { font-size: 16px; color: var(--muted); max-width: 38ch; margin-bottom: 29px; }
@@ -45,6 +45,11 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 .primary:hover { background: #d0ffac; }
 .hero-facts { display: flex; flex-wrap: wrap; gap: 9px 16px; margin-top: 22px; font-size: 11px; color: var(--muted); }
 .hero-facts span + span::before { content: '·'; padding-right: 14px; color: var(--green); }
+.hero-install { display: flex; width: fit-content; max-width: 100%; align-items: stretch; margin-top: 18px; border: 1px solid #596b49; background: #232e20; }
+.hero-install code { font-size: 13px; color: var(--text); padding: 10px 14px; min-width: 0; overflow-wrap: anywhere; }
+.hero-install .copy-icon { display: inline-flex; align-items: center; padding: 0 11px; border-left: 1px solid #596b49; color: var(--green); transition: background .18s ease-out, color .18s ease-out; }
+.hero-install .copy-icon:hover { background: var(--panel); color: var(--text); }
+.hero-install .copy-icon:focus-visible { outline-offset: -4px; }
 .gallery { grid-column: 1 / -1; min-width: 0; }
 .gallery-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
 .gallery-toolbar > p { font-size: 18px; margin: 0; }
@@ -140,7 +145,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
 .copy-feedback:empty { display: none; }
 @media (max-width: 1100px) {
   .wrap { width: calc(100% - 64px); } .hero { column-gap: 5%; padding-top: 48px; }
-  .hero h1 { font-size: 5.5vw; } .lede { font-size: 20px; }
+  .hero h1 { font-size: 4.3vw; } .lede { font-size: 20px; }
   .gallery-toolbar { flex-wrap: wrap; gap: 10px; }
   .lifecycle { gap: 30px; } .command-row { grid-template-columns: 1fr 24px; } .command-row > span { display: none; } .commands, .install { gap: 7%; }
 }
@@ -148,7 +153,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
   .wrap { width: calc(100% - 40px); } .masthead { height: 80px; } .masthead nav { gap: 16px; font-size: 12px; }
   .masthead nav > a:first-child { display: none; } .brand { font-size: 25px; } .version { display: none; }
   .hero { grid-template-columns: 1fr; gap: 28px; padding-block: 40px 56px; }
-  .hero h1 { font-size: clamp(3rem, 9.2vw, 4.3rem); line-height: 1.04; }
+  .hero h1 { font-size: clamp(2.3rem, 7.6vw, 3.2rem); line-height: 1.06; }
   .hero .lede { font-size: 19px; } .intro { max-width: 40ch; font-size: 15px; margin-bottom: 24px; }
   .hero-facts { gap: 10px; } .hero-facts span + span::before { padding-right: 5px; }
   .gallery { margin-top: 10px; }
@@ -179,7 +184,7 @@ h2 { font-size: clamp(2rem, 3.8vw, 3.4rem); line-height: 1.08; margin-bottom: 1.
   h2 { font-size: 2.2rem; } .install .requirements { margin-top: 20px; }
 }
 @media (max-width: 380px) {
-  .wrap { width: calc(100% - 32px); } .hero h1 { font-size: 2.9rem; }
+  .wrap { width: calc(100% - 32px); } .hero h1 { font-size: 2.2rem; } .hero-install code { font-size: 12px; padding: 9px 10px; }
   .gallery-controls button { padding-inline: 6px; font-size: 11px; }
   .hero-facts { gap: 7px; font-size: 10px; }
   .architecture { gap: 6px; } .connector { width: 9px; } .command-row > span { font-size: 10px; } .command-row { gap: 5px; }

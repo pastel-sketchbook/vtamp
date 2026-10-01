@@ -6,7 +6,7 @@ homepage = "https://github.com/rath/vtamp"
 repository = "https://github.com/rath/vtamp"
 edition = "2024"
 rust-version = "1.90"
-description = "Music stays. Your terminal moves on. A detachable terminal music player."
+description = "A music player for the terminal that keeps playing after you detach"
 license = "MIT"
 readme = "README.md"
 

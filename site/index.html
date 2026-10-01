@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#171c18">
 <meta name="description" content="vtamp is a detachable terminal music player. Local music, a persistent server, and a CLI for people, scripts, and agents. Built with Rust. macOS first.">
-<title>vtamp — Music stays. Your terminal moves on.</title>
+<title>vtamp · A music player for the terminal that keeps playing after you detach</title>
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"><link rel="preload" href="fonts/SpaceGrotesk.ttf" as="font" type="font/ttf" crossorigin><link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
 </head>
 <body>
@@ -14,16 +14,17 @@
 </header>
 <main id="main">
 <section class="hero wrap" aria-labelledby="headline">
-<h1 id="headline">Music <em>stays.</em><br>Your terminal<br>moves on.</h1>
+<h1 id="headline">A music player for the terminal that <em>keeps playing</em> after you detach.</h1>
 <div class="hero-copy">
-<p class="lede">A little Winamp energy.<br>A lot more terminal freedom.</p>
-<p class="intro">Play your local music. Close the interface. Keep the soundtrack. A detachable music player for life inside tmux.</p>
-<a class="button primary" href="#install">Make room for your music <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
+<p class="lede">Playback runs in a background server. Open the interface, pick a track, press q to close it, and reattach from any pane later.</p>
+<p class="intro">Plays local files and live radio from one shared queue, with a JSON CLI and event stream for scripts and agents.</p>
+<a class="button primary" href="#install">Install <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></a>
+<div class="hero-install"><code>brew install rath/tap/vtamp</code><button class="copy-icon" data-copy="brew install rath/tap/vtamp" aria-label="Copy the Homebrew install command"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="hero-facts"><span>Built with Rust</span><span>macOS first</span><span>Open source · MIT</span></div>
 </div>
 <div class="gallery" id="gallery" role="region" aria-roledescription="carousel" aria-label="vtamp in Ghostty and tmux">
 <div class="gallery-toolbar">
-<p>Real terminal. Room to adapt.</p>
+<p>Screenshots from Ghostty inside tmux.</p>
 <div class="gallery-controls" hidden>
 <div class="gallery-selectors" role="group" aria-label="Choose a layout">
 <button type="button" data-slide="0" aria-pressed="true" aria-controls="shot-wide">Wide</button>

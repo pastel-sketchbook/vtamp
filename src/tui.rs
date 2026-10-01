@@ -1628,10 +1628,7 @@ impl App {
         {
             format!("{} · i details", job.summary())
         } else {
-            self.state
-                .last_error
-                .clone()
-                .unwrap_or_else(|| "Music stays. Your terminal moves on.".into())
+            self.state.last_error.clone().unwrap_or_default()
         };
         frame.render_widget(
             Paragraph::new(message).style(Style::default().fg(
