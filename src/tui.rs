@@ -259,12 +259,12 @@ pub async fn run(
             if let Some(event) = terminal_event {
                 match event {
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
-                        let overlay = app.overlay();
+                        let cover_hidden = app.cover_hidden();
                         let theme = app.theme;
                         if app.key(key, &commands)? {
                             return Ok::<_, anyhow::Error>(());
                         }
-                        if overlay != app.overlay() || theme != app.theme {
+                        if cover_hidden != app.cover_hidden() || theme != app.theme {
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
                             terminal.clear()?;
@@ -284,8 +284,10 @@ pub async fn run(
 }
 
 impl App {
-    fn overlay(&self) -> bool {
-        self.help || self.input.is_some() || self.theme_picker.is_some()
+    fn cover_hidden(&self) -> bool {
+        // Help and themes can cover the image. Search/folder prompts sit below
+        // it in every layout, so they need neither hiding nor a terminal clear.
+        self.help || self.theme_picker.is_some()
     }
     fn rebuild_cover(&mut self) {
         let palette = self.theme.palette();
@@ -607,7 +609,7 @@ impl App {
             }
             KeyCode::Char('/') => {
                 self.focus = Focus::Library;
-                self.input = Some(Input::Search(self.query.clone()));
+                self.input = Some(Input::Search(String::new()));
             }
             KeyCode::Char('a') => self.input = Some(Input::Folder(String::new())),
             KeyCode::Char('r') => self.send(commands, Command::LibraryScan),
@@ -972,8 +974,8 @@ impl App {
         let (cover, info) = now_playing_regions(inner, self.show_art);
         if let Some(cover) = cover {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
-            // space, hide while an overlay is open, and redraw when it closes.
-            if !self.overlay() {
+            // space, hide for help/themes, and redraw when they close.
+            if !self.cover_hidden() {
                 if self.cover.has_image() {
                     frame.render_stateful_widget(
                         StatefulImage::new().resize(Resize::Fit(None)),
@@ -1517,6 +1519,48 @@ mod tests {
     }
 
     #[test]
+    fn reopening_search_starts_empty_and_cancel_preserves_applied_query() {
+        let mut app = app();
+        app.query.clear();
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        for c in "love".chars() {
+            app.key(key(KeyCode::Char(c)), &commands).unwrap();
+        }
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert_eq!(app.query, "love");
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::LibraryList { query, offset: 0, .. } if query == "love")
+        );
+
+        app.offset = PAGE_SIZE;
+        app.library_selection.select(Some(3));
+        app.focus = Focus::Queue;
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        assert!(app.focus == Focus::Library);
+        assert!(matches!(&app.input, Some(Input::Search(text)) if text.is_empty()));
+        app.key(key(KeyCode::Char('x')), &commands).unwrap();
+        app.key(key(KeyCode::Esc), &commands).unwrap();
+        assert!(app.input.is_none());
+        assert_eq!(app.query, "love");
+        assert_eq!(app.offset, PAGE_SIZE);
+        assert_eq!(app.library_selection.selected(), Some(3));
+        assert!(requests.try_recv().is_err());
+
+        // Applying an empty new search clears the filter and returns to page 1.
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert!(app.query.is_empty());
+        assert_eq!(app.offset, 0);
+        assert_eq!(app.library_selection.selected(), Some(0));
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::LibraryList { query, offset: 0, .. } if query.is_empty())
+        );
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
     fn short_panes_keep_pixel_art_beside_the_active_browser_through_resizes() {
         use ratatui_image::{FontSize, picker::ProtocolType};
         let mut app = app();
@@ -1587,6 +1631,22 @@ mod tests {
                         );
                     }
                 }
+                for input in [Input::Search(String::new()), Input::Folder(String::new())] {
+                    app.input = Some(input);
+                    assert!(!app.cover_hidden());
+                    terminal.draw(|f| app.draw(f)).unwrap();
+                    assert_eq!(
+                        terminal
+                            .backend()
+                            .buffer()
+                            .content()
+                            .iter()
+                            .any(|cell| cell.symbol().contains("\x1bP")),
+                        art,
+                        "cover with input at {width}x{height}"
+                    );
+                }
+                app.input = None;
                 app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
                     .unwrap();
             }
@@ -1922,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn pixel_cover_is_hidden_under_dialogs_and_restored_afterward() {
+    fn pixel_cover_stays_with_search_but_hides_under_help_and_themes() {
         use ratatui_image::{FontSize, ResizeEncodeRender, picker::ProtocolType};
 
         let mut app = app();
@@ -1949,7 +2009,7 @@ mod tests {
             (false, None, true),
             (true, None, false),
             (false, None, true),
-            (false, Some(Input::Search(String::new())), false),
+            (false, Some(Input::Search(String::new())), true),
             (false, None, true),
         ] {
             app.help = help;

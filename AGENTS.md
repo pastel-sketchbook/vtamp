@@ -183,6 +183,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
 - Library searches are paginated; `gg`/`G` span the current search results, not
   just the loaded page. Reject stale page responses and avoid playing stale rows
   while a destination page loads. Ctrl-F/B move ten entries in the focused list.
+  `/` opens a blank search draft; Esc preserves the applied filter, while Enter
+  applies the draft (an empty draft clears the filter).
 - Keep terminal input and incoming server/artwork messages immediately actionable
   through the event loop. Do not reintroduce a 100 ms polling gate for keys or
   image completion; the periodic tick is for time-based updates.
@@ -190,7 +192,8 @@ missing-art cases, but their presence is not a portable test prerequisite.
   preparing a replacement, swap when ready, and reject obsolete generations.
   Show `No album art` for missing/failed artwork, not briefly during decoding.
   Layout resizing may need to hide an image that no longer fits. Hide pixel art
-  under overlays and restore it when they close.
+  under help/theme overlays and restore it when they close. Bottom search/folder
+  prompts do not overlap the cover; keep it visible without clearing the terminal.
 
 ## Terminal and UI verification
 

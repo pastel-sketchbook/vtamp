@@ -163,7 +163,7 @@ the desktop integration cannot initialize.
 | `j` / `k`, `↓` / `↑` | Move selection |
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
-| `/` | Search title, artist, and album; Enter applies |
+| `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter |
 | `a` | Add a music folder |
 | `r` | Rescan registered folders |
 | `[` / `]` | Previous / next library page (200 tracks) |

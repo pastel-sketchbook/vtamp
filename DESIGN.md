@@ -59,7 +59,7 @@ The approved V-meter app icon has five lime bars forming a V silhouette on a cha
 
 The V-meter source is `assets/icon.png`. Use derived PNGs for the website header/footer mark (`site/mark.png`), favicons (`site/favicon-32.png`, `site/favicon-64.png`), and touch icon (`site/apple-touch-icon.png`); use `assets/vtamp.icns` for macOS app identity. Preserve the approved artwork across these sizes. The brand icon identifies vtamp and never replaces album covers.
 
-The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. During overlays, pixel art is hidden and restored on close so graphics cannot cover dialog text. Selection is client-local; saved preferences apply to future attachments.
+The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. Help and theme overlays hide pixel art and restore it on close so graphics cannot cover dialog text. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft; Enter applies it (empty clears the filter), while Esc keeps the current filter. Theme selection is client-local; saved preferences apply to future attachments.
 
 Keyboard focus is explicit; reduced motion removes web transitions. The public screenshots use the maintainer’s selected real library and original album colors. Refresh them with `scripts/capture-site.py`, using isolated playback and terminal sessions.
 
