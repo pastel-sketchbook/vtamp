@@ -33,6 +33,12 @@ impl Runtime {
     pub fn tasks_busy(&self) -> bool {
         self.tasks.len() >= 4
     }
+    pub fn active(&self) -> bool {
+        self.running.is_some()
+            || !self.queue.is_empty()
+            || !self.tasks.is_empty()
+            || !self.pending.is_empty()
+    }
     pub fn spawn_task(&mut self, task: impl FnOnce(crate::subprocess::Cancel) + Send + 'static) {
         let stop = crate::subprocess::cancel();
         let child_stop = stop.clone();

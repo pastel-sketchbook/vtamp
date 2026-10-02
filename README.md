@@ -316,7 +316,7 @@ the desktop integration cannot initialize.
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `A` | Queue every track the Library view shows — the active `/` search results, or the whole library — in one atomic append that skips tracks Queue already holds; stops at the remaining queue room (10,000 entries) |
-| `x` / `d` | Remove the selected queue entry; Library `d` unregisters a stream after confirmation |
+| `x` / `d` | Remove a queue entry; in Library, confirm deletion of a YouTube download or unregister a stream |
 | `X` | Empty the Queue after a confirmation dialog; playback stops unless a direct track plays outside it |
 | `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |
@@ -517,6 +517,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `queue move ID INDEX` | Move an entry to a **zero-based** destination index |
 | `queue clear` | Stop playback and empty the queue |
 | `library add PATH`, `library remove PATH` | Register/unregister a directory; never delete music files |
+| `library delete TRACK_ID` | Permanently delete a managed YouTube download; refuses local originals and tracks still in use |
 | `library scan [--wait] [--timeout 60s]` | Rescan and optionally await a report; add/remove also accept wait options |
 | `library scan-status JOB_ID` | Inspect a running or recent scan |
 | `library cover refresh [TRACK_ID\|all] [--wait]` | Re-fetch thumbnails and rebuild square covers; every managed YouTube import unless a track ID is given |
@@ -716,9 +717,9 @@ cancelling, or restarting the server clears the reservation. Closing the CLI or
 TUI does not. `scheduled_stop` is null or an object with `kind: "after_current"`
 and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds).
 
-### Updating from protocol 1 to 6
+### Updating from older protocol versions
 
-This build uses **protocol 7** and migrates the library to **database version 6**
+This build uses **protocol 8** and migrates the library to **database version 6**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,

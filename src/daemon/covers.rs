@@ -19,6 +19,9 @@ pub(super) struct Runtime {
 }
 
 impl Runtime {
+    pub fn active(&self) -> bool {
+        self.running.is_some()
+    }
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         Self {

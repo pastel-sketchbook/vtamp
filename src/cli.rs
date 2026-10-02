@@ -380,6 +380,10 @@ pub enum Library {
         #[command(flatten)]
         wait: ScanWait,
     },
+    /// Permanently delete one managed download and its Library entry.
+    Delete {
+        id: String,
+    },
     Scan {
         #[command(flatten)]
         wait: ScanWait,
@@ -1062,6 +1066,7 @@ pub async fn run(args: Args) -> Result<()> {
                 }
             }
             Library::Retag { id } => Command::LibraryRetag { id },
+            Library::Delete { id } => Command::LibraryDelete { id },
             Library::Remove { path, .. } => Command::LibraryRemove {
                 path: platform::absolute(&path)?,
             },

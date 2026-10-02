@@ -6,6 +6,7 @@ pub mod client;
 mod cover;
 pub mod covers;
 pub mod daemon;
+mod deletion;
 pub mod engine;
 pub mod import_config;
 pub mod imports;

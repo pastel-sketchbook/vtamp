@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Untagged to retain the existing on-disk and wire representation of files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -314,6 +314,9 @@ pub enum Command {
     },
     LibraryRemove {
         path: PathBuf,
+    },
+    LibraryDelete {
+        id: String,
     },
     LibraryScan,
     CoverRefresh {

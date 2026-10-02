@@ -109,6 +109,39 @@ impl Drop for Harness {
 }
 const URL: &str = "https://www.youtube.com/watch?v=lO3lG-qXU14";
 #[test]
+fn managed_download_deletion_preserves_queue_and_can_be_reimported() {
+    let h = Harness::new();
+    h.ok(&["library", "add", URL, "--wait", "--timeout", "15s"]);
+    let listed = h.ok(&["library", "list"]);
+    let track = &listed["tracks"][0];
+    let id = track["id"].as_str().unwrap();
+    let folder = std::path::Path::new(track["path"].as_str().unwrap())
+        .parent()
+        .unwrap();
+    h.ok(&["queue", "add", "--track", id]);
+    let before = h.ok(&["status"]);
+    let rejected = h.cmd(&["library", "delete", id]);
+    assert!(!rejected.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&rejected.stdout).unwrap()["error"]["code"],
+        "track_in_use"
+    );
+    assert_eq!(h.ok(&["status"]), before);
+    assert!(folder.join("audio.m4a").exists());
+    let queue_id = before["queue"][0]["id"].as_str().unwrap();
+    h.ok(&["queue", "remove", queue_id]);
+    let deleted = h.ok(&["library", "delete", id]);
+    assert_eq!(deleted["deleted"], id);
+    assert!(!folder.exists());
+    h.ok(&["library", "scan", "--wait"]);
+    assert_eq!(h.ok(&["library", "list"])["total"], 0);
+    let reimported = h.ok(&["library", "add", URL, "--wait", "--timeout", "15s"]);
+    assert_eq!(reimported["job"]["added"], 1);
+    assert!(folder.join("audio.m4a").exists());
+    assert_ne!(h.ok(&["library", "list"])["tracks"][0]["id"], id);
+}
+
+#[test]
 fn single_import_metadata_cover_dedup_edits_and_rescan() {
     let h = Harness::new();
     let preview = h.ok(&["library", "add", URL, "--preview"]);

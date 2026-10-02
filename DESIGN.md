@@ -139,7 +139,16 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 
 ## Optional import controls
 
-Show these only after server-side detection of an installed yt-dlp. The existing
+In Library, `d`/`x` opens a confirmation for deleting a managed YouTube download
+from disk. Show the track title, permanent-file-deletion consequence, and
+Enter/Esc actions even at 40×12; long titles must not displace the warning.
+Local originals are kept and get an explanatory notice. Streams keep their
+unregister confirmation. Downloads still in Queue or direct playback cannot be
+deleted; the server reports that without changing playback. Removing the last
+track on a Library page returns to the last remaining page with the filter kept.
+
+Show import controls only after server-side detection of an installed yt-dlp;
+deleting an existing download does not require yt-dlp. The existing
 `a` prompt accepts a folder or URL; YouTube URLs with a `list` parameter,
 including watch and short links, automatically open a whole-playlist preview
 with an explicit Enter confirmation. Esc cancels without importing. Single

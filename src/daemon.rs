@@ -115,6 +115,7 @@ pub async fn run(
         return Ok(());
     };
     let mut store = Store::open(&paths.database())?;
+    crate::deletion::recover(&paths, &store)?;
     store.interrupt_scans(unix_ms())?;
     store.interrupt_imports()?;
     if paths.data.join("imports/youtube").is_dir() {
@@ -558,6 +559,28 @@ fn worker(
                             let result = store
                                 .remove_stream(&id)
                                 .map(|()| Reply::success(json!({"removed": id})));
+                            if result.is_ok() {
+                                let _ = events.send(Event::LibraryChanged);
+                            }
+                            let _ = answer.send(result.unwrap_or_else(failure));
+                        }
+                        Command::LibraryDelete { id } => {
+                            let result = (|| -> Result<Reply> {
+                                if engine.state.scanning
+                                    || imports > 0
+                                    || youtube.active()
+                                    || covers.active()
+                                {
+                                    return Err(ApiError::new("library_busy", "Wait for scans, imports and cover updates to finish before deleting").into());
+                                }
+                                let result = crate::deletion::delete(
+                                    &paths,
+                                    &mut store,
+                                    &engine.state,
+                                    &id,
+                                )?;
+                                Ok(Reply::success(result))
+                            })();
                             if result.is_ok() {
                                 let _ = events.send(Event::LibraryChanged);
                             }

@@ -46,6 +46,7 @@ vtamp library imports
 vtamp library import-status JOB_ID --offset 0 --limit 20
 vtamp library import-cancel JOB_ID
 vtamp library import-retry JOB_ID
+vtamp library delete TRACK_ID
 vtamp library cover refresh [TRACK_ID|all]
 vtamp library cover status JOB_ID
 ```
@@ -68,6 +69,33 @@ tracks are counted as skipped. A track that has no thumbnail yet (or a failed
 one) gains a cover when the refresh succeeds, and tracks whose cover bytes are
 already current are left untouched. The job report lives in server memory:
 restarting the server loses it, and re-running the command is safe.
+
+## Delete a downloaded track
+
+In Library, select a YouTube download and press `d` or `x`. The confirmation
+names the track and explains that its downloaded audio and cover will be deleted
+from disk. Enter deletes; Esc cancels. The equivalent CLI command is
+`vtamp library delete TRACK_ID` and deletes without an interactive prompt.
+
+Deletion is limited to vtamp's own `imports/youtube/VIDEO_ID` directories with
+matching source records. Files registered through `library add FOLDER` are
+original files, not copies, and cannot be deleted this way. Remove a folder
+registration with `library remove FOLDER` instead. Radio entries are unregistered
+without deleting files.
+
+Remove all queued copies first, and switch away from direct playback of the
+track before deleting. Deletion never stops playback or edits Queue for you.
+Wait for scans, imports, and cover updates to finish. A successful deletion
+removes the source metadata and Library entry, so a rescan does not bring it
+back. Importing the URL again downloads a new copy. Historical import reports
+remain historical and may refer to the deleted track ID.
+
+Files are staged before the catalog transaction. A failed transaction restores
+them; server startup recovers an interrupted deletion. If final cleanup fails,
+the command returns a warning and startup retries that cleanup. This uses the
+existing database schema.
+
+## TUI imports
 
 In the TUI, press `a` and paste a URL into the existing add prompt. YouTube URLs
 with a `list` parameter automatically open a preview of the whole playlist,

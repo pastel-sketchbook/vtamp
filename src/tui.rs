@@ -52,7 +52,7 @@ const QUEUE_LIMIT: usize = 10_000;
 /// The queue filter is local and applies at once.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue   X Empty queue\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove/delete   J/K Move queue   X Empty queue\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -203,10 +203,14 @@ struct SearchRestore {
 
 /// A destructive action that asks before it runs. While one is pending, it owns
 /// the keyboard.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Confirm {
     /// Empty the whole queue, which also stops playback.
     ClearQueue,
+    DeleteDownload {
+        id: String,
+        title: String,
+    },
 }
 
 /// A "queue everything matching" walk: the client pages the whole result set,
@@ -772,6 +776,7 @@ impl App {
         // The theme picker stays in the browser area, away from album art.
         // Help and import dialogs can overlap the player and must hide pixels.
         self.help
+            || self.confirm.is_some()
             || self.import_ui.modal.is_some()
             || matches!(
                 self.stream_dialog,
@@ -1010,16 +1015,16 @@ impl App {
     /// Esc or q cancels, and every other key is swallowed so it cannot act on
     /// the list behind the dialog.
     fn confirm_key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> bool {
-        let Some(confirm) = self.confirm else {
+        if self.confirm.is_none() {
             return false;
-        };
+        }
         match key.code {
-            KeyCode::Enter => {
-                self.confirm = None;
-                match confirm {
-                    Confirm::ClearQueue => self.send(commands, Command::QueueClear),
+            KeyCode::Enter => match self.confirm.take().unwrap() {
+                Confirm::ClearQueue => self.send(commands, Command::QueueClear),
+                Confirm::DeleteDownload { id, .. } => {
+                    self.send(commands, Command::LibraryDelete { id })
                 }
-            }
+            },
             KeyCode::Esc | KeyCode::Char('q') => self.confirm = None,
             _ => (),
         }
@@ -1509,6 +1514,15 @@ impl App {
                             self.refresh(commands);
                             return;
                         }
+                        Command::LibraryDelete { .. } => {
+                            self.notice(
+                                value["warning"]
+                                    .as_str()
+                                    .unwrap_or("Downloaded track deleted."),
+                            );
+                            self.refresh(commands);
+                            return;
+                        }
                         _ => (),
                     }
                     if let Command::LibraryList { query, offset, .. } = command {
@@ -1521,6 +1535,11 @@ impl App {
                             self.tracks =
                                 serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
                             self.total = value["total"].as_u64().unwrap_or(0) as usize;
+                            if self.offset > 0 && self.offset >= self.total {
+                                self.offset = self.total.saturating_sub(1) / PAGE_SIZE * PAGE_SIZE;
+                                self.refresh(commands);
+                                return;
+                            }
                             if let Some(edge) = self.library_jump.take() {
                                 // A scan may have changed the last page while it was loading.
                                 self.jump_library(edge, commands);
@@ -1888,12 +1907,21 @@ impl App {
                     );
                 }
             }
-            KeyCode::Char('d') if self.focus == Focus::Library => {
-                if let Some(t) = self.selected_track().filter(|t| t.is_live()) {
-                    self.stream_dialog = Some(streams::Dialog::Remove {
-                        id: t.id.clone(),
-                        name: t.title.clone(),
-                    });
+            KeyCode::Char('x' | 'd') if self.focus == Focus::Library => {
+                if let Some(t) = self.selected_track() {
+                    if t.is_live() {
+                        self.stream_dialog = Some(streams::Dialog::Remove {
+                            id: t.id.clone(),
+                            name: t.title.clone(),
+                        });
+                    } else if t.source.is_some() {
+                        self.confirm = Some(Confirm::DeleteDownload {
+                            id: t.id.clone(),
+                            title: t.title.clone(),
+                        });
+                    } else {
+                        self.notice("Local files are kept. Only downloaded YouTube tracks can be deleted here.");
+                    }
                 }
             }
             KeyCode::Char('x' | 'd') if self.focus == Focus::Queue => {
@@ -2209,7 +2237,7 @@ impl App {
     /// from the live state, so a queue change behind the dialog is reflected.
     fn draw_confirm(&mut self, frame: &mut Frame, area: Rect) {
         let p = self.theme.palette();
-        let Some(confirm) = self.confirm else {
+        let Some(confirm) = self.confirm.as_ref() else {
             return;
         };
         self.caret = None;
@@ -2228,22 +2256,31 @@ impl App {
                     " Enter empty · Esc cancel ",
                 )
             }
+            Confirm::DeleteDownload { title, .. } => (
+                " Delete download ",
+                format!("Delete {title}?"),
+                "Deletes downloaded audio and cover.\nCannot be undone.\nRemove queued copies first.",
+                " Enter delete · Esc cancel ",
+            ),
         };
-        let popup = centered(area, 58, 9);
+        let popup = centered(area, 58, 11);
         let panel = block(p, title, true).style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(Clear, popup);
         frame.render_widget(panel, popup);
         let [body, footer] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+        let [question_area, consequence_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(body);
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(question),
-                Line::from(""),
-                Line::styled(consequence, Style::default().fg(p.warning)),
-            ])
-            .wrap(Wrap { trim: false }),
-            body,
+            Paragraph::new(question).wrap(Wrap { trim: false }),
+            question_area,
+        );
+        frame.render_widget(
+            Paragraph::new(consequence)
+                .style(Style::default().fg(p.warning))
+                .wrap(Wrap { trim: false }),
+            consequence_area,
         );
         frame.render_widget(
             Paragraph::new(hint).style(Style::default().fg(p.muted)),
@@ -3732,6 +3769,77 @@ mod tests {
         app.key(key(KeyCode::Enter), &commands).unwrap();
         assert!(app.confirm.is_none());
         assert!(matches!(requests.try_recv().unwrap(), Command::QueueClear));
+    }
+
+    #[test]
+    fn library_delete_requires_confirmation_and_preserves_local_files() {
+        let mut app = youtube_app(PlaybackStatus::Stopped);
+        app.tracks[0].title = "A very long downloaded title ".repeat(12);
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        for trigger in ['d', 'x'] {
+            app.key(key(KeyCode::Char(trigger)), &commands).unwrap();
+            assert!(matches!(app.confirm, Some(Confirm::DeleteDownload { .. })));
+            assert!(app.cover_hidden());
+            assert!(requests.try_recv().is_err());
+            for (width, height) in [(40, 12), (80, 24), (120, 36)] {
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(text.contains("Enter delete"), "{text}");
+                assert!(text.contains("Esc cancel"), "{text}");
+                assert!(text.contains("Cannot be undone"), "{text}");
+            }
+            app.key(key(KeyCode::Char('n')), &commands).unwrap();
+            assert!(requests.try_recv().is_err());
+            app.key(key(KeyCode::Esc), &commands).unwrap();
+            assert!(app.confirm.is_none());
+            assert!(requests.try_recv().is_err());
+        }
+        app.key(key(KeyCode::Char('d')), &commands).unwrap();
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert!(
+            matches!(requests.try_recv().unwrap(), Command::LibraryDelete { id } if id == "track")
+        );
+        app.tracks[0].source = None;
+        app.key(key(KeyCode::Char('d')), &commands).unwrap();
+        assert!(app.confirm.is_none());
+        assert!(app.notice.contains("Local files are kept"));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn library_delete_refresh_returns_from_an_empty_last_page() {
+        let mut app = navigation_app(1);
+        app.offset = PAGE_SIZE;
+        app.total = PAGE_SIZE + 1;
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(8);
+        app.message(
+            Message::Reply(
+                Command::LibraryList {
+                    query: app.library_query.clone(),
+                    offset: PAGE_SIZE,
+                    limit: PAGE_SIZE,
+                    anchor: None,
+                },
+                Ok(serde_json::json!({"tracks":[],"total":PAGE_SIZE})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert_eq!(app.offset, 0);
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::LibraryList { offset: 0, .. }
+        ));
     }
 
     #[test]
