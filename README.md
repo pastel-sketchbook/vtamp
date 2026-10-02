@@ -36,7 +36,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
-- Read-only audio spectrum with multicolor bars and falling peaks; press `v` to toggle.
+- Read-only audio spectrum with six rendering styles (bars, gradient, mono, mirror, dots, waterfall); press `v` to toggle and `V` to change the style.
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
@@ -320,6 +320,7 @@ the desktop integration cannot initialize.
 | `X` | Empty the Queue after a confirmation dialog; playback stops unless a direct track plays outside it |
 | `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |
+| `V` | Switch to the next spectrum style while the spectrum is shown (bars, gradient, mono, mirror, dots, waterfall) |
 | `t` | Preview and choose a color theme |
 | `?` | Show key reference |
 
@@ -364,8 +365,21 @@ and 72+ columns, the spectrum occupies the right half of Now Playing while lists
 remain available below.
 Narrower panes use the list area. **`v`** closes it in either layout.
 
-The view starts off and remembers your choice in `ui.json`. Each attached TUI has
-its own visibility; toggling one does not change another. Analysis runs only while
+Press **`V`** while the spectrum is shown to switch to the next style; the status
+row names it, and the panel title shows it when the pane is wide enough. Every
+style takes its colors from the current theme:
+
+| Style | What it draws |
+| --- | --- |
+| `bars` | Default. Vertical bars with green, yellow, and red height zones and falling peak markers |
+| `gradient` | The same bars, blended smoothly from the low color at the bottom to the high color at the top |
+| `mono` | The same bars in the theme accent color; peak markers use the text color |
+| `mirror` | Bars grow up and down from a center line; peaks mark both ends |
+| `dots` | A dot per row, like a segmented LED meter; the held peak floats as a lone dot |
+| `waterfall` | A scrolling history: the newest frame is the bottom row, older rows move up, and shading and color follow the level. It freezes while paused and resets on a track change |
+
+The view starts off and remembers your visibility and style in `ui.json`. Each
+attached TUI has its own visibility; toggling one does not change another. Analysis runs only while
 a spectrum view is subscribed, and slow displays drop old frames instead of
 holding up playback. Pause, stop, and missing data let the bars settle to zero.
 An idle connection waits quietly for new frames; pausing does not require a
@@ -743,7 +757,7 @@ Radio playback itself has no FFmpeg dependency.
 
 On macOS, persistent data lives under `~/Library/Application Support/vtamp/`; cover thumbnails are under `~/Library/Caches/vtamp/covers/`. The control socket is `/tmp/vtamp-<uid>/control.sock`. Directories are private to the current user. A held advisory lock ensures one server, and a later launch recovers stale sockets left by crashes.
 
-`ui.json` holds client theme and spectrum preferences, saved independently of the playback server. `state.db` holds the library, session, metadata overrides, and background job reports. Installed-tool import settings live in `imports.json`; shared LLM settings live in `llm.json`. Use `vtamp llm setup`, `llm status`, or `llm test` to configure and check an optional provider, even without yt-dlp; see [LLM configuration](docs/llm.md). `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
+`ui.json` holds client theme, spectrum visibility, and spectrum style preferences, saved independently of the playback server. `state.db` holds the library, session, metadata overrides, and background job reports. Installed-tool import settings live in `imports.json`; shared LLM settings live in `llm.json`. Use `vtamp llm setup`, `llm status`, or `llm test` to configure and check an optional provider, even without yt-dlp; see [LLM configuration](docs/llm.md). `server.log` holds diagnostics; a log larger than 5 MiB is rotated at the next server start. Run `vtamp doctor --json` for the exact paths and device information on your machine.
 
 For isolated development or independent test instances, set an absolute, short `VTAMP_HOME`:
 

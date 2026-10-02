@@ -20,13 +20,33 @@ Body and secondary text have at least 4.5:1 contrast on normal, panel, and selec
 
 ## Preferences and JSON
 
-The client stores `{"theme":"catppuccin-mocha","spectrum":false}` in `ui.json` under the data directory (`~/Library/Application Support/vtamp/` on macOS, or `$VTAMP_HOME`). Writes use a private temporary file and atomic rename. The last completed explicit save wins. The file is independent of the server's database and wire protocol. Older files
-without `spectrum` default to false. Theme saves preserve spectrum visibility,
-and spectrum toggles preserve the saved theme (including during a `--theme`
-override). A spectrum toggle applies to the current attachment even if saving
-fails; it does not replace an invalid settings file. The three decorative
+The client stores `{"theme":"catppuccin-mocha","spectrum":false,"spectrum_style":"bars"}` in `ui.json` under the data directory (`~/Library/Application Support/vtamp/` on macOS, or `$VTAMP_HOME`). Writes use a private temporary file and atomic rename. The last completed explicit save wins. The file is independent of the server's database and wire protocol. Older files
+without `spectrum` default to false, and files without `spectrum_style` default
+to `bars`. Theme saves preserve spectrum visibility and style, and spectrum
+toggles and style changes preserve the saved theme (including during a
+`--theme` override). A spectrum toggle or style change applies to the current
+attachment even if saving fails; neither replaces an invalid settings file. An
+unknown `spectrum_style` value is a settings error like an unknown theme: attach
+warns, and saving a theme with `t` repairs the file. The three decorative
 spectrum roles use theme-specific low/middle/high colors, with darker colors in
 Latte to remain visible on its light background.
+
+## Spectrum styles
+
+Press `V` while the spectrum is shown to switch to the next style. Styles take
+every color from the active theme's roles, so they need no per-theme tuning.
+
+| Identifier | Draws | Roles used |
+| --- | --- | --- |
+| `bars` | Vertical bars with green, yellow, and red height zones and falling peaks (default) | spectrum low / middle / high |
+| `gradient` | The same bars blended smoothly from bottom to top | spectrum low → middle → high |
+| `mono` | The same bars in one color; peaks in the text color | accent, text |
+| `mirror` | Bars growing up and down from a center line | spectrum low / middle / high |
+| `dots` | One dot per row, like a segmented meter; unlit dots are faint | spectrum low / middle / high, selection |
+| `waterfall` | A scrolling history with the newest frame at the bottom | spectrum gradient |
+
+See `DESIGN.md` for the geometry of each style and the rules for pause, seek,
+and track changes.
 
 Missing files use Mocha. Invalid files are left intact and produce a warning on attach; explicitly saving a theme replaces them. A failed save leaves the preview open, with retry and cancel controls. CLI `theme current` returns a settings error for an invalid file; `theme list` remains available and `theme set` can repair it.
 

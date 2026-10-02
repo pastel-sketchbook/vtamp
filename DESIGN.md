@@ -93,6 +93,28 @@ fixed height zones: green below 55%, yellow up to 80%, and red above. Each theme
 provides three spectrum roles; Latte uses darker inks. Unicode eighth blocks and
 briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R meters.
 
+`V` switches to the next of six styles while the spectrum is shown and saves it
+as `spectrum_style` (default `bars`); the status row names the new style. A
+style is a geometry plus a mapping of theme roles, never its own palette, so all
+nine themes stay readable. Frames stay mono 32-band; a style may merge bands for
+narrow panes but never splits them. The status row and the help overlay carry
+the key; the hint bar does not change. The panel title reads
+`SPECTRUM · <style> · v close · V style` when it fits, otherwise
+`SPECTRUM · v close`; the embedded header reads `SPECTRUM · <style>`.
+
+| Style | Geometry and color |
+| --- | --- |
+| `bars` | As above. |
+| `gradient` | Bars geometry; each row blends the three spectrum roles: low at the bottom row, middle at 67.5% (the center of the yellow zone), high at the top row. The peak marker takes its row's color. |
+| `mono` | Bars geometry in the accent role; peak markers use the text role. |
+| `mirror` | An even number of rows anchored at the bottom (an odd top row stays blank). Bars grow up and down from the center with the level scaled to half the rows; zones follow the distance from the center. The lower half paints partial cells by inverting foreground and background with the complementary lower block. Peaks mark both ends (`▔` above, `▁` below). |
+| `dots` | One dot per row (`●` lit, `·` unlit in the selection role); lit count is the level rounded to whole rows, colored by zone; the held peak is a lone lit dot. |
+| `waterfall` | Time history, newest row at the bottom next to the axis. Every active frame adds one row of raw levels (up to 256 kept). Every column shows a band, merged in narrow panes and repeated in wide ones, so rows fill the width without gaps; cells use `░ ▒ ▓ █` by level and the gradient color at that level, and silence is a blank cell with a constant style. No decay or peaks. Pause and stop freeze it (no frames, no rows); a track change, toggle, or reconnect clears it; seek, pause, and resume keep it. |
+
+Switching styles never clears levels or history. Bars styles reset their levels
+when the analysis generation changes (seek, pause, resume); the waterfall keeps
+rows that were actually heard and discards them only with the current track.
+
 At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
 with a cover and compact metadata/controls on the left. Keep the lists below.
 Otherwise replace the browser area, preserving its selection and scroll. Tab
@@ -104,7 +126,8 @@ stopped, or stale data settles to zero instead of showing decorative motion.
 An idle spectrum connection stays open without requiring periodic frames; quiet
 or paused audio must not trigger a disconnection warning or a reconnect loop.
 Once bars and peaks settle, suspend the animation timer until fresh audio or a
-view change needs it. Do not send terminal output for unchanged frames. Keep
+view change needs it; the waterfall draws once per received frame and is
+otherwise idle. Do not send terminal output for unchanged frames. Keep
 input and artwork completion immediate, and preserve progress and notice expiry.
 
 ## Shapes

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Spectrum styles. `V` switches the visible spectrum between `bars`, `gradient`,
+  `mono`, `mirror`, `dots`, and `waterfall`; the status row names the new style
+  and `ui.json` remembers it as `spectrum_style` (older files default to `bars`).
+  Every style uses the active theme's colors. The waterfall scrolls one row per
+  analysis frame, freezes while paused, and resets on a track change. No server
+  or protocol change; attached TUIs pick it up on reattach.
+
 ## [0.3.0] — 2026-10-02
 
 Changes since v0.2.0. This release makes searching and managing the TUI queue

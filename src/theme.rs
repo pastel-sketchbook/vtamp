@@ -171,6 +171,26 @@ pub(crate) fn channels(color: Color) -> [u8; 3] {
     }
 }
 
+/// Linear sRGB interpolation between two theme colors; `t` is clamped to 0..1.
+pub(crate) fn blend(a: Color, b: Color, t: f32) -> Color {
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    let (a, b) = (channels(a), channels(b));
+    let mix = |i: usize| (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round() as u8;
+    Color::Rgb(mix(0), mix(1), mix(2))
+}
+
+/// Continuous version of the spectrum height zones: the low role at 0, the
+/// middle role at 0.675 (the center of the 55–80 % zone), the high role at 1.
+pub(crate) fn spectrum_gradient(p: &Palette, t: f32) -> Color {
+    const MIDDLE: f32 = 0.675;
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    if t <= MIDDLE {
+        blend(p.spectrum[0], p.spectrum[1], t / MIDDLE)
+    } else {
+        blend(p.spectrum[1], p.spectrum[2], (t - MIDDLE) / (1.0 - MIDDLE))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +244,30 @@ mod tests {
                 );
             }
             assert!(contrast(p.accent, p.bg) >= 3.0);
+        }
+    }
+
+    #[test]
+    fn blend_and_gradient_hit_their_stops() {
+        let (a, b) = (Color::Rgb(0, 100, 200), Color::Rgb(200, 100, 0));
+        assert_eq!(blend(a, b, 0.0), a);
+        assert_eq!(blend(a, b, 1.0), b);
+        assert_eq!(blend(a, b, -1.0), a);
+        assert_eq!(blend(a, b, 2.0), b);
+        assert_eq!(blend(a, b, 0.5), Color::Rgb(100, 100, 100));
+        for theme in Theme::ALL {
+            let p = theme.palette();
+            assert_eq!(spectrum_gradient(&p, 0.0), p.spectrum[0], "{}", theme.id());
+            assert_eq!(
+                spectrum_gradient(&p, 0.675),
+                p.spectrum[1],
+                "{}",
+                theme.id()
+            );
+            assert_eq!(spectrum_gradient(&p, 1.0), p.spectrum[2], "{}", theme.id());
+            let mid = spectrum_gradient(&p, 0.3);
+            assert_ne!(mid, p.spectrum[0]);
+            assert_ne!(mid, p.spectrum[1]);
         }
     }
 

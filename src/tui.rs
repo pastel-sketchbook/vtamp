@@ -8,7 +8,7 @@ use crate::{
     library::{decode_image, normalized, search_blob},
     model::*,
     platform,
-    settings::Settings,
+    settings::{Settings, SpectrumStyle},
     spectrum::SpectrumFrame,
     spectrum_view::SpectrumView,
     theme::{Palette, Theme, channels},
@@ -52,7 +52,7 @@ const QUEUE_LIMIT: usize = 10_000;
 /// The queue filter is local and applies at once.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove/delete   J/K Move queue   X Empty queue\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove/delete   J/K Move queue   X Empty queue\n\nv / V   Toggle spectrum / style   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -352,15 +352,15 @@ pub async fn run(
         }
     });
     let cover = Cover::new(resize_tx, None);
-    let saved_spectrum = Settings::load(&settings_path)
-        .map(|s| s.spectrum)
-        .unwrap_or(false);
+    let (saved_spectrum, saved_style) = Settings::load(&settings_path)
+        .map(|s| (s.spectrum, s.spectrum_style))
+        .unwrap_or((false, SpectrumStyle::Bars));
     let size = terminal.size()?;
     let mut app = App {
         import_ui: imports::ImportUi::default(),
         library_reveal: None,
         stream_dialog: None,
-        spectrum: SpectrumView::new(saved_spectrum),
+        spectrum: SpectrumView::new(saved_spectrum, saved_style),
         viewport: Rect::new(0, 0, size.width, size.height),
         theme,
         theme_picker: None,
@@ -769,6 +769,16 @@ impl App {
             self.notice(format!(
                 "Spectrum changed for this session; could not save: {error:#}"
             ));
+        }
+    }
+    fn cycle_spectrum_style(&mut self) {
+        let style = self.spectrum.style().next();
+        self.spectrum.set_style(style);
+        match Settings::set_spectrum_style(&self.settings_path, style) {
+            Ok(()) => self.notice(format!("Spectrum style: {}", style.id())),
+            Err(error) => self.notice(format!(
+                "Spectrum style changed for this session; could not save: {error:#}"
+            )),
         }
     }
 
@@ -1714,6 +1724,12 @@ impl App {
         match key.code {
             KeyCode::Char('v') if key.modifiers.is_empty() => {
                 self.toggle_spectrum(!self.spectrum.enabled)
+            }
+            KeyCode::Char('V')
+                if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+                    && self.spectrum_visible() =>
+            {
+                self.cycle_spectrum_style()
             }
             KeyCode::Char('g') if key.modifiers.is_empty() => {
                 if previous_g {
@@ -4668,6 +4684,69 @@ mod tests {
     }
 
     #[test]
+    fn shift_v_cycles_spectrum_styles_only_while_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.settings_path = dir.path().join("ui.json");
+        app.viewport = Rect::new(0, 0, 100, 24);
+        let (tx, _rx) = mpsc::channel(16);
+        let shift_v = KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT);
+        // A hidden spectrum ignores the key: no change, no notice, no file.
+        app.key(shift_v, &tx).unwrap();
+        assert_eq!(app.spectrum.style(), SpectrumStyle::Bars);
+        assert!(app.notice.is_empty());
+        assert!(!app.settings_path.exists());
+        app.key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), &tx)
+            .unwrap();
+        assert!(app.spectrum.enabled);
+        app.key(shift_v, &tx).unwrap();
+        assert_eq!(app.spectrum.style(), SpectrumStyle::Gradient);
+        assert_eq!(app.notice, "Spectrum style: gradient");
+        let saved = Settings::load(&app.settings_path).unwrap();
+        assert_eq!(saved.spectrum_style, SpectrumStyle::Gradient);
+        assert!(saved.spectrum, "the style save keeps the visibility flag");
+        // Terminals that omit the SHIFT flag still deliver the uppercase letter.
+        app.key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE), &tx)
+            .unwrap();
+        assert_eq!(app.spectrum.style(), SpectrumStyle::Mono);
+        // Too small for the spectrum: ignored again.
+        app.viewport = Rect::new(0, 0, 30, 10);
+        app.key(shift_v, &tx).unwrap();
+        assert_eq!(app.spectrum.style(), SpectrumStyle::Mono);
+        app.viewport = Rect::new(0, 0, 100, 24);
+        // A broken settings file keeps the session change and reports the failure.
+        std::fs::write(&app.settings_path, b"broken").unwrap();
+        app.key(shift_v, &tx).unwrap();
+        assert_eq!(app.spectrum.style(), SpectrumStyle::Mirror);
+        assert!(
+            app.notice
+                .starts_with("Spectrum style changed for this session; could not save:"),
+            "{}",
+            app.notice
+        );
+        assert_eq!(std::fs::read(&app.settings_path).unwrap(), b"broken");
+        std::fs::remove_file(&app.settings_path).unwrap();
+        for expected in [
+            SpectrumStyle::Dots,
+            SpectrumStyle::Waterfall,
+            SpectrumStyle::Bars,
+        ] {
+            app.key(shift_v, &tx).unwrap();
+            assert_eq!(app.spectrum.style(), expected);
+        }
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().spectrum_style,
+            SpectrumStyle::Bars
+        );
+        assert!(HELP_TEXT.contains("v / V   Toggle spectrum / style"));
+        assert_eq!(
+            HELP_TEXT.lines().count(),
+            20,
+            "the help overlay keeps its size"
+        );
+    }
+
+    #[test]
     fn theme_preview_cancel_save_and_input_isolation() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app();
@@ -4986,7 +5065,7 @@ mod tests {
             import_ui: imports::ImportUi::default(),
             library_reveal: None,
             stream_dialog: None,
-            spectrum: SpectrumView::new(false),
+            spectrum: SpectrumView::new(false, SpectrumStyle::default()),
             viewport: Rect::default(),
             theme: Theme::default(),
             theme_picker: None,
