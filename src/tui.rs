@@ -1833,7 +1833,7 @@ impl App {
                     } else {
                         " Search title / artist / album · Enter applies · Esc cancels "
                     },
-                    s,
+                    s.as_str(),
                 ),
                 Input::Folder(s) => (
                     if self.import_ui.enabled {
@@ -1841,31 +1841,13 @@ impl App {
                     } else {
                         " Add folder / stream URL / playlist · Enter · Esc "
                     },
-                    s,
+                    s.as_str(),
                 ),
             };
-            let popup = Rect::new(
-                area.x + 2,
-                area.y + area.height.saturating_sub(6),
-                area.width.saturating_sub(4),
-                3,
-            );
-            let field = block(p, label, true);
-            let inner = field.inner(popup);
-            let (visible, caret) = caret_tail(text, inner.width);
-            frame.render_widget(Clear, popup);
-            frame.render_widget(
-                Paragraph::new(visible)
-                    .block(field)
-                    .style(Style::default().fg(p.text).bg(p.panel)),
-                popup,
-            );
-            if !inner.is_empty() {
-                self.caret = Some(Position::new(inner.x + caret, inner.y));
-            }
+            draw_prompt(frame, p, &mut self.caret, content, label, text);
         }
         self.draw_imports(frame, area);
-        self.draw_stream_dialog(frame, area);
+        self.draw_stream_dialog(frame, area, content);
         if self.help {
             self.caret = None;
             self.draw_help(frame, area);
@@ -2297,6 +2279,33 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
+}
+
+/// A centered one-line prompt sized to its label instead of the pane. Centering
+/// inside the browser area keeps the player and album art visible, like the
+/// theme picker, and the terminal cursor marks the field's caret for IME input.
+fn draw_prompt(
+    frame: &mut Frame,
+    p: Palette,
+    caret: &mut Option<Position>,
+    area: Rect,
+    label: &str,
+    text: &str,
+) {
+    let popup = centered(area, label.width() as u16 + 2, 3);
+    let field = block(p, label, true);
+    let inner = field.inner(popup);
+    let (visible, offset) = caret_tail(text, inner.width);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(visible)
+            .block(field)
+            .style(Style::default().fg(p.text).bg(p.panel)),
+        popup,
+    );
+    if !inner.is_empty() {
+        *caret = Some(Position::new(inner.x + offset, inner.y));
+    }
 }
 fn cover_background(p: Palette) -> image::Rgba<u8> {
     let [r, g, b] = channels(p.bg);
@@ -3353,6 +3362,62 @@ mod tests {
         assert_eq!(caret_rows("a가", 2), ["a", "가", ""]);
     }
 
+    /// The prompt's field row and its left/right border columns, located from
+    /// the drawn frame so tests don't pin its position.
+    fn prompt_bounds(terminal: &Terminal<ratatui::backend::TestBackend>) -> (u16, u16, u16) {
+        let buffer = terminal.backend().buffer();
+        let row = terminal.backend().cursor_position().y;
+        let border = row.saturating_sub(1);
+        let corners: Vec<u16> = (0..buffer.area.width)
+            .filter(|x| buffer[(*x, border)].symbol() == "┌")
+            .collect();
+        assert_eq!(
+            corners.len(),
+            1,
+            "exactly one prompt border in row {border}"
+        );
+        let left = corners[0];
+        let right = (left..buffer.area.width)
+            .find(|x| buffer[(*x, border)].symbol() == "┐")
+            .expect("prompt's top-right corner");
+        (row, left, right)
+    }
+
+    #[test]
+    fn prompts_center_a_label_sized_field_over_the_browser_area() {
+        use ratatui::backend::TestBackend;
+        const LABEL: &str = " Add folder / stream URL / playlist · Enter · Esc ";
+        let mut app = app();
+        app.input = Some(Input::Folder(String::new()));
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let (row, left, right) = prompt_bounds(&terminal);
+        let buffer = terminal.backend().buffer();
+        // The field is as wide as its label plus borders, not as wide as the pane.
+        assert_eq!(
+            right - left + 1,
+            unicode_width::UnicodeWidthStr::width(LABEL) as u16 + 2
+        );
+        // Centered, and tall enough to show a border, the field, and a border.
+        assert_eq!(left, buffer.area.width - 1 - right);
+        let title: String = (left + 1..right)
+            .map(|x| buffer[(x, row - 1)].symbol())
+            .collect();
+        assert!(title.contains("Enter · Esc"), "{title:?}");
+        assert_eq!(buffer[(left, row - 1)].symbol(), "┌");
+        assert_eq!(buffer[(left, row + 1)].symbol(), "└");
+        // In the side-by-side layout the prompt stays in the browser column,
+        // clear of the player's album art.
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.input = Some(Input::Search(String::new()));
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let (_, left, _) = prompt_bounds(&terminal);
+        let browser = (0..80)
+            .rfind(|x| terminal.backend().buffer()[(*x, 1)].symbol() == "┌")
+            .expect("the browser panel's border");
+        assert!(left > browser, "prompt {left} stays right of {browser}");
+    }
+
     #[test]
     fn prompts_show_the_terminal_cursor_after_korean_text() {
         use ratatui::backend::TestBackend;
@@ -3367,26 +3432,38 @@ mod tests {
             for c in "사랑".chars() {
                 app.key(key(KeyCode::Char(c)), &commands).unwrap();
             }
-            // The prompt's inner row starts at (3, 19); each syllable is two cells.
             terminal.draw(|f| app.draw(f)).unwrap();
             assert!(terminal.backend().cursor_visible());
-            terminal.backend_mut().assert_cursor_position((7, 19));
-            assert_eq!(terminal.backend().buffer()[(3, 19)].symbol(), "사");
-            assert_eq!(terminal.backend().buffer()[(7, 19)].symbol(), " ");
+            // Locate the prompt in the drawn frame instead of pinning it to a
+            // position: the caret must follow the last typed syllable.
+            let (row, border, right) = prompt_bounds(&terminal);
+            let left = border + 1;
+            let position = terminal.backend().cursor_position();
+            assert_eq!(position.y, row);
+            assert_eq!(terminal.backend().buffer()[(left, row)].symbol(), "사");
+            assert_eq!(position.x, left + 4);
             app.key(
                 KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
                 &commands,
             )
             .unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
-            terminal.backend_mut().assert_cursor_position((3, 19));
-            // Long input scrolls so the caret stays on the prompt's last cell.
+            assert_eq!(terminal.backend().cursor_position().x, left);
+            // Long input scrolls so the caret stays inside the field and no
+            // syllable remains visible to its right.
             for _ in 0..50 {
                 app.key(key(KeyCode::Char('가')), &commands).unwrap();
             }
             terminal.draw(|f| app.draw(f)).unwrap();
-            terminal.backend_mut().assert_cursor_position((75, 19));
-            assert_eq!(terminal.backend().buffer()[(73, 19)].symbol(), "가");
+            let position = terminal.backend().cursor_position();
+            assert!(position.x < right, "the caret stays inside the field");
+            assert_eq!(
+                terminal.backend().buffer()[(position.x - 2, row)].symbol(),
+                "가"
+            );
+            for x in position.x..right {
+                assert_eq!(terminal.backend().buffer()[(x, row)].symbol(), " ");
+            }
             app.key(key(KeyCode::Esc), &commands).unwrap();
             terminal.draw(|f| app.draw(f)).unwrap();
             assert!(!terminal.backend().cursor_visible());

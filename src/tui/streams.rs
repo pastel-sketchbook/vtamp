@@ -183,32 +183,21 @@ impl App {
             Err(error) => self.notice(error),
         }
     }
-    pub(super) fn draw_stream_dialog(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn draw_stream_dialog(&mut self, frame: &mut Frame, area: Rect, content: Rect) {
         let p = self.theme.palette();
         let Some(dialog) = &mut self.stream_dialog else {
             return;
         };
         self.caret = None;
         if let Dialog::Name { text, .. } = dialog {
-            let popup = Rect::new(
-                area.x + 2,
-                area.bottom().saturating_sub(6),
-                area.width.saturating_sub(4),
-                3,
+            draw_prompt(
+                frame,
+                p,
+                &mut self.caret,
+                content,
+                " Channel name · Enter add · Esc cancel ",
+                text.as_str(),
             );
-            let panel = block(p, " Channel name · Enter add · Esc cancel ", true);
-            let inner = panel.inner(popup);
-            let (visible, caret) = caret_tail(text, inner.width);
-            frame.render_widget(Clear, popup);
-            frame.render_widget(
-                Paragraph::new(visible)
-                    .block(panel)
-                    .style(Style::default().fg(p.text).bg(p.panel)),
-                popup,
-            );
-            if !inner.is_empty() {
-                self.caret = Some(Position::new(inner.x + caret, inner.y));
-            }
             return;
         }
         let popup = centered(area, 78, 22);

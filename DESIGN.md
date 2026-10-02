@@ -104,7 +104,7 @@ The V-meter source is `assets/icon.png`. Use derived PNGs for the website header
 
 The social preview cards `site/og.png` and `site/og-ko.png` (1200 × 630, composed by `scripts/build-og.py`) lay the compact Queue capture across the whole card as a backdrop, tilted 30° counter-clockwise and zoomed to 140% of the card width so the album art lands bottom-left and the queue runs off the right edge. A charcoal scrim fades from nearly opaque at the top to translucent at the bottom, and the copy sits in the top band: mark and wordmark, a two-line headline with “keeps playing” (Korean: “재생이 멈추지 않는”) in phosphor green, and the Homebrew command chip. The English card sets the headline in Space Grotesk, the Korean card in the bundled Pretendard Medium. Rebuild both whenever that capture or a headline changes.
 
-The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter applies it (empty clears the filter), while Esc keeps the current filter. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
+The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Search and folder prompts keep the cover visible: they center over the browser area, sized to their label instead of the pane. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter applies it (empty clears the filter), while Esc keeps the current filter. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
 
 Help scrolls through wrapped text at small pane sizes. When scrolling is needed,
 keep scroll/page controls, close keys, and the visible row range in a fixed
@@ -125,7 +125,7 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 ## Optional import controls
 
 Show these only after server-side detection of an installed yt-dlp. The existing
-`a` bottom prompt accepts a folder or URL; a playlist opens a preview with an
+`a` prompt accepts a folder or URL; a playlist opens a preview with an
 explicit Enter confirmation. Single videos start without a mandatory metadata
 form. `i` opens jobs, `m` edits title/artist/album, and `o`/`O` open video/channel
 links; `o` also pauses a playing track, since the video page plays on its own.
@@ -155,7 +155,7 @@ open, and let explicit browsing cancel a pending jump. Historical completions
 on attachment/reconnection and jobs with no additions must not move selection.
 Do not play or enqueue the revealed track.
 Keep hints reachable at 40×12. Import/edit/preview overlays hide pixel
-covers and restore them on close; the bottom add prompt keeps the cover visible.
+covers and restore them on close; the centered add prompt keeps the cover visible.
 Use existing semantic palette roles and English copy. No installation prompts,
 integration placeholders, or related help are shown when yt-dlp is absent.
 
@@ -170,7 +170,7 @@ shows an honest unavailable message and keeps its toggle preference, without
 simulated animation or an active subscription.
 
 The a prompt accepts folders, URLs, and local M3U/PLS lists. A non-YouTube HTTP(S)
-URL opens a bottom channel-name prompt using the shared grapheme editor and real
+URL opens a centered channel-name prompt using the shared grapheme editor and real
 terminal caret. Keep artwork visible under this prompt. Playlist previews show
 channel names and URLs with a fixed Enter/Escape/scroll footer. Library d confirms
 stream removal and explains that queued copies remain. These overlays hide and
