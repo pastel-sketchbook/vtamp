@@ -343,7 +343,7 @@ Inside tmux, `extended-keys` must be enabled for Ctrl+Enter to reach the app.
 
 Attaching during queued playback focuses Queue and scrolls to the current entry. Direct playback, paused, or stopped sessions open on Library. Later playback updates and automatic reconnections preserve your navigation. If the saved spectrum view would hide Queue, it starts hidden for this attachment without changing `ui.json`; press `v` to show it.
 
-Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 100 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
+Short panes (12–27 rows, at least 72 columns wide) show two columns: now playing on the left, and Library or Queue on the right. The cover sits above the track details and scales to the available space; `Tab` switches the right-hand list. With 28 or more rows, now playing returns to the top, with Library and Queue below (both visible from 90 columns). Narrower panes keep the stacked layout. Below 40 columns or 12 rows the UI shows a compact size notice and still allows detaching.
 
 ## See the music
 

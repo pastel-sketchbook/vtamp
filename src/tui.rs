@@ -1856,7 +1856,7 @@ impl App {
             if self.spectrum_visible() {
                 self.draw_spectrum(frame, content, true);
             }
-        } else if !side_by_side && area.width >= 100 {
+        } else if !side_by_side && area.width >= 90 {
             let [library, queue] =
                 Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
                     .areas(content);
@@ -2732,6 +2732,31 @@ mod tests {
             .collect();
         assert!(text.contains("NOW PLAYING · NO QUEUE"));
         assert!(text.contains("Track 1"));
+    }
+
+    #[test]
+    fn both_lists_share_wide_tall_panes_from_ninety_columns() {
+        use ratatui::backend::TestBackend;
+        let mut app = navigation_app(4);
+        app.focus = Focus::Library;
+        for (width, height, both) in [
+            (90, 28, true),
+            (89, 28, false),
+            (120, 36, true),
+            (96, 27, false),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("LIBRARY ·"), "{width}x{height}: {text}");
+            assert_eq!(text.contains("QUEUE ·"), both, "{width}x{height}: {text}");
+        }
     }
 
     #[test]
