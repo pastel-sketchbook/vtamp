@@ -1625,6 +1625,9 @@ impl App {
                                     || path.trim().starts_with("http://"))
                             {
                                 let mut request = crate::imports::ImportRequest {
+                                    playlist: url::Url::parse(path.trim()).is_ok_and(|url| {
+                                        url.query_pairs().any(|(key, _)| key == "list")
+                                    }),
                                     url: path,
                                     ..Default::default()
                                 };
@@ -5105,6 +5108,126 @@ mod tests {
         .unwrap();
         assert!(matches!(requests.try_recv(), Ok(Command::LibraryScan)));
         assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn add_prompt_detects_youtube_playlists_and_waits_for_confirmation() {
+        const LIST: &str = "OLAK5uy_kh4yyiNfPh20FB8mLO3sEv_jd3T89FxCI";
+        for source in [
+            format!("https://www.youtube.com/watch?v=0OeEx5SiRI0&list={LIST}"),
+            format!("https://youtu.be/0OeEx5SiRI0?list={LIST}"),
+            format!("https://m.youtube.com/watch?v=0OeEx5SiRI0&list={LIST}"),
+            format!("https://music.youtube.com/watch?v=0OeEx5SiRI0&list={LIST}"),
+            format!("https://www.youtube.com/playlist?list={LIST}"),
+        ] {
+            for confirm in [false, true] {
+                let mut app = app();
+                app.import_ui.enabled = true;
+                let (commands, mut requests) = mpsc::channel(8);
+                app.key(
+                    KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+                    &commands,
+                )
+                .unwrap();
+                assert!(matches!(app.input, Some(Input::Folder(_))));
+                app.input = Some(Input::Folder(source.clone()));
+                let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                app.key(enter, &commands).unwrap();
+                let Command::ImportPreview { request } = requests.try_recv().unwrap() else {
+                    panic!("expected playlist preview for {source}");
+                };
+                assert!(request.playlist);
+                assert_eq!(
+                    request.url,
+                    format!("https://www.youtube.com/playlist?list={LIST}")
+                );
+                assert!(requests.try_recv().is_err());
+                app.key(enter, &commands).unwrap();
+                assert!(
+                    requests.try_recv().is_err(),
+                    "wait for preview before importing"
+                );
+
+                let (messages, _) = mpsc::unbounded_channel();
+                app.message(
+                    Message::Reply(
+                        Command::ImportPreview {
+                            request: request.clone(),
+                        },
+                        Ok(serde_json::json!({"preview": {
+                            "url": request.url,
+                            "title": "Example playlist",
+                            "playlist": true,
+                            "items": [
+                                {"video_id": "0OeEx5SiRI0", "title": "First"},
+                                {"video_id": "lO3lG-qXU14", "title": "Second"}
+                            ],
+                            "existing": 0
+                        }})),
+                    ),
+                    &messages,
+                    &commands,
+                );
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(text.contains("Enter add all"), "{text}");
+                assert!(text.contains("Esc cancel"), "{text}");
+                app.key(
+                    KeyEvent::new(
+                        if confirm {
+                            KeyCode::Enter
+                        } else {
+                            KeyCode::Esc
+                        },
+                        KeyModifiers::NONE,
+                    ),
+                    &commands,
+                )
+                .unwrap();
+                assert!(app.import_ui.modal.is_none());
+                if confirm {
+                    let Command::ImportStart { request } = requests.try_recv().unwrap() else {
+                        panic!("expected confirmed import");
+                    };
+                    assert!(request.playlist);
+                    assert_eq!(request.video_ids.unwrap(), ["0OeEx5SiRI0", "lO3lG-qXU14"]);
+                }
+                assert!(requests.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn add_prompt_keeps_single_videos_and_rejects_invalid_playlist_ids() {
+        for suffix in ["", "&list=", "&list=invalid%21"] {
+            let mut app = app();
+            app.import_ui.enabled = true;
+            app.input = Some(Input::Folder(format!(
+                "https://www.youtube.com/watch?v=0OeEx5SiRI0{suffix}"
+            )));
+            let (commands, mut requests) = mpsc::channel(8);
+            app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+                .unwrap();
+            assert!(app.import_ui.modal.is_none());
+            if suffix.is_empty() {
+                let Command::ImportStart { request } = requests.try_recv().unwrap() else {
+                    panic!("expected single-video import");
+                };
+                assert!(!request.playlist);
+                assert_eq!(request.url, "https://www.youtube.com/watch?v=0OeEx5SiRI0");
+            } else {
+                assert!(app.notice.contains("Invalid playlist ID"), "{}", app.notice);
+            }
+            assert!(requests.try_recv().is_err());
+        }
     }
 
     #[test]

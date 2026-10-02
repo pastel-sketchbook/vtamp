@@ -138,8 +138,10 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 ## Optional import controls
 
 Show these only after server-side detection of an installed yt-dlp. The existing
-`a` prompt accepts a folder or URL; a playlist opens a preview with an
-explicit Enter confirmation. Single videos start without a mandatory metadata
+`a` prompt accepts a folder or URL; YouTube URLs with a `list` parameter,
+including watch and short links, automatically open a whole-playlist preview
+with an explicit Enter confirmation. Esc cancels without importing. Single
+videos without a playlist start without a mandatory metadata
 form. `i` opens jobs, `m` edits title/artist/album, and `o`/`O` open video/channel
 links; `o` also pauses a playing track, since the video page plays on its own.
 Album is optional: an empty value hides the album and its separator in Library

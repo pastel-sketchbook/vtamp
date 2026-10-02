@@ -24,10 +24,10 @@ vtamp library add 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
 Replace `VIDEO_ID` and `PLAYLIST_ID` with the IDs you want to import.
 
 The clipboard option reads one URL from the macOS clipboard. Quote URLs in a
-shell, especially when they contain `&`. A watch URL with a `list` parameter
-imports only that video; add `--playlist` to import the whole list. A playlist
-URL imports the list. Lists are limited to 10,000 entries. Unavailable videos
-produce item failures; other videos continue. Live/upcoming broadcasts are
+shell, especially when they contain `&`. In the CLI, a watch URL with a `list`
+parameter imports only that video; add `--playlist` to import the whole list.
+A playlist URL imports the list. Lists are limited to 10,000 entries.
+Unavailable videos produce item failures; other videos continue. Live/upcoming broadcasts are
 rejected. Existing source video IDs with present audio files are skipped.
 
 `--preview` extracts metadata and checks existing entries if a server is already
@@ -69,11 +69,13 @@ one) gains a cover when the refresh succeeds, and tracks whose cover bytes are
 already current are left untouched. The job report lives in server memory:
 restarting the server loses it, and re-running the command is safe.
 
-In the TUI, press `a` and paste a URL into the existing add prompt. Playlist URLs
-open a preview; Enter confirms all entries, Esc closes it. Press `i` for the
-import history: each row shows a source title and its status, with the selected
-import's results and full title below. Use `j`/`k` to select a job, `[`/`]` to
-select a track within a playlist, PgUp/PgDn to scroll the details,
+In the TUI, press `a` and paste a URL into the existing add prompt. YouTube URLs
+with a `list` parameter automatically open a preview of the whole playlist,
+including watch and short links. Enter confirms all entries; Esc closes it
+without starting an import. URLs without a playlist keep the single-video flow.
+Press `i` for the import history: each row shows a source title and its status,
+with the selected import's results and full title below. Use `j`/`k` to select a
+job, `[`/`]` to select a track within a playlist, PgUp/PgDn to scroll the details,
 `c` to cancel, or `r` to retry. Enter closes the dialog, selects the track shown
 in the details in Library, and plays it; while that page is still loading, it
 plays the import's first added track. A track that is not in Library yet, or an
