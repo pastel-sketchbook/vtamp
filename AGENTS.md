@@ -137,7 +137,9 @@ The documents above hold the full contracts; these are the most common regressio
   begins a new logical Ogg stream, a pause fills the open stream with silence,
   and only a stop ends it. The device tap only copies samples into a lock-free
   queue; encoding runs on its own thread, and no cast path waits on sockets. A
-  listener that falls behind loses pages, the server loses nothing.
+  listener that falls behind loses pages, the server loses nothing. The HTTP
+  cast exists only with `--cast-http`, speaks plain HTTP on the given address
+  with a token path, and never terminates TLS; tokens live in `cast.json`.
 - Decoding, format conversion, file I/O, allocation, locks, logging, FFT, and
   socket I/O stay out of the audio output callback and the spectrum tap. PCM
   decode-ahead stays bounded; underflow silence never advances position or ends a

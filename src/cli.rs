@@ -461,6 +461,9 @@ pub enum Server {
         /// Also cast the audio played through the device, for vtamp cast listen and relays.
         #[arg(long)]
         cast: bool,
+        /// Serve the cast over plain HTTP at this address for players and browsers; implies --cast.
+        #[arg(long, value_name = "ADDR", conflicts_with = "remote")]
+        cast_http: Option<std::net::SocketAddr>,
     },
     Status,
     Stop,
@@ -472,6 +475,8 @@ pub enum Server {
         remote: Option<PathBuf>,
         #[arg(long)]
         cast: bool,
+        #[arg(long, value_name = "ADDR", conflicts_with = "remote")]
+        cast_http: Option<std::net::SocketAddr>,
     },
 }
 
@@ -670,6 +675,7 @@ pub async fn run(args: Args) -> Result<()> {
                     headless,
                     remote,
                     cast,
+                    cast_http,
                 },
         } => {
             tracing_subscriber::fmt()
@@ -684,7 +690,7 @@ pub async fn run(args: Args) -> Result<()> {
                 Some(remote) => crate::relay::run(paths, remote).await,
                 #[cfg(not(target_os = "macos"))]
                 Some(_) => bail!(RELAY_UNAVAILABLE),
-                None => crate::daemon::run(paths, headless, cast).await,
+                None => crate::daemon::run(paths, headless, cast, cast_http).await,
             };
         }
         Action::Server {
@@ -693,6 +699,7 @@ pub async fn run(args: Args) -> Result<()> {
                     headless,
                     remote,
                     cast,
+                    cast_http,
                 },
         } => {
             if remote.is_some() && !cfg!(target_os = "macos") {
@@ -700,15 +707,34 @@ pub async fn run(args: Args) -> Result<()> {
             }
             let launch = match remote {
                 Some(remote) => Launch::Relay(std::path::absolute(remote)?),
-                None if headless => Launch::Headless,
-                None => Launch::Device { cast },
+                None if headless => Launch::Headless { http: cast_http },
+                None => Launch::Device {
+                    cast: cast || cast_http.is_some(),
+                    http: cast_http,
+                },
             };
             client.ensure_with(&launch).await?;
             let info = client.server_info().await?;
-            if cast && !client.cast_info().await?.available {
+            // A relay would forward this question to its remote; its own cast is none.
+            let cast_info = match launch {
+                Launch::Relay(_) => None,
+                _ => Some(client.cast_info().await?),
+            };
+            let cast_available = cast_info.as_ref().is_some_and(|cast| cast.available);
+            let cast_url = cast_info.as_ref().and_then(|cast| cast.url.clone());
+            if (cast || cast_http.is_some()) && !cast_available {
                 bail!("A server is already running without --cast; run vtamp server stop first");
             }
-            let explicit = launch != Launch::Device { cast: false };
+            if cast_http.is_some() && cast_url.is_none() {
+                bail!(
+                    "A server is already running without --cast-http; run vtamp server stop first"
+                );
+            }
+            let explicit = launch
+                != Launch::Device {
+                    cast: false,
+                    http: None,
+                };
             let matches = info.mode == launch.mode()
                 && match &launch {
                     Launch::Relay(remote) => info.remote.as_deref() == Some(remote),
@@ -730,6 +756,7 @@ pub async fn run(args: Args) -> Result<()> {
                 Reply::success(json!({
                     "running": true, "socket": paths.socket(), "mode": info.mode,
                     "remote": info.remote, "headless": info.mode == ServerMode::Headless,
+                    "cast": cast_available, "cast_url": cast_url,
                 })),
                 args.json,
             );

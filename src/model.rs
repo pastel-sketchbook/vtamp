@@ -364,6 +364,8 @@ pub struct ServerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CastInfo {
     pub available: bool,
+    /// HTTP address of the cast, when the server was started with --cast-http.
+    pub url: Option<String>,
     pub codec: String,
     pub container: String,
     pub bitrate: u32,

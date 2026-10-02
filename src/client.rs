@@ -19,8 +19,12 @@ pub enum Launch {
     Device {
         /// Also cast the audio played through the device.
         cast: bool,
+        /// Serve the cast over HTTP at this address.
+        http: Option<std::net::SocketAddr>,
     },
-    Headless,
+    Headless {
+        http: Option<std::net::SocketAddr>,
+    },
     /// Relay the server reachable at this socket path.
     Relay(std::path::PathBuf),
 }
@@ -29,7 +33,7 @@ impl Launch {
     pub fn mode(&self) -> ServerMode {
         match self {
             Self::Device { .. } => ServerMode::Device,
-            Self::Headless => ServerMode::Headless,
+            Self::Headless { .. } => ServerMode::Headless,
             Self::Relay(_) => ServerMode::Relay,
         }
     }
@@ -143,7 +147,11 @@ impl Client {
         )?)
     }
     pub async fn ensure(&self) -> Result<()> {
-        self.ensure_with(&Launch::Device { cast: false }).await
+        self.ensure_with(&Launch::Device {
+            cast: false,
+            http: None,
+        })
+        .await
     }
     /// Start a server if none is reachable, in the requested mode. An already
     /// running server keeps its own mode.
@@ -178,12 +186,19 @@ impl Client {
         let mut command = Process::new(std::env::current_exe()?);
         command.arg("server").arg("run");
         match launch {
-            Launch::Device { cast: false } => {}
-            Launch::Device { cast: true } => {
-                command.arg("--cast");
+            Launch::Device { cast, http } => {
+                if *cast {
+                    command.arg("--cast");
+                }
+                if let Some(http) = http {
+                    command.arg("--cast-http").arg(http.to_string());
+                }
             }
-            Launch::Headless => {
+            Launch::Headless { http } => {
                 command.arg("--headless");
+                if let Some(http) = http {
+                    command.arg("--cast-http").arg(http.to_string());
+                }
             }
             Launch::Relay(remote) => {
                 command.arg("--remote").arg(remote);

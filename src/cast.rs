@@ -13,6 +13,7 @@ use std::{
 use tokio::sync::broadcast;
 
 pub mod codec;
+pub mod http;
 pub mod ogg;
 pub mod source;
 /// Only device servers tap their output; other platforms are headless.

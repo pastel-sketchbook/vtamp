@@ -817,3 +817,74 @@ fn device_servers_cast_only_when_asked() {
     // Starting again with the same option reports the running server.
     assert_eq!(server.ok(&["server", "start", "--cast"])["mode"], "device");
 }
+
+#[test]
+fn http_cast_serves_the_token_path_and_rejects_others() {
+    use std::{io::BufRead, net::TcpStream};
+    let server = Server::new();
+    let started = server.ok(&[
+        "server",
+        "start",
+        "--headless",
+        "--cast-http",
+        "127.0.0.1:0",
+    ]);
+    let url = started["cast_url"].as_str().unwrap().to_owned();
+    assert_eq!(server.ok(&["cast", "status"])["url"], url);
+    assert_eq!(
+        server.ok(&["server", "start", "--headless"])["cast_url"],
+        url
+    );
+    let rest = url.strip_prefix("http://").unwrap();
+    let (host, path) = rest.split_once('/').unwrap();
+    let path = format!("/{path}");
+    assert!(path.starts_with("/cast/") && path.len() > 20, "{path}");
+    assert!(
+        std::fs::read_to_string(server.home.path().join("cast.json"))
+            .unwrap()
+            .contains(&path[6..])
+    );
+
+    let request = |line: &str| -> (String, TcpStream) {
+        let mut stream = TcpStream::connect(host).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .write_all(format!("{line}\r\nHost: {host}\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut head = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            head.push_str(&line);
+        }
+        (head, stream)
+    };
+    let (head, _) = request("GET /cast/not-the-token HTTP/1.1");
+    assert!(head.starts_with("HTTP/1.1 404"), "{head}");
+    let (head, _) = request(&format!("POST {path} HTTP/1.1"));
+    assert!(head.starts_with("HTTP/1.1 405"), "{head}");
+    let (head, mut probe) = request(&format!("HEAD {path} HTTP/1.1"));
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert!(head.contains("audio/ogg"), "{head}");
+    let mut rest = vec![];
+    probe.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty(), "HEAD sends no body");
+
+    let (head, mut listener) = request(&format!("GET {path}?x=1 HTTP/1.1"));
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(server.ok(&["cast", "status"])["listeners"], 1);
+    let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav");
+    server.ok(&["play", wav]);
+    let mut magic = [0u8; 4];
+    listener.read_exact(&mut magic).unwrap();
+    assert_eq!(&magic, b"OggS");
+    drop(listener);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(server.ok(&["cast", "status"])["listeners"], 0);
+}

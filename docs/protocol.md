@@ -271,6 +271,21 @@ page; nothing is sent while stopped.
 `vtamp cast listen` writes the raw stream to standard output and refuses a
 terminal; `vtamp cast status` prints `CastInfo`. Neither starts a server.
 
+### HTTP delivery
+
+`--cast-http ADDR` binds a plain HTTP listener and sets `CastInfo.url` to
+`http://ADDR/cast/<token>`, where the token is a 32-character value kept in
+`cast.json` in the data directory and created on first use. `GET` on that path
+(any query string is ignored) answers `200` with `Content-Type: audio/ogg`,
+`Cache-Control: no-store`, and `Connection: close`, then the same bytes a
+`cast_watch` connection carries, headers of the open stream first, until the
+listener closes. `HEAD` answers the headers only. Other paths get `404`, other
+methods `405`. Up to 64 listeners are served; writes have a five-second
+deadline; a listener that falls behind receives the current headers again. No
+TLS and no other authentication exist in vtamp; the address defaults to nothing,
+so the listener exists only when asked, and a reverse proxy or private network
+provides the rest.
+
 `server_info` describes any server: `{"mode":"device"|"headless"|"relay","remote":<socket path, relays only>,"version":"0.1.0"}`.
 
 ### Relay

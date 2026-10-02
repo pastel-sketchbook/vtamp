@@ -98,7 +98,12 @@ impl Drop for Bind {
     }
 }
 
-pub async fn run(paths: Paths, headless: bool, cast_enabled: bool) -> Result<()> {
+pub async fn run(
+    paths: Paths,
+    headless: bool,
+    cast_enabled: bool,
+    http: Option<std::net::SocketAddr>,
+) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     let headless = {
         if !headless {
@@ -126,7 +131,20 @@ pub async fn run(paths: Paths, headless: bool, cast_enabled: bool) -> Result<()>
             .is_ok()
     });
     let spectrum = Spectrum::start()?;
-    let cast = (headless || cast_enabled).then(|| Arc::new(Hub::default()));
+    let cast = (headless || cast_enabled || http.is_some()).then(|| Arc::new(Hub::default()));
+    let http = match http {
+        Some(address) => {
+            Some(cast::http::HttpCast::bind(address, &cast::http::token(&paths)?).await?)
+        }
+        None => None,
+    };
+    let served = Arc::new(Served {
+        cast: cast.clone(),
+        url: http.as_ref().map(|http| http.url.clone()),
+        headless,
+    });
+    let http =
+        http.map(|http| tokio::spawn(http.serve(cast.clone().expect("a cast exists with HTTP"))));
     let shutdown = Arc::new(Notify::new());
     let thread = {
         let events = events.clone();
@@ -191,7 +209,12 @@ pub async fn run(paths: Paths, headless: bool, cast_enabled: bool) -> Result<()>
     let permits = Arc::new(Semaphore::new(64));
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    tracing::info!(headless, "vtamp server ready");
+    tracing::info!(
+        headless,
+        cast = cast.is_some(),
+        url = served.url.as_deref(),
+        "vtamp server ready"
+    );
     loop {
         tokio::select! {
             _ = shutdown.notified() => break,
@@ -200,14 +223,17 @@ pub async fn run(paths: Paths, headless: bool, cast_enabled: bool) -> Result<()>
             accepted = bind.listener.accept() => {
                 let (stream, _) = accepted?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
-                    let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone(); let cast = cast.clone();
+                    let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone(); let served = served.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        if let Err(error) = connection(stream, sender, events, spectrum, cast, headless).await { tracing::debug!("Client disconnected: {error:#}"); }
+                        if let Err(error) = connection(stream, sender, events, spectrum, served).await { tracing::debug!("Client disconnected: {error:#}"); }
                     });
                 }
             }
         }
+    }
+    if let Some(http) = http {
+        http.abort();
     }
     // Give the shutdown acknowledgement and final event time to reach clients.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -235,13 +261,19 @@ async fn dispatch(sender: &mpsc::SyncSender<Work>, command: Command) -> Reply {
     }
 }
 
+/// What this server offers besides playback commands.
+struct Served {
+    cast: Option<Arc<Hub>>,
+    url: Option<String>,
+    headless: bool,
+}
+
 async fn connection(
     mut stream: UnixStream,
     sender: mpsc::SyncSender<Work>,
     events: broadcast::Sender<Event>,
     spectrum: Arc<Spectrum>,
-    cast: Option<Arc<Hub>>,
-    headless: bool,
+    served: Arc<Served>,
 ) -> Result<()> {
     let request: Request =
         match tokio::time::timeout(Duration::from_secs(5), wire::read(&mut stream)).await {
@@ -274,7 +306,7 @@ async fn connection(
     }
     if matches!(request.request, Command::ServerInfo) {
         let reply = Reply::success(ServerInfo {
-            mode: if headless {
+            mode: if served.headless {
                 ServerMode::Headless
             } else {
                 ServerMode::Device
@@ -286,13 +318,13 @@ async fn connection(
         return Ok(());
     }
     if matches!(request.request, Command::CastInfo) {
-        let reply = Reply::success(cast_info(cast.as_deref()));
+        let reply = Reply::success(cast_info(served.cast.as_deref(), served.url.clone()));
         tokio::time::timeout(Duration::from_secs(5), wire::write(&mut stream, &reply)).await??;
         return Ok(());
     }
     if matches!(request.request, Command::CastWatch) {
-        return match cast {
-            Some(hub) => cast_connection(stream, hub).await,
+        return match &served.cast {
+            Some(hub) => cast_connection(stream, hub.clone(), served.url.clone()).await,
             None => {
                 let reply = Reply::failure(ApiError::new(
                     "cast_unavailable",
@@ -392,9 +424,10 @@ pub(crate) async fn spectrum_connection(
     Ok(())
 }
 
-fn cast_info(hub: Option<&Hub>) -> CastInfo {
+fn cast_info(hub: Option<&Hub>, url: Option<String>) -> CastInfo {
     CastInfo {
         available: hub.is_some(),
+        url,
         codec: "opus".into(),
         container: "ogg".into(),
         bitrate: hub.map_or(0, |_| cast::DEFAULT_BITRATE),
@@ -406,10 +439,10 @@ fn cast_info(hub: Option<&Hub>) -> CastInfo {
 
 /// After the JSON handshake the connection carries raw Ogg pages. A listener
 /// that joins mid-stream receives the open stream's headers first.
-async fn cast_connection(mut stream: UnixStream, hub: Arc<Hub>) -> Result<()> {
+async fn cast_connection(mut stream: UnixStream, hub: Arc<Hub>, url: Option<String>) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (headers, mut listener) = hub.subscribe();
-    let reply = Reply::success(cast_info(Some(&hub)));
+    let reply = Reply::success(cast_info(Some(&hub), url));
     tokio::time::timeout(Duration::from_secs(2), wire::write(&mut stream, &reply)).await??;
     if let Some(headers) = headers {
         tokio::time::timeout(Duration::from_secs(5), stream.write_all(&headers)).await??;

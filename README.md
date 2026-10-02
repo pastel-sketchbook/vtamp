@@ -191,6 +191,18 @@ Start a headless server explicitly. Commands that start a server on demand start
 
 A server that plays through its audio device can cast the same audio as well: `vtamp server start --cast`. The cast is taken before the volume setting, so turning the local volume down does not quiet listeners. Without `--cast` nothing is encoded and `cast status` reports the cast unavailable.
 
+### Listen with a player or a browser
+
+`--cast-http ADDR` serves the cast over plain HTTP, Icecast style, for any player that opens a URL:
+
+```sh
+vtamp server start --headless --cast-http 127.0.0.1:8000   # also valid with --cast
+vtamp cast status --json                                    # prints the URL, including its token
+mpv http://127.0.0.1:8000/cast/<token>
+```
+
+The token is created once and kept in `cast.json` in the data directory; delete the file to issue a new one. Requests for any other path get `404`. The server speaks HTTP only on the address you give it, so keep it on loopback or a private network and put a reverse proxy such as Caddy in front for TLS and additional authentication; vtamp does not terminate TLS. Each track start, seek, and resume begins a new logical Ogg stream, which mpv, VLC, ffmpeg, and Firefox follow; Chrome and Safari handle chained Ogg Opus poorly or not at all, so browser support is limited to what you test.
+
 ### Linux builds are headless servers
 
 On Linux the binary builds without an audio device backend, so every server it starts is headless and `server start` behaves like `server start --headless`. Device playback, the relay described below, and live radio are macOS features. AAC decodes in software there (macOS keeps AudioToolbox). Building needs a C compiler and cmake for the bundled libopus; nothing else, in particular no ALSA, is required. The build is tested on Ubuntu 24.04 (aarch64) and in CI; a typical setup is a headless server on a Linux machine with the music files and relays or `vtamp cast listen` on the Macs that play it.
@@ -490,7 +502,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `now` | Current track, remaining time, and settings without the full queue |
 | `tmux status [--max-width N] [--show-artist]` | One tmux-safe now-playing line; empty when stopped or unavailable |
 | `watch` | Initial state, state changes, progress heartbeats, and library events |
-| `server start [--headless\|--cast\|--remote SOCKET]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device, `--cast` casts what the device plays, `--remote` relays another server and plays its cast here |
+| `server start [--headless\|--cast\|--cast-http ADDR\|--remote SOCKET]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device, `--cast` casts what the device plays, `--cast-http` also serves the cast over HTTP, `--remote` relays another server and plays its cast here |
 | `cast listen`, `cast status` | Write a headless server's Ogg Opus stream to standard output, or describe it |
 | `doctor` | Paths, connectivity, terminal environment, and default output device |
 | `theme list\|current\|set NAME` | List themes, read the saved default, or save it for future attachments |
