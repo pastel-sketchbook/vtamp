@@ -41,7 +41,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n / b   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -1294,8 +1294,8 @@ impl App {
             }
             KeyCode::Char('R') => self.send(commands, Command::LibraryScan),
             KeyCode::Char(' ') => self.send(commands, Command::Toggle),
-            KeyCode::Char('n') => self.send(commands, Command::Next),
-            KeyCode::Char('b') => self.send(commands, Command::Prev),
+            KeyCode::Char('n' | '>') => self.send(commands, Command::Next),
+            KeyCode::Char('b' | '<') => self.send(commands, Command::Prev),
             KeyCode::Char('s') => self.send(
                 commands,
                 Command::Shuffle {
@@ -2815,12 +2815,22 @@ mod tests {
             }
         }
         assert!(requests.try_recv().is_err());
-        app.key(
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
-            &commands,
-        )
-        .unwrap();
-        assert!(matches!(requests.try_recv().unwrap(), Command::Prev));
+        for (c, modifiers) in [
+            ('b', KeyModifiers::NONE),
+            ('<', KeyModifiers::NONE),
+            ('<', KeyModifiers::SHIFT),
+            ('n', KeyModifiers::NONE),
+            ('>', KeyModifiers::NONE),
+            ('>', KeyModifiers::SHIFT),
+        ] {
+            app.key(KeyEvent::new(KeyCode::Char(c), modifiers), &commands)
+                .unwrap();
+            let command = requests.try_recv().unwrap();
+            assert!(match c {
+                'b' | '<' => matches!(command, Command::Prev),
+                _ => matches!(command, Command::Next),
+            });
+        }
         app.input = Some(Input::Search("music".into()));
         for code in [KeyCode::Char('f'), KeyCode::Char('b')] {
             app.key(KeyEvent::new(code, KeyModifiers::CONTROL), &commands)
@@ -2829,6 +2839,20 @@ mod tests {
         assert!(matches!(app.input, Some(Input::Search(ref text)) if text == "music"));
         assert_eq!(app.queue_selection.selected(), Some(0));
         assert!(requests.try_recv().is_err());
+        for input in [Input::Search(String::new()), Input::Folder(String::new())] {
+            app.input = Some(input);
+            for c in ['<', '>'] {
+                app.key(
+                    KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT),
+                    &commands,
+                )
+                .unwrap();
+            }
+            assert!(
+                matches!(app.input, Some(Input::Search(ref text) | Input::Folder(ref text)) if text == "<>")
+            );
+            assert!(requests.try_recv().is_err());
+        }
     }
 
     #[test]
@@ -3174,6 +3198,8 @@ mod tests {
             KeyCode::Char('x'),
             KeyCode::Char(' '),
             KeyCode::Char('n'),
+            KeyCode::Char('<'),
+            KeyCode::Char('>'),
             KeyCode::Tab,
         ] {
             app.key(key(code), &tx).unwrap();
@@ -4683,7 +4709,7 @@ mod tests {
                 assert_eq!(draw(&mut app, &mut terminal), bottom);
             }
             // Commands behind the modal must neither run nor dismiss it.
-            for code in [' ', 'v', 'e', 'r', 'b'] {
+            for code in [' ', 'v', 'e', 'r', 'b', '<', '>'] {
                 press(&mut app, key(KeyCode::Char(code)));
                 assert!(app.help);
             }

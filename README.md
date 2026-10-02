@@ -291,7 +291,7 @@ the desktop integration cannot initialize.
 | --- | --- |
 | `q`, `Esc`, `Ctrl+C` | Detach the interface (`Esc` clears an applied search first) |
 | `Space` | Play / pause |
-| `n` / `b` | Next / previous track |
+| `n` or `>` / `b` or `<` | Next / previous track |
 | `←` / `→` | Seek backward / forward 10 seconds |
 | `+` / `-` | Volume up / down 5 percentage points |
 | `s` | Toggle shuffle |
