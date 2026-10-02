@@ -62,6 +62,7 @@ struct Snapshot {
     revision: u64,
     observed_at: Instant,
 }
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Snapshot {
     fn position_at(&self, now: Instant) -> u64 {
         let progress = if self.status == PlaybackStatus::Playing && !self.waiting {
@@ -111,7 +112,9 @@ impl Publication {
 }
 
 /// A completed image must still belong to the current track, including no-art
-/// transitions and stop. Keep the check independent of Cocoa for regression tests.
+/// transitions and stop. Keep the check independent of Cocoa for regression tests,
+/// which also run on headless-only platforms.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct Artwork<T> {
     generation: u64,
     value: Option<T>,
@@ -124,6 +127,7 @@ impl<T> Default for Artwork<T> {
         }
     }
 }
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl<T> Artwork<T> {
     fn begin(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
@@ -140,6 +144,7 @@ impl<T> Artwork<T> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 enum RemoteCommand {
     Play,
     Pause,
@@ -150,11 +155,13 @@ enum RemoteCommand {
     Seek(f64),
 }
 #[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 enum Delivery {
     Accepted,
     NoContent,
     Failed,
 }
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn deliver(action: RemoteCommand, available: bool, send: &dyn Fn(Command) -> bool) -> Delivery {
     if !available {
         return Delivery::NoContent;
@@ -168,6 +175,7 @@ fn deliver(action: RemoteCommand, available: bool, send: &dyn Fn(Command) -> boo
         Delivery::Failed
     }
 }
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl RemoteCommand {
     fn command(self) -> Option<Command> {
         Some(match self {

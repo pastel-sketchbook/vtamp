@@ -47,6 +47,7 @@ impl Config {
         platform::atomic_json(&paths.data.join("llm.json"), self)
     }
 }
+#[cfg(target_os = "macos")]
 fn account(paths: &Paths) -> String {
     format!("{}", paths.data.display())
 }
@@ -81,7 +82,10 @@ pub fn api_key(config: &Config, paths: &Paths) -> Result<Option<String>> {
             )?));
         }
         #[cfg(not(target_os = "macos"))]
-        bail!("Keychain storage is supported on macOS only");
+        {
+            let _ = paths;
+            bail!("Keychain storage is supported on macOS only");
+        }
     }
     Ok(None)
 }

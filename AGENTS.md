@@ -7,8 +7,11 @@ exits or a tmux client detaches.
 - Single Rust crate, edition 2024, Rust 1.90 or newer; use `Cargo.lock`. TUI:
   ratatui + crossterm; audio: rodio; transport: Unix sockets; persistence: bundled
   SQLite. The website in `site/` is static HTML/CSS/JS without a build step.
-- macOS is the supported platform. Keep platform code isolated for future Linux
-  support; do not claim Linux support without testing it.
+- macOS is the supported platform for playback. Linux builds are headless servers
+  only: no device playback, relay, media keys, or radio; AAC decodes in software
+  there. CI covers both, and the Linux build is tested on Ubuntu 24.04 (aarch64).
+  Keep platform code behind `cfg(target_os = "macos")`; do not claim more Linux
+  support than is tested.
 - Product UI and repository documentation are English. Match the user's language
   in conversation.
 
@@ -140,7 +143,8 @@ The documents above hold the full contracts; these are the most common regressio
   queue, and shuffle; it is never a reason to skip a track.
 - On macOS, AAC decodes only through AudioToolbox, chosen by the actual codec
   rather than the extension (ALAC stays on Symphonia). Add no AAC software
-  fallback; keep `symphonia-codec-aac` out of the macOS dependency graph.
+  fallback; `symphonia-codec-aac` and the no-device `rodio` build belong to the
+  `cfg(not(target_os = "macos"))` dependency section only.
 - AppKit and AVPlayer objects stay on the main run loop; server commands and media
   callbacks never wait on them or on the network. Do not add a global keyboard
   hook. The media-server app bundle is ad-hoc signed with an identifier equal to

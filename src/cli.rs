@@ -154,6 +154,9 @@ pub enum Action {
     Doctor,
 }
 
+const RELAY_UNAVAILABLE: &str =
+    "Relay mode needs device playback, which this build does not include; use vtamp cast listen";
+
 #[derive(Debug, Subcommand)]
 pub enum Cast {
     /// Write the Ogg Opus cast to standard output until interrupted; pipe it into a player.
@@ -667,13 +670,19 @@ pub async fn run(args: Args) -> Result<()> {
                 )
                 .init();
             return match remote {
+                #[cfg(target_os = "macos")]
                 Some(remote) => crate::relay::run(paths, remote).await,
+                #[cfg(not(target_os = "macos"))]
+                Some(_) => bail!(RELAY_UNAVAILABLE),
                 None => crate::daemon::run(paths, headless).await,
             };
         }
         Action::Server {
             command: Server::Start { headless, remote },
         } => {
+            if remote.is_some() && !cfg!(target_os = "macos") {
+                bail!(RELAY_UNAVAILABLE);
+            }
             let launch = match remote {
                 Some(remote) => Launch::Relay(std::path::absolute(remote)?),
                 None if headless => Launch::Headless,
@@ -732,11 +741,16 @@ pub async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Action::Doctor => {
-            use rodio::cpal::traits::{DeviceTrait, HostTrait};
-            let device = rodio::cpal::default_host()
-                .default_output_device()
-                .and_then(|d| d.description().ok())
-                .map(|d| d.to_string());
+            #[cfg(target_os = "macos")]
+            let device = {
+                use rodio::cpal::traits::{DeviceTrait, HostTrait};
+                rodio::cpal::default_host()
+                    .default_output_device()
+                    .and_then(|d| d.description().ok())
+                    .map(|d| d.to_string())
+            };
+            #[cfg(not(target_os = "macos"))]
+            let device: Option<String> = None;
             let status = client.request(Command::Status).await;
             let import_info = if crate::import_config::youtube_available(&paths) {
                 Some(

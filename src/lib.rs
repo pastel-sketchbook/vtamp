@@ -16,6 +16,7 @@ pub mod metadata;
 pub mod model;
 pub mod platform;
 mod queue_edit;
+#[cfg(target_os = "macos")]
 pub mod relay;
 pub mod settings;
 pub mod spectrum;

@@ -179,6 +179,7 @@ impl DecoderWorker {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) fn consumer_alive(&self) -> bool {
         Arc::strong_count(&self.shared) > 1
     }

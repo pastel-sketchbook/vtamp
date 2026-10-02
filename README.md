@@ -67,7 +67,7 @@ replaced by an install. Intel Macs build from source.
 
 ### Install from source
 
-You need **Rust 1.90 or newer** and the macOS Command Line Tools (`xcode-select --install` if you do not have them). Clone the repository and install:
+You need **Rust 1.90 or newer**, the macOS Command Line Tools (`xcode-select --install` if you do not have them), and **cmake** (`brew install cmake`), which builds the bundled libopus for the audio cast. Clone the repository and install:
 
 ```sh
 git clone https://github.com/rath/vtamp.git
@@ -81,7 +81,7 @@ Make sure `~/.cargo/bin` is on your `PATH`. Or run directly from the checkout:
 cargo run --release
 ```
 
-There is no published crates.io package. Local playback does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite is bundled. Optional installed-tool imports are described in [the integration guide](docs/imports.md).
+There is no published crates.io package. Local playback does not require FFmpeg, Chafa, a Node runtime, or a separate database installation. SQLite and libopus are bundled. Optional installed-tool imports are described in [the integration guide](docs/imports.md).
 
 ## First listen
 
@@ -188,6 +188,10 @@ ssh music-box vtamp cast listen | mpv -  # listen from another machine over SSH
 The queue, the library, the playback commands, and the TUI work as usual; the audio leaves as an Ogg Opus stream (48 kHz stereo, 128 kbit/s) that listeners pull with `vtamp cast listen`. Each track start, seek, or resume begins a new logical stream carrying the title and the queue entry, so a player can drop what it buffered. Pausing keeps the stream flowing with silence; stopping ends it. The server stores and reports the volume setting but does not scale the stream; set the level in the listening player. Live radio cannot play on a headless server, and the spectrum stays empty because nothing is analyzed locally.
 
 Start a headless server explicitly. Commands that start a server on demand start one with an audio device, and `server start --headless` fails while such a server is running. `vtamp cast status` and `vtamp doctor` report whether the running server casts. See [docs/protocol.md](docs/protocol.md) for the stream contract.
+
+### Linux builds are headless servers
+
+On Linux the binary builds without an audio device backend, so every server it starts is headless and `server start` behaves like `server start --headless`. Device playback, the relay described below, and live radio are macOS features. AAC decodes in software there (macOS keeps AudioToolbox). Building needs a C compiler and cmake for the bundled libopus; nothing else, in particular no ALSA, is required. The build is tested on Ubuntu 24.04 (aarch64) and in CI; a typical setup is a headless server on a Linux machine with the music files and relays or `vtamp cast listen` on the Macs that play it.
 
 ### Listen with vtamp itself
 

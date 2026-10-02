@@ -102,6 +102,7 @@ impl Spectrum {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn playing(&self, playing: bool) {
         if self.playing.swap(playing, Ordering::AcqRel) != playing {
             self.epoch.fetch_add(1, Ordering::AcqRel);
@@ -109,6 +110,7 @@ impl Spectrum {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn reset(&self) {
         self.playing(false);
         self.generation.fetch_add(1, Ordering::AcqRel);
@@ -131,6 +133,7 @@ impl Spectrum {
         self.subscribers.load(Ordering::Acquire) > 0 && self.playing.load(Ordering::Acquire)
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn tap(self: &Arc<Self>, source: Box<dyn Source + Send>) -> Tap {
         Tap {
             source,

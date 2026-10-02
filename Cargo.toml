@@ -36,7 +36,6 @@ url = "2"
 # references drag unused optional backends into Cargo.lock.
 ratatui = { version = "0.30", default-features = false, features = ["all-widgets", "crossterm", "layout-cache", "macros", "unstable-rendered-line-info"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
-rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-isomp4", "symphonia-alac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
@@ -51,6 +50,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Device playback (cpal) is built on macOS only; AAC decodes through AudioToolbox.
+rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-isomp4", "symphonia-alac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 security-framework = "3"
 objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "ExtendedAudioFile", "objc2-core-audio-types", "objc2-core-foundation"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
@@ -64,7 +65,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "MPRemoteCommandCenter", "MPRemoteCommand", "MPRemoteCommandEvent", "MPNowPlayingInfoCenter", "MPMediaItem", "MPMediaEntity", "objc2-app-kit", "objc2-core-foundation"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-rodio = { version = "0.22", default-features = false, features = ["symphonia-aac"] }
+# No audio device and no ALSA dependency: these builds are headless servers.
+# Software AAC decoding is for this target only and never for macOS.
+rodio = { version = "0.22", default-features = false, features = ["symphonia-isomp4", "symphonia-alac", "symphonia-aac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 
 [dev-dependencies]
 # Independent Ogg implementation that cross-checks the cast page layout.

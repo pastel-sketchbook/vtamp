@@ -662,6 +662,10 @@ fn headless_server_casts_tagged_ogg_opus_and_device_servers_refuse() {
     child.wait().unwrap();
 
     // A server with an audio device refuses casts and a second, headless start.
+    // Other platforms build headless servers only.
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     let device = Server::new();
     assert_eq!(device.ok(&["server", "start"])["headless"], false);
     assert_eq!(device.ok(&["cast", "status"])["available"], false);
@@ -685,6 +689,7 @@ fn headless_server_casts_tagged_ogg_opus_and_device_servers_refuse() {
 }
 
 #[test]
+#[cfg_attr(not(target_os = "macos"), ignore = "Relay mode needs device playback")]
 fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
     let remote = Server::new();
     assert_eq!(

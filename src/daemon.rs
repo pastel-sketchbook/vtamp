@@ -1,7 +1,9 @@
 mod covers;
 mod imports;
+#[cfg(target_os = "macos")]
+use crate::audio::RodioBackend;
 use crate::{
-    audio::{PlaybackBackend, RodioBackend, headless::HeadlessBackend},
+    audio::{PlaybackBackend, headless::HeadlessBackend},
     cast::{self, Hub},
     engine::Engine,
     library::{self, Scan},
@@ -97,6 +99,13 @@ impl Drop for Bind {
 }
 
 pub async fn run(paths: Paths, headless: bool) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    let headless = {
+        if !headless {
+            tracing::info!("Device playback is not built for this platform; running headless");
+        }
+        true
+    };
     let Some(bind) = Bind::open(&paths)? else {
         return Ok(());
     };
@@ -138,7 +147,10 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
                             return;
                         }
                     },
+                    #[cfg(target_os = "macos")]
                     None => Box::new(RodioBackend::with_spectrum(spectrum.clone())),
+                    #[cfg(not(target_os = "macos"))]
+                    None => unreachable!("non-macOS servers are always headless"),
                 };
                 let result = worker(
                     paths,

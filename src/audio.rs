@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
-use rodio::{
-    Source,
-    cpal::{
-        self, DeviceId,
-        traits::{DeviceTrait, HostTrait},
-    },
+use rodio::Source;
+#[cfg(target_os = "macos")]
+use rodio::cpal::{
+    self, DeviceId,
+    traits::{DeviceTrait, HostTrait},
 };
+use std::{fs::File, path::Path};
+#[cfg(target_os = "macos")]
 use std::{
-    fs::File,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -20,9 +20,12 @@ mod buffered;
 pub mod headless;
 #[cfg(target_os = "macos")]
 mod macos;
+// Device playback exists on macOS only; other platforms build headless servers.
+#[cfg(target_os = "macos")]
 mod output;
 #[cfg(target_os = "macos")]
 pub mod radio;
+#[cfg(target_os = "macos")]
 use buffered::DecoderWorker;
 pub use buffered::Progress;
 
@@ -134,7 +137,9 @@ pub struct StreamUpdate {
     pub fatal: bool,
 }
 
+#[cfg(target_os = "macos")]
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
 const STALL_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
@@ -146,6 +151,7 @@ impl std::fmt::Display for OutputUnavailable {
 }
 impl std::error::Error for OutputUnavailable {}
 
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 pub struct RodioBackend {
     #[cfg(target_os = "macos")]
@@ -166,10 +172,12 @@ pub struct RodioBackend {
     error: Arc<AtomicBool>,
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct ProgressWatch {
     last: Option<(u64, Instant)>,
 }
+#[cfg(target_os = "macos")]
 impl ProgressWatch {
     fn stalled(&mut self, position: u64, playing: bool, now: Instant) -> bool {
         if !playing {
@@ -186,6 +194,7 @@ impl ProgressWatch {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl RodioBackend {
     pub fn with_spectrum(spectrum: Arc<crate::spectrum::Spectrum>) -> Self {
         let mut backend = Self::default();
@@ -300,6 +309,7 @@ impl RodioBackend {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl PlaybackBackend for RodioBackend {
     fn load_source(
         &mut self,
@@ -463,13 +473,14 @@ impl PlaybackBackend for RodioBackend {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for RodioBackend {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
