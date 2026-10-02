@@ -64,8 +64,10 @@ Preserve the help dialog's line count when documenting the alternate play action
 `A` in Library queues every track the view shows in one atomic edit: the active
 search results, or the whole library when no filter is applied. It appends after
 the existing queue, never starts playback, leaves shuffle alone, and stops at the
-remaining queue room. Page the entire result set in bulk-sized requests rather
-than the visible page, and ignore replies that arrive after the view moved on.
+remaining queue room. Tracks the queue already holds are skipped, so a repeated
+press reports what was already there instead of adding a second copy. Page the
+entire result set in bulk-sized requests rather than the visible page, and ignore
+replies that arrive after the view moved on.
 Its notice names only the steps still ahead: no shuffle hint when shuffle is
 already on, no play hint while playing, and the resume wording while paused.
 

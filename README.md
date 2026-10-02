@@ -313,7 +313,7 @@ the desktop integration cannot initialize.
 | `Enter` | Play a library track, reusing a queue entry if present; or play the selected queue entry |
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
-| `A` | Queue every track the Library view shows — the active `/` search results, or the whole library — in one atomic append; stops at the remaining queue room (10,000 entries) |
+| `A` | Queue every track the Library view shows — the active `/` search results, or the whole library — in one atomic append that skips tracks Queue already holds; stops at the remaining queue room (10,000 entries) |
 | `x` / `d` | Remove the selected queue entry; Library `d` unregisters a stream after confirmation |
 | `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |

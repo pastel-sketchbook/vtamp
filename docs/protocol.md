@@ -145,8 +145,8 @@ reject new keyed edits when full. Expired IDs may be reused. This guarantee appl
 to `queue_edit` only (the CLI's multi-track add maps to it), not playback side
 effects. Receipts return historical results and never overwrite later state.
 The TUI's `A` (queue everything the Library view matches) walks `library_search`
-at 1000 tracks per request and then applies one `add` operation, so the queue
-changes atomically.
+at 1000 tracks per request and then applies one `add` operation for the tracks
+the queue does not already hold, so the queue changes atomically.
 
 ## Scan jobs and reservations
 

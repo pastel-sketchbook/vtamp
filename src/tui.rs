@@ -31,6 +31,7 @@ use ratatui::{
 use ratatui_image::StatefulImage;
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::mpsc as sync_mpsc,
     time::{Duration, Instant},
@@ -208,7 +209,12 @@ struct QueueAll {
     query: String,
     /// Offset of the next page to request, in tracks.
     offset: usize,
+    /// Library track IDs already in the queue when the walk started. Skipping
+    /// them keeps a repeated keypress from doubling the queue.
+    queued: HashSet<String>,
     track_ids: Vec<String>,
+    /// Matching tracks left out because the queue already had them.
+    skipped: usize,
     /// Queue slots left when the walk started; the walk stops there.
     capacity: usize,
 }
@@ -1004,7 +1010,14 @@ impl App {
         self.queue_all = Some(QueueAll {
             query: self.library_query.clone(),
             offset: 0,
+            queued: self
+                .state
+                .queue
+                .iter()
+                .map(|item| item.track.id.clone())
+                .collect(),
             track_ids: Vec::new(),
+            skipped: 0,
             capacity,
         });
         self.request_queue_page(commands);
@@ -1061,6 +1074,10 @@ impl App {
             if all.track_ids.len() >= all.capacity {
                 break;
             }
+            if all.queued.contains(&track.id) {
+                all.skipped += 1;
+                continue;
+            }
             all.track_ids.push(track.id.clone());
         }
         all.offset += tracks.len();
@@ -1069,9 +1086,26 @@ impl App {
             self.request_queue_page(commands);
             return;
         }
-        let queued = all.track_ids.len();
-        if queued == 0 {
-            self.notice("Nothing to queue.");
+        // The queue can change while the walk runs; drop anything that arrived
+        // meanwhile instead of adding a second copy.
+        let queued: HashSet<String> = self
+            .state
+            .queue
+            .iter()
+            .map(|item| item.track.id.clone())
+            .collect();
+        let before = all.track_ids.len();
+        all.track_ids.retain(|id| !queued.contains(id));
+        all.skipped += before - all.track_ids.len();
+        let added = all.track_ids.len();
+        let skipped = all.skipped;
+        if added == 0 {
+            let already = if skipped == 1 {
+                "1 matching track is".to_string()
+            } else {
+                format!("{skipped} matching tracks are")
+            };
+            self.notice(format!("Nothing new to queue: {already} already in Queue."));
             return;
         }
         self.send(
@@ -1089,8 +1123,8 @@ impl App {
                 request_id: None,
             },
         );
-        self.notice(if queued < total {
-            format!("Queued {queued} of {total} tracks: queue limit {QUEUE_LIMIT}.")
+        let notice = if added + skipped < total {
+            format!("Queued {added} of {total} matching tracks: queue limit {QUEUE_LIMIT}.")
         } else {
             let mut hints = Vec::new();
             if !self.state.shuffle {
@@ -1101,14 +1135,20 @@ impl App {
                 PlaybackStatus::Paused => hints.push("Space resumes"),
                 PlaybackStatus::Playing => (),
             }
+            let skipped = match skipped {
+                0 => String::new(),
+                n => format!(", {n} already in Queue"),
+            };
+            let tracks = if added == 1 { "track" } else { "tracks" };
             // Only name the steps that are still ahead: a hint for a setting
             // that is already on reads as a mistake.
             if hints.is_empty() {
-                format!("Queued {queued} tracks.")
+                format!("Queued {added} {tracks}{skipped}.")
             } else {
-                format!("Queued {queued} tracks. {}.", hints.join(", "))
+                format!("Queued {added} {tracks}{skipped}. {}.", hints.join(", "))
             }
-        });
+        };
+        self.notice(notice);
     }
     /// The queue filter is local: the whole queue already lives in the client.
     fn apply_queue_filter(&mut self, query: String) {
@@ -3561,6 +3601,8 @@ mod tests {
     fn queue_all_hints_only_the_steps_that_are_left() {
         let walk = |shuffle: bool, status: PlaybackStatus| {
             let mut app = navigation_app(2);
+            // A first run starts with an empty queue; nothing is skipped.
+            app.state.queue.clear();
             app.state.shuffle = shuffle;
             app.state.status = status;
             let (commands, mut requests) = mpsc::channel(8);
@@ -3595,6 +3637,118 @@ mod tests {
             "Queued 2 tracks. s shuffles, Space resumes."
         );
         assert_eq!(walk(true, PlaybackStatus::Playing), "Queued 2 tracks.");
+    }
+
+    #[test]
+    fn queue_all_skips_tracks_the_queue_already_has() {
+        let track = |id: &str| Track {
+            id: id.into(),
+            playback: crate::model::PlaybackSource::File {
+                path: format!("/{id}.m4a").into(),
+            },
+            title: format!("Track {id}"),
+            artist: "Artist".into(),
+            album: "Album".into(),
+            track_number: 1,
+            duration_ms: Some(180_000),
+            cover: None,
+            source: None,
+        };
+        let mut app = navigation_app(2);
+        app.total = 4;
+        app.state.queue = vec![QueueItem::new(track("t1"))];
+        let (commands, mut requests) = mpsc::channel(8);
+        let (messages, _) = mpsc::unbounded_channel();
+
+        app.key(
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        let command = requests.try_recv().unwrap();
+        let page: Vec<Track> = ["t0", "t1", "t2", "t3"]
+            .iter()
+            .map(|id| track(id))
+            .collect();
+        app.message(
+            Message::Reply(
+                command,
+                Ok(serde_json::json!({"tracks": page, "total": 4, "offset": 0})),
+            ),
+            &messages,
+            &commands,
+        );
+        let Command::QueueEdit { edit, .. } = requests.try_recv().unwrap() else {
+            panic!("expected one atomic queue edit");
+        };
+        let [QueueOperation::Add { track_ids, .. }] = &edit.operations[..] else {
+            panic!("expected a single append");
+        };
+        assert_eq!(track_ids, &["t0", "t2", "t3"]);
+        assert_eq!(
+            app.notice,
+            "Queued 3 tracks, 1 already in Queue. s shuffles, Space plays."
+        );
+
+        // A second press adds nothing and says so.
+        app.state.queue.push(QueueItem::new(track("t0")));
+        app.state.queue.push(QueueItem::new(track("t2")));
+        app.state.queue.push(QueueItem::new(track("t3")));
+        app.key(
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        let command = requests.try_recv().unwrap();
+        let page: Vec<Track> = ["t0", "t1", "t2", "t3"]
+            .iter()
+            .map(|id| track(id))
+            .collect();
+        app.message(
+            Message::Reply(
+                command,
+                Ok(serde_json::json!({"tracks": page, "total": 4, "offset": 0})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert!(requests.try_recv().is_err(), "no second copy");
+        assert_eq!(
+            app.notice,
+            "Nothing new to queue: 4 matching tracks are already in Queue."
+        );
+
+        // One removed entry comes back in the singular.
+        app.state.queue.retain(|item| item.track.id != "t3");
+        app.key(
+            KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+            &commands,
+        )
+        .unwrap();
+        let command = requests.try_recv().unwrap();
+        let page: Vec<Track> = ["t0", "t1", "t2", "t3"]
+            .iter()
+            .map(|id| track(id))
+            .collect();
+        app.message(
+            Message::Reply(
+                command,
+                Ok(serde_json::json!({"tracks": page, "total": 4, "offset": 0})),
+            ),
+            &messages,
+            &commands,
+        );
+        let Command::QueueEdit { edit, .. } = requests.try_recv().unwrap() else {
+            panic!("expected one atomic queue edit");
+        };
+        let [QueueOperation::Add { track_ids, .. }] = &edit.operations[..] else {
+            panic!("expected a single append");
+        };
+        assert_eq!(track_ids, &["t3"]);
+        assert_eq!(
+            app.notice,
+            "Queued 1 track, 3 already in Queue. s shuffles, Space plays."
+        );
     }
 
     #[test]
@@ -3649,7 +3803,7 @@ mod tests {
             panic!("expected a single append");
         };
         assert_eq!(track_ids, &["t0", "t1"], "the walk stops at the free slots");
-        assert!(app.notice.contains("Queued 2 of 20000 tracks"));
+        assert!(app.notice.contains("Queued 2 of 20000 matching tracks"));
 
         // A page that arrives after the view moved on is dropped.
         app.library_query.clear();
