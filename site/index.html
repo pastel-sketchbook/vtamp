@@ -65,6 +65,25 @@
 <div class="lifecycle-step"><code>$ vtamp</code><h3>Pick up.</h3><p>Attach again from another pane. Same music. Same queue. Exactly where it is now.</p></div>
 </div>
 <div class="architecture"><span>TUI</span><span class="connector" aria-hidden="true"></span><strong>PLAYBACK SERVER</strong><span class="connector" aria-hidden="true"></span><span>CLI / AGENTS</span><p>One shared queue. As many interfaces as you need.</p></div>
+<div class="cast-feature" aria-labelledby="cast-heading">
+<div>
+<h3 id="cast-heading">Listen from another machine.</h3>
+<p>A server can run without an audio device and send what it plays as an Ogg Opus stream instead. Start it with <code>--headless</code> on the machine that holds the music, a Mac or a Linux box. The queue, the library, and the CLI work as before, and a server that plays through its own speakers can cast as well with <code>--cast</code>.</p>
+<p>Listen with mpv or ffmpeg over SSH, open the stream in a player with <code>--cast-http</code>, or start a local vtamp with <code>--remote</code>: it plays the remote server through your speakers and shows its queue in the TUI.</p>
+<a class="feature-guide" href="https://github.com/rath/vtamp#headless-server">Read about the headless server</a>
+</div>
+<div class="cast-example">
+<pre><code><span class="comment"># On the machine with the music, macOS or Linux</span>
+vtamp server start --headless
+
+<span class="comment"># From any machine with mpv</span>
+ssh music-box vtamp cast listen | mpv -
+
+<span class="comment"># Or a local vtamp, after forwarding the socket over SSH</span>
+vtamp server start --remote /tmp/music-box.sock</code></pre>
+<p class="cast-example-foot">Ogg Opus · 48 kHz stereo · 128 kbit/s · Each track start, seek, and resume begins a new logical stream.</p>
+</div>
+</div>
 <div class="media-feature" aria-labelledby="media-heading">
 <div>
 <h3 id="media-heading">Your Mac knows what’s playing.</h3>
@@ -107,8 +126,9 @@
 <div class="command-row"><code>vtamp now --json</code><span>See what’s playing.</span><button class="copy-icon" data-copy="vtamp now --json" aria-label="Copy vtamp now --json"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="command-row"><code>vtamp library search --artist &quot;DAY6&quot; --json</code><span>Find the right tracks.</span><button class="copy-icon" data-copy="vtamp library search --artist &quot;DAY6&quot; --json" aria-label="Copy vtamp library search --artist &quot;DAY6&quot; --json"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="command-row"><code>vtamp sleep set 30m</code><span>Stop in 30 minutes.</span><button class="copy-icon" data-copy="vtamp sleep set 30m" aria-label="Copy vtamp sleep set 30m"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp cast status --json</code><span>Cast format, URL, and listener count.</span><button class="copy-icon" data-copy="vtamp cast status --json" aria-label="Copy vtamp cast status --json"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="json-example"><code>$ vtamp now --json</code><pre aria-label="Abbreviated example JSON response">{
-  <span>"version"</span>: 6,
+  <span>"version"</span>: 7,
   <span>"ok"</span>: true,
   <span>"data"</span>: {
     <span>"status"</span>: <b>"playing"</b>,
@@ -130,7 +150,7 @@ vtamp library add ~/Music
 
 <span class="comment"># Attach. Pick a track. Press Enter.</span>
 vtamp</code></pre><p class="install-foot">No permanent pane required. <kbd>q</kbd> to detach.</p></div>
-<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="Copy the source build commands">Copy commands</button></div><p>Intel Mac, or no Homebrew? Clone the repository, then install with Rust 1.90 or newer:</p><pre><code><span class="comment"># Get the source</span>
+<div class="install-code"><div class="install-heading"><span>BUILD FROM SOURCE</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="Copy the source build commands">Copy commands</button></div><p>Intel Mac, or no Homebrew? With Rust 1.90 or newer and cmake installed, clone the repository and install. On Linux the same commands build a headless server.</p><pre><code><span class="comment"># Get the source</span>
 git clone https://github.com/rath/vtamp.git
 cd vtamp
 

@@ -65,6 +65,25 @@
 <div class="lifecycle-step"><code>$ vtamp</code><h3>다시 열기</h3><p>다른 창에서 다시 열면 같은 음악, 같은 큐, 재생 중이던 바로 그 지점이 그대로 나타납니다.</p></div>
 </div>
 <div class="architecture"><span>TUI</span><span class="connector" aria-hidden="true"></span><strong>PLAYBACK SERVER</strong><span class="connector" aria-hidden="true"></span><span>CLI / AGENTS</span><p>큐는 하나, 화면은 필요한 만큼.</p></div>
+<div class="cast-feature" aria-labelledby="cast-heading">
+<div>
+<h3 id="cast-heading">다른 기기에서 듣기</h3>
+<p>서버는 오디오 장치 없이 실행하면서 재생하는 소리를 Ogg Opus 스트림으로 내보낼 수 있습니다. 음악 파일이 있는 Mac이나 Linux 기기에서 <code>--headless</code>로 시작하면 큐, 라이브러리, CLI는 그대로 동작합니다. 스피커로 재생하는 서버도 <code>--cast</code>를 붙이면 같은 스트림을 내보냅니다.</p>
+<p>SSH 너머에서 mpv나 ffmpeg로 듣거나, <code>--cast-http</code>로 플레이어에서 URL을 열거나, 로컬 vtamp를 <code>--remote</code>로 시작할 수 있습니다. 로컬 vtamp는 원격 서버의 큐를 TUI에 보여 주고 소리는 내 스피커로 재생합니다.</p>
+<a class="feature-guide" href="https://github.com/rath/vtamp#headless-server">헤드리스 서버 설명 보기</a>
+</div>
+<div class="cast-example">
+<pre><code><span class="comment"># 음악이 있는 기기, macOS 또는 Linux</span>
+vtamp server start --headless
+
+<span class="comment"># mpv가 있는 아무 기기에서</span>
+ssh music-box vtamp cast listen | mpv -
+
+<span class="comment"># 또는 SSH로 소켓을 포워딩한 뒤 로컬 vtamp로</span>
+vtamp server start --remote /tmp/music-box.sock</code></pre>
+<p class="cast-example-foot">Ogg Opus · 48 kHz 스테레오 · 128 kbit/s · 곡 시작, 탐색, 재개마다 새 논리 스트림이 시작됩니다.</p>
+</div>
+</div>
 <div class="media-feature" aria-labelledby="media-heading">
 <div>
 <h3 id="media-heading">미디어 키와 Now Playing 지원</h3>
@@ -107,8 +126,9 @@
 <div class="command-row"><code>vtamp now --json</code><span>지금 재생 중인 곡 보기.</span><button class="copy-icon" data-copy="vtamp now --json" aria-label="vtamp now --json 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="command-row"><code>vtamp library search --artist &quot;DAY6&quot; --json</code><span>원하는 곡 찾기.</span><button class="copy-icon" data-copy="vtamp library search --artist &quot;DAY6&quot; --json" aria-label="vtamp library search --artist &quot;DAY6&quot; --json 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="command-row"><code>vtamp sleep set 30m</code><span>30분 뒤 정지.</span><button class="copy-icon" data-copy="vtamp sleep set 30m" aria-label="vtamp sleep set 30m 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
+<div class="command-row"><code>vtamp cast status --json</code><span>캐스트 형식, URL, 청취자 수.</span><button class="copy-icon" data-copy="vtamp cast status --json" aria-label="vtamp cast status --json 복사"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="12" rx="1"/><path d="M15 8V4H4v12h4"/></svg></button></div>
 <div class="json-example"><code>$ vtamp now --json</code><pre aria-label="축약한 JSON 응답 예시">{
-  <span>"version"</span>: 6,
+  <span>"version"</span>: 7,
   <span>"ok"</span>: true,
   <span>"data"</span>: {
     <span>"status"</span>: <b>"playing"</b>,
@@ -130,7 +150,7 @@ vtamp library add ~/Music
 
 <span class="comment"># 접속. 곡을 고르고 Enter.</span>
 vtamp</code></pre><p class="install-foot">창을 계속 띄워 둘 필요가 없습니다. <kbd>q</kbd>로 닫습니다.</p></div>
-<div class="install-code"><div class="install-heading"><span>소스에서 빌드</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="소스 빌드 명령 복사">명령 복사</button></div><p>Intel Mac이거나 Homebrew가 없다면 저장소를 복제한 뒤 Rust 1.90 이상으로 설치하세요:</p><pre><code><span class="comment"># 소스 받기</span>
+<div class="install-code"><div class="install-heading"><span>소스에서 빌드</span><button class="copy-text" data-copy="git clone https://github.com/rath/vtamp.git&#10;cd vtamp&#10;cargo install --locked --path ." aria-label="소스 빌드 명령 복사">명령 복사</button></div><p>Intel Mac이거나 Homebrew가 없다면 Rust 1.90 이상과 cmake를 설치한 뒤 저장소를 복제해 설치하세요. Linux에서는 같은 명령으로 헤드리스 서버가 빌드됩니다.</p><pre><code><span class="comment"># 소스 받기</span>
 git clone https://github.com/rath/vtamp.git
 cd vtamp
 
