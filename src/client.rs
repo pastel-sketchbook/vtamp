@@ -16,7 +16,10 @@ pub struct Client {
 /// How a server should be started when none is running.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Launch {
-    Device,
+    Device {
+        /// Also cast the audio played through the device.
+        cast: bool,
+    },
     Headless,
     /// Relay the server reachable at this socket path.
     Relay(std::path::PathBuf),
@@ -25,7 +28,7 @@ pub enum Launch {
 impl Launch {
     pub fn mode(&self) -> ServerMode {
         match self {
-            Self::Device => ServerMode::Device,
+            Self::Device { .. } => ServerMode::Device,
             Self::Headless => ServerMode::Headless,
             Self::Relay(_) => ServerMode::Relay,
         }
@@ -140,7 +143,7 @@ impl Client {
         )?)
     }
     pub async fn ensure(&self) -> Result<()> {
-        self.ensure_with(&Launch::Device).await
+        self.ensure_with(&Launch::Device { cast: false }).await
     }
     /// Start a server if none is reachable, in the requested mode. An already
     /// running server keeps its own mode.
@@ -175,7 +178,10 @@ impl Client {
         let mut command = Process::new(std::env::current_exe()?);
         command.arg("server").arg("run");
         match launch {
-            Launch::Device => {}
+            Launch::Device { cast: false } => {}
+            Launch::Device { cast: true } => {
+                command.arg("--cast");
+            }
             Launch::Headless => {
                 command.arg("--headless");
             }

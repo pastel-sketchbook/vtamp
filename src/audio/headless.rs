@@ -94,25 +94,7 @@ impl HeadlessBackend {
 
 impl PlaybackBackend for HeadlessBackend {
     fn announce(&mut self, item: &QueueItem) {
-        let track = &item.track;
-        self.tags = [
-            ("TITLE", track.title.as_str()),
-            ("ARTIST", track.artist.as_str()),
-            ("ALBUM", track.album_name().unwrap_or_default()),
-        ]
-        .into_iter()
-        .filter(|(_, value)| !value.trim().is_empty())
-        .map(|(key, value)| (key.to_owned(), value.to_owned()))
-        .chain([
-            ("VTAMP_ITEM".to_owned(), item.id.clone()),
-            ("VTAMP_TRACK".to_owned(), track.id.clone()),
-        ])
-        .chain(
-            track
-                .duration_ms
-                .map(|ms| ("VTAMP_DURATION_MS".to_owned(), ms.to_string())),
-        )
-        .collect();
+        self.tags = crate::cast::tags_for(item);
     }
     fn load_source(
         &mut self,

@@ -15,6 +15,9 @@ use tokio::sync::broadcast;
 pub mod codec;
 pub mod ogg;
 pub mod source;
+/// Only device servers tap their output; other platforms are headless.
+#[cfg(target_os = "macos")]
+pub mod tap;
 
 pub const DEFAULT_BITRATE: u32 = 128_000;
 const VENDOR: &str = concat!("vtamp ", env!("CARGO_PKG_VERSION"));
@@ -24,6 +27,30 @@ const OPUS_HEAD: &[u8; 8] = b"OpusHead";
 const OPUS_TAGS: &[u8; 8] = b"OpusTags";
 
 pub type Tags = Vec<(String, String)>;
+
+/// Comments that label the stream of a queue entry; the start position is
+/// appended per stream.
+pub fn tags_for(item: &crate::model::QueueItem) -> Tags {
+    let track = &item.track;
+    [
+        ("TITLE", track.title.as_str()),
+        ("ARTIST", track.artist.as_str()),
+        ("ALBUM", track.album_name().unwrap_or_default()),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.trim().is_empty())
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .chain([
+        ("VTAMP_ITEM".to_owned(), item.id.clone()),
+        ("VTAMP_TRACK".to_owned(), track.id.clone()),
+    ])
+    .chain(
+        track
+            .duration_ms
+            .map(|ms| ("VTAMP_DURATION_MS".to_owned(), ms.to_string())),
+    )
+    .collect()
+}
 /// Bytes of one or more whole Ogg pages.
 pub type Chunk = Arc<[u8]>;
 pub type Chunks = broadcast::Receiver<Chunk>;

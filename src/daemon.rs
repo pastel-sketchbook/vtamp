@@ -98,7 +98,7 @@ impl Drop for Bind {
     }
 }
 
-pub async fn run(paths: Paths, headless: bool) -> Result<()> {
+pub async fn run(paths: Paths, headless: bool, cast_enabled: bool) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     let headless = {
         if !headless {
@@ -126,7 +126,7 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
             .is_ok()
     });
     let spectrum = Spectrum::start()?;
-    let cast = headless.then(|| Arc::new(Hub::default()));
+    let cast = (headless || cast_enabled).then(|| Arc::new(Hub::default()));
     let shutdown = Arc::new(Notify::new());
     let thread = {
         let events = events.clone();
@@ -137,8 +137,9 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
         std::thread::Builder::new()
             .name("vtamp-player".into())
             .spawn(move || {
-                let backend: Box<dyn PlaybackBackend> = match &cast {
-                    Some(hub) => match HeadlessBackend::new(hub.clone(), cast::DEFAULT_BITRATE) {
+                let backend: Box<dyn PlaybackBackend> = if headless {
+                    let hub = cast.clone().expect("headless servers always cast");
+                    match HeadlessBackend::new(hub, cast::DEFAULT_BITRATE) {
                         Ok(backend) => Box::new(backend),
                         Err(error) => {
                             tracing::error!("Cannot start the headless backend: {error:#}");
@@ -146,11 +147,27 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
                             shutdown.notify_one();
                             return;
                         }
-                    },
+                    }
+                } else {
                     #[cfg(target_os = "macos")]
-                    None => Box::new(RodioBackend::with_spectrum(spectrum.clone())),
+                    {
+                        let device = RodioBackend::with_spectrum(spectrum.clone());
+                        match &cast {
+                            Some(hub) => match device.with_cast(hub.clone(), cast::DEFAULT_BITRATE)
+                            {
+                                Ok(backend) => Box::new(backend),
+                                Err(error) => {
+                                    tracing::error!("Cannot start the cast encoder: {error:#}");
+                                    let _ = events.send(Event::Shutdown);
+                                    shutdown.notify_one();
+                                    return;
+                                }
+                            },
+                            None => Box::new(device),
+                        }
+                    }
                     #[cfg(not(target_os = "macos"))]
-                    None => unreachable!("non-macOS servers are always headless"),
+                    unreachable!("non-macOS servers are always headless")
                 };
                 let result = worker(
                     paths,
@@ -186,7 +203,7 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
                     let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone(); let cast = cast.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        if let Err(error) = connection(stream, sender, events, spectrum, cast).await { tracing::debug!("Client disconnected: {error:#}"); }
+                        if let Err(error) = connection(stream, sender, events, spectrum, cast, headless).await { tracing::debug!("Client disconnected: {error:#}"); }
                     });
                 }
             }
@@ -224,6 +241,7 @@ async fn connection(
     events: broadcast::Sender<Event>,
     spectrum: Arc<Spectrum>,
     cast: Option<Arc<Hub>>,
+    headless: bool,
 ) -> Result<()> {
     let request: Request =
         match tokio::time::timeout(Duration::from_secs(5), wire::read(&mut stream)).await {
@@ -256,7 +274,7 @@ async fn connection(
     }
     if matches!(request.request, Command::ServerInfo) {
         let reply = Reply::success(ServerInfo {
-            mode: if cast.is_some() {
+            mode: if headless {
                 ServerMode::Headless
             } else {
                 ServerMode::Device

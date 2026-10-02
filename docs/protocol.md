@@ -229,6 +229,13 @@ packets, pages of five packets) that listeners pull from the server. The
 server's `volume` is stored and reported but does not scale the cast; listeners
 set their own level. Live radio entries cannot play on a headless server.
 
+A device server started with `--cast` produces the same stream from the PCM it
+sends to the output, taken before volume is applied and resampled to 48 kHz
+when the device runs at another rate. Its logical streams follow the same
+rules: one per track start, seek, and resume, silence while paused or after a
+track ends, an end-of-stream page on stop. Radio playback is not cast. Without
+`--cast` a device server has no cast at all.
+
 Send `{"version":7,"request":{"command":"cast_watch"}}` on a separate connection.
 The first reply is a success envelope whose `data` is a `CastInfo`:
 
@@ -243,7 +250,7 @@ then live pages whose sequence numbers continue from the server's position;
 decode from the next page. Socket writes have a five-second deadline. A listener
 that falls behind the server's bounded buffer loses pages and receives the
 current headers again before newer pages. EOF from the listener releases the
-subscription. On a server with an audio device the handshake fails with
+subscription. On a server without a cast the handshake fails with
 `cast_unavailable`. `cast_info` returns the same `CastInfo` on an ordinary
 connection without subscribing; a device server reports `available: false` and
 no listeners.

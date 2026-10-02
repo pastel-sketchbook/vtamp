@@ -157,6 +157,8 @@ pub struct RodioBackend {
     #[cfg(target_os = "macos")]
     radio: Option<radio::Player>,
     spectrum: Option<Arc<crate::spectrum::Spectrum>>,
+    cast: Option<crate::cast::tap::CastEncoder>,
+    tags: crate::cast::Tags,
     player: Option<Arc<output::VoiceState>>,
     decoder: Option<DecoderWorker>,
     // Keep decoder ownership until control reclaims retired output voices.
@@ -202,6 +204,12 @@ impl RodioBackend {
         backend
     }
 
+    /// Also cast what this backend plays, exactly as a headless server would.
+    pub fn with_cast(mut self, hub: Arc<crate::cast::Hub>, bitrate: u32) -> Result<Self> {
+        self.cast = Some(crate::cast::tap::CastEncoder::start(hub, bitrate)?);
+        Ok(self)
+    }
+
     /// Play a prepared source from its first sample, replacing the current voice.
     /// Used for audio that has no file, such as a remote cast.
     pub fn play(&mut self, source: Box<dyn Source + Send>, volume: u8) -> Result<()> {
@@ -241,6 +249,15 @@ impl RodioBackend {
         }
         self.clear_player();
         let mut source: Box<dyn Source + Send> = Box::new(prepared);
+        if let Some(cast) = &mut self.cast {
+            let mut tags = self.tags.clone();
+            tags.push((
+                "VTAMP_POSITION_MS".to_owned(),
+                context.map_or(0, |(_, position)| position).to_string(),
+            ));
+            let generation = cast.begin(tags);
+            source = Box::new(cast.tap(source, generation));
+        }
         if let Some(spectrum) = &self.spectrum {
             source = Box::new(spectrum.tap(source));
             spectrum.playing(true);
@@ -311,6 +328,9 @@ impl RodioBackend {
 
 #[cfg(target_os = "macos")]
 impl PlaybackBackend for RodioBackend {
+    fn announce(&mut self, item: &crate::model::QueueItem) {
+        self.tags = crate::cast::tags_for(item);
+    }
     fn load_source(
         &mut self,
         source: &crate::model::PlaybackSource,
@@ -405,6 +425,9 @@ impl PlaybackBackend for RodioBackend {
         }
         self.clear_player();
         self.close_output();
+        if let Some(cast) = &self.cast {
+            cast.end();
+        }
         self.path = None;
         self.paused = true;
         self.position_offset_ms = 0;

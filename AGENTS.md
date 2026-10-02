@@ -132,10 +132,12 @@ The documents above hold the full contracts; these are the most common regressio
 - The protocol version is 7 and the database version is 6. A schema change needs
   a transactional, ID-preserving migration, a version bump, and a `docs/protocol.md`
   update.
-- A headless server casts full-scale audio; volume is a listener setting. Every
-  load, seek, and resume begins a new logical Ogg stream, a pause fills the open
-  stream with silence, and only a stop ends it. The cast thread never waits on
-  sockets; a listener that falls behind loses pages, the server loses nothing.
+- Casts (headless servers, and device servers started with `--cast`) carry
+  full-scale audio; volume is a listener setting. Every load, seek, and resume
+  begins a new logical Ogg stream, a pause fills the open stream with silence,
+  and only a stop ends it. The device tap only copies samples into a lock-free
+  queue; encoding runs on its own thread, and no cast path waits on sockets. A
+  listener that falls behind loses pages, the server loses nothing.
 - Decoding, format conversion, file I/O, allocation, locks, logging, FFT, and
   socket I/O stay out of the audio output callback and the spectrum tap. PCM
   decode-ahead stays bounded; underflow silence never advances position or ends a

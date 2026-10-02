@@ -456,8 +456,11 @@ pub enum Server {
         #[arg(long)]
         headless: bool,
         /// Relay the server reachable at this socket path: forward commands to it and play its cast here.
-        #[arg(long, value_name = "SOCKET", conflicts_with = "headless")]
+        #[arg(long, value_name = "SOCKET", conflicts_with_all = ["headless", "cast"])]
         remote: Option<PathBuf>,
+        /// Also cast the audio played through the device, for vtamp cast listen and relays.
+        #[arg(long)]
+        cast: bool,
     },
     Status,
     Stop,
@@ -465,8 +468,10 @@ pub enum Server {
     Run {
         #[arg(long)]
         headless: bool,
-        #[arg(long, value_name = "SOCKET", conflicts_with = "headless")]
+        #[arg(long, value_name = "SOCKET", conflicts_with_all = ["headless", "cast"])]
         remote: Option<PathBuf>,
+        #[arg(long)]
+        cast: bool,
     },
 }
 
@@ -660,7 +665,12 @@ pub async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Action::Server {
-            command: Server::Run { headless, remote },
+            command:
+                Server::Run {
+                    headless,
+                    remote,
+                    cast,
+                },
         } => {
             tracing_subscriber::fmt()
                 .with_ansi(false)
@@ -674,11 +684,16 @@ pub async fn run(args: Args) -> Result<()> {
                 Some(remote) => crate::relay::run(paths, remote).await,
                 #[cfg(not(target_os = "macos"))]
                 Some(_) => bail!(RELAY_UNAVAILABLE),
-                None => crate::daemon::run(paths, headless).await,
+                None => crate::daemon::run(paths, headless, cast).await,
             };
         }
         Action::Server {
-            command: Server::Start { headless, remote },
+            command:
+                Server::Start {
+                    headless,
+                    remote,
+                    cast,
+                },
         } => {
             if remote.is_some() && !cfg!(target_os = "macos") {
                 bail!(RELAY_UNAVAILABLE);
@@ -686,11 +701,14 @@ pub async fn run(args: Args) -> Result<()> {
             let launch = match remote {
                 Some(remote) => Launch::Relay(std::path::absolute(remote)?),
                 None if headless => Launch::Headless,
-                None => Launch::Device,
+                None => Launch::Device { cast },
             };
             client.ensure_with(&launch).await?;
             let info = client.server_info().await?;
-            let explicit = launch != Launch::Device;
+            if cast && !client.cast_info().await?.available {
+                bail!("A server is already running without --cast; run vtamp server stop first");
+            }
+            let explicit = launch != Launch::Device { cast: false };
             let matches = info.mode == launch.mode()
                 && match &launch {
                     Launch::Relay(remote) => info.remote.as_deref() == Some(remote),

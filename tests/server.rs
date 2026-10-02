@@ -675,6 +675,7 @@ fn headless_server_casts_tagged_ogg_opus_and_device_servers_refuse() {
             .status
             .success()
     );
+    assert!(!device.cmd(&["server", "start", "--cast"]).status.success());
     let mut stream = UnixStream::connect(device.socket()).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
@@ -789,4 +790,30 @@ fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
     assert!(!failed.status.success());
     let error: Value = serde_json::from_slice(&failed.stdout).unwrap();
     assert_eq!(error["error"]["code"], "remote_unavailable");
+}
+
+#[test]
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "Device servers exist on macOS only"
+)]
+fn device_servers_cast_only_when_asked() {
+    let server = Server::new();
+    let started = server.ok(&["server", "start", "--cast"]);
+    assert_eq!(started["mode"], "device");
+    let info = server.ok(&["cast", "status"]);
+    assert_eq!(info["available"], true);
+    assert_eq!(info["listeners"], 0);
+    let mut listener = UnixStream::connect(server.socket()).unwrap();
+    listener
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    send(
+        &mut listener,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"cast_watch"}}),
+    );
+    assert_eq!(receive(&mut listener)["data"]["available"], true);
+    assert_eq!(server.ok(&["cast", "status"])["listeners"], 1);
+    // Starting again with the same option reports the running server.
+    assert_eq!(server.ok(&["server", "start", "--cast"])["mode"], "device");
 }
