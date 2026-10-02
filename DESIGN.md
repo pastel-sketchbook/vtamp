@@ -80,7 +80,8 @@ briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R mete
 At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
 with a cover and compact metadata/controls on the left. Keep the lists below.
 Otherwise replace the browser area, preserving its selection and scroll. Tab
-returns to the previous list; slash returns to Library with a blank search draft.
+returns to the previous list; slash returns to the focused list with a blank
+search draft.
 Disable hidden-list actions. Help/theme overlays obscure the spectrum and suspend
 its subscription. Labels remain neutral and the axes read LOW / HIGH. Paused,
 stopped, or stale data settles to zero instead of showing decorative motion.
@@ -100,7 +101,7 @@ The V-meter source is `assets/icon.png`. Use derived PNGs for the website header
 
 The social preview cards `site/og.png` and `site/og-ko.png` (1200 × 630, composed by `scripts/build-og.py`) lay the compact Queue capture across the whole card as a backdrop, tilted 30° counter-clockwise and zoomed to 140% of the card width so the album art lands bottom-left and the queue runs off the right edge. A charcoal scrim fades from nearly opaque at the top to translucent at the bottom, and the copy sits in the top band: mark and wordmark, a two-line headline with “keeps playing” (Korean: “재생이 멈추지 않는”) in phosphor green, and the Homebrew command chip. The English card sets the headline in Space Grotesk, the Korean card in the bundled Pretendard Medium. Rebuild both whenever that capture or a headline changes.
 
-The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft; Enter applies it (empty clears the filter), while Esc keeps the current filter. Outside the prompt, Esc clears an applied filter before it detaches. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
+The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Bottom search/folder prompts keep the cover visible. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter applies it (empty clears the filter), while Esc keeps the current filter. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
 
 Help scrolls through wrapped text at small pane sizes. When scrolling is needed,
 keep scroll/page controls, close keys, and the visible row range in a fixed

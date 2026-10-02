@@ -293,7 +293,7 @@ pub(super) fn apply_metadata(tx: &rusqlite::Transaction<'_>, track: &mut Track) 
 }
 pub(super) fn write_record(tx: &rusqlite::Transaction<'_>, record: &Record) -> Result<()> {
     let t = &record.track;
-    tx.execute("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET path=excluded.path,search=excluded.search,json=excluded.json,title_search=excluded.title_search,artist_search=excluded.artist_search,album_search=excluded.album_search",params![t.id,t.playback.file().context("Catalog entry is not a file")?.to_string_lossy(),normalized(&format!("{} {} {}",t.title,t.artist,t.album)),serde_json::to_string(record)?,normalized(&t.title),normalized(&t.artist),normalized(&t.album)])?;
+    tx.execute("INSERT INTO tracks(id,path,search,json,title_search,artist_search,album_search) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET path=excluded.path,search=excluded.search,json=excluded.json,title_search=excluded.title_search,artist_search=excluded.artist_search,album_search=excluded.album_search",params![t.id,t.playback.file().context("Catalog entry is not a file")?.to_string_lossy(),search_blob(t),serde_json::to_string(record)?,normalized(&t.title),normalized(&t.artist),normalized(&t.album)])?;
     Ok(())
 }
 

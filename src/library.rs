@@ -73,6 +73,12 @@ pub fn normalized(text: &str) -> String {
     text.nfkc().flat_map(char::to_lowercase).collect()
 }
 
+/// The normalized title/artist/album text used by library search. The TUI's
+/// queue filter applies the same text so both lists match the same way.
+pub fn search_blob(track: &Track) -> String {
+    normalized(&format!("{} {} {}", track.title, track.artist, track.album))
+}
+
 fn clean(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).collect()
 }

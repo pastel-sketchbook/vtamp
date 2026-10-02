@@ -5,7 +5,7 @@ use crate::{
     cli::Art,
     client::Client,
     cover::{Cover, ResizeRequest, ResizeResponse},
-    library::decode_image,
+    library::{decode_image, normalized, search_blob},
     model::*,
     platform,
     settings::Settings,
@@ -41,7 +41,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search            a       Add folder / stream / playlist\nEsc     Clear search      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -201,7 +201,8 @@ struct App {
     tracks: Vec<Track>,
     total: usize,
     offset: usize,
-    query: String,
+    library_query: String,
+    queue_query: String,
     library_selection: ListState,
     queue_selection: ListState,
     focus: Focus,
@@ -307,7 +308,8 @@ pub async fn run(
         tracks: vec![],
         total: 0,
         offset: 0,
-        query: String::new(),
+        library_query: String::new(),
+        queue_query: String::new(),
         library_selection: ListState::default().with_selected(Some(0)),
         queue_selection: ListState::default().with_selected(Some(0)),
         focus: Focus::Library,
@@ -860,17 +862,50 @@ impl App {
         }
     }
     fn apply_search(&mut self, query: String, commands: &mpsc::Sender<Command>) {
-        self.query = query;
+        self.library_query = query;
         self.offset = 0;
         self.library_jump = None;
         self.library_selection.select(Some(0));
         self.refresh(commands);
     }
+    /// The queue filter is local: the whole queue already lives in the client.
+    fn apply_queue_filter(&mut self, query: String) {
+        self.queue_query = query;
+        self.queue_selection.select(Some(0));
+        let visible = self.queue_visible_len();
+        clamp_selection(&mut self.queue_selection, visible);
+    }
+    fn queue_visible_len(&self) -> usize {
+        if self.queue_query.is_empty() {
+            self.state.queue.len()
+        } else {
+            queue_rows(&self.state.queue, &self.queue_query).count()
+        }
+    }
+    /// Visible row for a queue index, or `None` when the filter hides it or the
+    /// index is out of range.
+    fn visible_queue_index(&self, index: usize) -> Option<usize> {
+        if self.queue_query.is_empty() {
+            (index < self.state.queue.len()).then_some(index)
+        } else {
+            queue_rows(&self.state.queue, &self.queue_query).position(|(i, _)| i == index)
+        }
+    }
+    /// Queue index behind a visible row.
+    fn queue_index_at(&self, row: usize) -> Option<usize> {
+        if self.queue_query.is_empty() {
+            (row < self.state.queue.len()).then_some(row)
+        } else {
+            queue_rows(&self.state.queue, &self.queue_query)
+                .nth(row)
+                .map(|(index, _)| index)
+        }
+    }
     fn refresh(&mut self, commands: &mpsc::Sender<Command>) {
         self.send(
             commands,
             Command::LibraryList {
-                query: self.query.clone(),
+                query: self.library_query.clone(),
                 offset: self.offset,
                 limit: PAGE_SIZE,
                 anchor: None,
@@ -900,9 +935,29 @@ impl App {
         if self.state.current_id != state.current_id {
             self.spectrum.clear();
         }
+        let selected_queue_id = self
+            .queue_selection
+            .selected()
+            .and_then(|i| self.state.queue.get(i))
+            .map(|item| item.id.clone());
         self.state = state;
         self.last_progress = Instant::now();
-        clamp_selection(&mut self.queue_selection, self.state.queue.len());
+        if self.queue_query.is_empty() {
+            clamp_selection(&mut self.queue_selection, self.state.queue.len());
+        } else {
+            // A visible row can shift when the queue changes; follow the entry
+            // identity, then clamp when the filter hides it or it is gone.
+            let row = selected_queue_id
+                .and_then(|id| self.state.queue.iter().position(|item| item.id == id))
+                .and_then(|index| self.visible_queue_index(index));
+            match row {
+                Some(row) => self.queue_selection.select(Some(row)),
+                None => {
+                    let visible = self.queue_visible_len();
+                    clamp_selection(&mut self.queue_selection, visible);
+                }
+            }
+        }
     }
     fn message(
         &mut self,
@@ -931,7 +986,13 @@ impl App {
                     && let Some(index) = self.state.current_index()
                 {
                     self.focus = Focus::Queue;
-                    self.queue_selection.select(Some(index));
+                    match self.visible_queue_index(index) {
+                        Some(row) => self.queue_selection.select(Some(row)),
+                        None => {
+                            let visible = self.queue_visible_len();
+                            clamp_selection(&mut self.queue_selection, visible);
+                        }
+                    }
                     // Reveal the selected entry even when the saved spectrum view
                     // would hide the list. Keep the saved preference unchanged.
                     if self.spectrum_replaces_list() {
@@ -1002,7 +1063,7 @@ impl App {
             Message::Reply(command, result) => match result {
                 Err(error) => {
                     if matches!(command, Command::LibraryList { ref query, offset, .. }
-                    if *query == self.query && offset == self.offset)
+                    if *query == self.library_query && offset == self.offset)
                     {
                         self.library_jump = None;
                     }
@@ -1073,7 +1134,7 @@ impl App {
                         _ => (),
                     }
                     if let Command::LibraryList { query, offset, .. } = command {
-                        if query == self.query && offset == self.offset {
+                        if query == self.library_query && offset == self.offset {
                             let selected_id = self
                                 .library_selection
                                 .selected()
@@ -1155,6 +1216,9 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.input = None,
                 KeyCode::Enter => match self.input.take().unwrap() {
+                    Input::Search(query) if self.focus == Focus::Queue => {
+                        self.apply_queue_filter(query)
+                    }
                     Input::Search(query) => self.apply_search(query, commands),
                     Input::Folder(path) if !path.trim().is_empty() => {
                         if self.stream_input(&path, commands) {
@@ -1240,11 +1304,22 @@ impl App {
             KeyCode::Char('G') if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.jump_selection(ListEdge::Last, commands);
             }
-            // Esc clears an applied search before it detaches.
-            KeyCode::Esc if !self.query.is_empty() => {
+            // Esc clears an applied filter before it detaches: the focused
+            // list's filter first, then the other list's.
+            KeyCode::Esc if !self.library_query.is_empty() || !self.queue_query.is_empty() => {
                 self.library_reveal = None;
-                self.apply_search(String::new(), commands);
-                self.notice("Search cleared. Esc again or q detaches.");
+                let clear_queue = if self.focus == Focus::Queue {
+                    !self.queue_query.is_empty() || self.library_query.is_empty()
+                } else {
+                    self.library_query.is_empty()
+                };
+                if clear_queue {
+                    self.apply_queue_filter(String::new());
+                    self.notice("Queue filter cleared. Esc again or q detaches.");
+                } else {
+                    self.apply_search(String::new(), commands);
+                    self.notice("Search cleared. Esc again or q detaches.");
+                }
             }
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('?') => {
@@ -1270,7 +1345,6 @@ impl App {
                 self.move_selection(-10);
             }
             KeyCode::Char('/') => {
-                self.focus = Focus::Library;
                 self.input = Some(Input::Search(String::new()));
             }
             KeyCode::Char('a') => self.input = Some(Input::Folder(String::new())),
@@ -1392,6 +1466,7 @@ impl App {
                 if let Some(item) = self
                     .queue_selection
                     .selected()
+                    .and_then(|row| self.queue_index_at(row))
                     .and_then(|i| self.state.queue.get(i))
                 {
                     self.send(
@@ -1416,6 +1491,7 @@ impl App {
                 if let Some(item) = self
                     .queue_selection
                     .selected()
+                    .and_then(|row| self.queue_index_at(row))
                     .and_then(|i| self.state.queue.get(i))
                 {
                     self.send(
@@ -1427,7 +1503,10 @@ impl App {
                 }
             }
             KeyCode::Char('J' | 'K') if self.focus == Focus::Queue => {
-                if let Some(i) = self.queue_selection.selected()
+                if !self.queue_query.is_empty() {
+                    // Moving relative to hidden entries is ambiguous.
+                    self.notice("Queue filter is applied. Esc clears it before reordering.");
+                } else if let Some(i) = self.queue_selection.selected()
                     && let Some(item) = self.state.queue.get(i)
                 {
                     let index = if key.code == KeyCode::Char('J') {
@@ -1452,7 +1531,7 @@ impl App {
     fn jump_selection(&mut self, edge: ListEdge, commands: &mpsc::Sender<Command>) {
         if self.focus == Focus::Queue {
             self.queue_selection
-                .select(edge.index(self.state.queue.len()));
+                .select(edge.index(self.queue_visible_len()));
             return;
         }
         self.jump_library(edge, commands);
@@ -1469,7 +1548,7 @@ impl App {
             }
             if commands
                 .try_send(Command::LibraryList {
-                    query: self.query.clone(),
+                    query: self.library_query.clone(),
                     offset,
                     limit: PAGE_SIZE,
                     anchor: None,
@@ -1491,10 +1570,15 @@ impl App {
         }
     }
     fn move_selection(&mut self, delta: isize) {
-        let (state, len) = if self.focus == Focus::Library {
-            (&mut self.library_selection, self.tracks.len())
+        let len = if self.focus == Focus::Library {
+            self.tracks.len()
         } else {
-            (&mut self.queue_selection, self.state.queue.len())
+            self.queue_visible_len()
+        };
+        let state = if self.focus == Focus::Library {
+            &mut self.library_selection
+        } else {
+            &mut self.queue_selection
         };
         if len > 0 {
             state.select(Some(
@@ -1682,7 +1766,11 @@ impl App {
         if let Some(input) = &self.input {
             let (label, text) = match input {
                 Input::Search(s) => (
-                    " Search title / artist / album · Enter applies · Esc cancels ",
+                    if self.focus == Focus::Queue {
+                        " Filter queue: title / artist / album · Enter applies · Esc cancels "
+                    } else {
+                        " Search title / artist / album · Enter applies · Esc cancels "
+                    },
                     s,
                 ),
                 Input::Folder(s) => (
@@ -1911,15 +1999,15 @@ impl App {
             " LIBRARY · {}{}{} · Tab / queue ",
             self.total,
             if area.width >= 50 { " tracks" } else { "" },
-            if self.query.is_empty() {
+            if self.library_query.is_empty() {
                 String::new()
             } else {
-                format!(" · {}", self.query)
+                format!(" · {}", self.library_query)
             }
         );
         let panel = block(p, &title, self.focus == Focus::Library);
         if self.tracks.is_empty() {
-            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press R to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.library_query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press R to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
             let items: Vec<_> = self
                 .tracks
@@ -1964,20 +2052,29 @@ impl App {
     }
     fn queue(&mut self, frame: &mut Frame, area: Rect) {
         let p = self.theme.palette();
+        let queue_len = self.state.queue.len();
+        let visible = self.queue_visible_len();
         let title = format!(
-            " QUEUE · {}{} · Tab / library ",
-            self.state.queue.len(),
+            " QUEUE · {}{}{} · Tab / library ",
+            if self.queue_query.is_empty() {
+                queue_len.to_string()
+            } else {
+                format!("{visible}/{queue_len}")
+            },
             if area.width >= 50 { " entries" } else { "" },
+            if self.queue_query.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", self.queue_query)
+            }
         );
         let panel = block(p, &title, self.focus == Focus::Queue);
         if self.state.queue.is_empty() {
             frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+        } else if visible == 0 {
+            frame.render_widget(Paragraph::new("\n  No matching queue entries.\n  Press / to change the filter or Esc to clear it.").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
-            let items: Vec<_> = self
-                .state
-                .queue
-                .iter()
-                .enumerate()
+            let items: Vec<_> = queue_rows(&self.state.queue, &self.queue_query)
                 .map(|(i, q)| {
                     let current = Some(&q.id) == self.state.current_id.as_ref();
                     ListItem::new(vec![
@@ -2113,6 +2210,20 @@ fn clamp_selection(state: &mut ListState, len: usize) {
         Some(state.selected().unwrap_or(0).min(len - 1))
     });
 }
+
+/// Visible queue rows as `(queue index, entry)` in queue order. An empty filter
+/// keeps every row; otherwise the entry's normalized title/artist/album text
+/// must contain the filter, exactly like a library search.
+fn queue_rows<'a>(
+    queue: &'a [QueueItem],
+    filter: &str,
+) -> impl Iterator<Item = (usize, &'a QueueItem)> + 'a {
+    let needle = normalized(filter);
+    queue
+        .iter()
+        .enumerate()
+        .filter(move |(_, item)| needle.is_empty() || search_blob(&item.track).contains(&needle))
+}
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width.saturating_sub(2));
     let height = height.min(area.height.saturating_sub(2));
@@ -2192,7 +2303,7 @@ mod tests {
         ] {
             let mut app = navigation_app(PAGE_SIZE);
             app.focus = Focus::Queue;
-            app.query = filter.into();
+            app.library_query = filter.into();
             app.viewport = Rect::new(0, 0, 72, 20);
             app.spectrum.enabled = true;
             let state = serde_json::to_value(&app.state).unwrap();
@@ -2249,7 +2360,7 @@ mod tests {
             );
             assert_eq!(app.focus, Focus::Library);
             assert_eq!(app.offset, 400);
-            assert_eq!(app.query, effective);
+            assert_eq!(app.library_query, effective);
             assert_eq!(app.selected_track().unwrap().id, track.id);
             assert!(!app.spectrum.enabled);
             assert_eq!(serde_json::to_value(&app.state).unwrap(), state);
@@ -2342,6 +2453,16 @@ mod tests {
                     assert!(!app.spectrum.enabled);
                     assert!(matches!(&app.input, Some(Input::Search(s)) if s.is_empty()));
                     app.key(key(KeyCode::Esc), &commands).unwrap();
+                    // Slash from the spectrum returns to the focused list and
+                    // opens that list's search.
+                    app.focus = Focus::Queue;
+                    app.key(key(KeyCode::Char('v')), &commands).unwrap();
+                    app.key(key(KeyCode::Char('/')), &commands).unwrap();
+                    assert!(!app.spectrum.enabled);
+                    assert!(app.focus == Focus::Queue);
+                    assert!(matches!(&app.input, Some(Input::Search(s)) if s.is_empty()));
+                    app.key(key(KeyCode::Esc), &commands).unwrap();
+                    app.focus = Focus::Library;
                 }
             }
         }
@@ -2690,7 +2811,7 @@ mod tests {
         app.total = 450;
         app.queue_selection.select(Some(7));
         let rows = app.tracks.clone();
-        let query = app.query.clone();
+        let query = app.library_query.clone();
         let (commands, mut requests) = mpsc::channel(8);
         let (messages, _) = mpsc::unbounded_channel();
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
@@ -2864,7 +2985,7 @@ mod tests {
     #[test]
     fn reopening_search_starts_empty_and_cancel_preserves_applied_query() {
         let mut app = app();
-        app.query.clear();
+        app.library_query.clear();
         let (commands, mut requests) = mpsc::channel(8);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         app.key(key(KeyCode::Char('/')), &commands).unwrap();
@@ -2872,7 +2993,7 @@ mod tests {
             app.key(key(KeyCode::Char(c)), &commands).unwrap();
         }
         app.key(key(KeyCode::Enter), &commands).unwrap();
-        assert_eq!(app.query, "love");
+        assert_eq!(app.library_query, "love");
         assert!(
             matches!(requests.try_recv().unwrap(), Command::LibraryList { query, offset: 0, .. } if query == "love")
         );
@@ -2881,20 +3002,22 @@ mod tests {
         app.library_selection.select(Some(3));
         app.focus = Focus::Queue;
         app.key(key(KeyCode::Char('/')), &commands).unwrap();
-        assert!(app.focus == Focus::Library);
+        assert!(app.focus == Focus::Queue, "Slash keeps the focused list");
         assert!(matches!(&app.input, Some(Input::Search(text)) if text.is_empty()));
         app.key(key(KeyCode::Char('x')), &commands).unwrap();
         app.key(key(KeyCode::Esc), &commands).unwrap();
         assert!(app.input.is_none());
-        assert_eq!(app.query, "love");
+        assert_eq!(app.library_query, "love");
         assert_eq!(app.offset, PAGE_SIZE);
         assert_eq!(app.library_selection.selected(), Some(3));
+        assert_eq!(app.queue_query, "", "Esc in the prompt keeps the filter");
         assert!(requests.try_recv().is_err());
 
         // Applying an empty new search clears the filter and returns to page 1.
+        app.focus = Focus::Library;
         app.key(key(KeyCode::Char('/')), &commands).unwrap();
         app.key(key(KeyCode::Enter), &commands).unwrap();
-        assert!(app.query.is_empty());
+        assert!(app.library_query.is_empty());
         assert_eq!(app.offset, 0);
         assert_eq!(app.library_selection.selected(), Some(0));
         assert!(
@@ -2908,12 +3031,12 @@ mod tests {
         let mut app = app();
         let (commands, mut requests) = mpsc::channel(8);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        app.query = "사랑".into();
+        app.library_query = "사랑".into();
         app.offset = PAGE_SIZE;
         app.library_selection.select(Some(3));
         app.focus = Focus::Queue;
         assert!(!app.key(key(KeyCode::Esc), &commands).unwrap());
-        assert!(app.query.is_empty());
+        assert!(app.library_query.is_empty());
         assert_eq!(app.offset, 0);
         assert_eq!(app.library_selection.selected(), Some(0));
         assert_eq!(app.focus, Focus::Queue, "Clearing does not move focus");
@@ -2923,6 +3046,123 @@ mod tests {
         );
         assert!(app.key(key(KeyCode::Esc), &commands).unwrap());
         assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn queue_filter_applies_locally_and_esc_clears_it_first() {
+        let mut app = navigation_app(5);
+        app.focus = Focus::Queue;
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        assert_eq!(app.focus, Focus::Queue, "Slash keeps the focused list");
+        assert!(matches!(&app.input, Some(Input::Search(text)) if text.is_empty()));
+        app.key(key(KeyCode::Char('4')), &commands).unwrap();
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert!(
+            requests.try_recv().is_err(),
+            "Queue filtering is client-side"
+        );
+        assert_eq!(app.queue_query, "4");
+        assert_eq!(app.queue_visible_len(), 1);
+        assert_eq!(app.queue_index_at(0), Some(4));
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("1/5"), "Visible and total counts: {text}");
+        assert!(text.contains("Track 4"));
+        assert!(
+            !text.contains("Track 3"),
+            "Filtered rows are hidden: {text}"
+        );
+
+        // Enter plays the queue entry behind the visible row.
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        let expected = app.state.queue[4].id.clone();
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::Play { queue_item: Some(id), .. } if id == expected
+        ));
+
+        app.apply_queue_filter("zzz".into());
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("No matching queue entries"), "{text}");
+
+        // Esc clears this list's filter first, then the other list's, then detaches.
+        app.library_query = "album".into();
+        assert!(!app.key(key(KeyCode::Esc), &commands).unwrap());
+        assert!(app.queue_query.is_empty());
+        assert_eq!(app.library_query, "album");
+        assert!(app.notice.contains("Queue filter"));
+        assert!(requests.try_recv().is_err());
+        assert!(!app.key(key(KeyCode::Esc), &commands).unwrap());
+        assert!(app.library_query.is_empty());
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::LibraryList { query, .. } if query.is_empty()
+        ));
+        assert!(app.key(key(KeyCode::Esc), &commands).unwrap());
+    }
+
+    #[test]
+    fn esc_clears_the_other_list_filter_from_library_focus() {
+        let mut app = navigation_app(3);
+        app.library_query.clear();
+        app.queue_query = "track".into();
+        app.focus = Focus::Library;
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(!app.key(key(KeyCode::Esc), &commands).unwrap());
+        assert!(app.queue_query.is_empty());
+        assert!(app.notice.contains("Queue filter"));
+        assert!(requests.try_recv().is_err());
+        assert!(app.key(key(KeyCode::Esc), &commands).unwrap());
+    }
+
+    #[test]
+    fn filtered_queue_tracks_entry_identity_and_refuses_reorder() {
+        let mut app = navigation_app(5);
+        app.focus = Focus::Queue;
+        app.queue_query = "track".into();
+        app.queue_selection.select(Some(3));
+        let (messages, _) = mpsc::unbounded_channel();
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // Reordering relative to hidden entries is ambiguous, so it is refused.
+        app.key(key(KeyCode::Char('J')), &commands).unwrap();
+        assert!(requests.try_recv().is_err());
+        assert!(app.notice.contains("Queue filter"));
+
+        // A queue change keeps the selected entry, not the visible row.
+        let selected = app.state.queue[3].id.clone();
+        let mut state = app.state.clone();
+        state.queue.remove(0);
+        app.message(Message::Event(Event::State(state)), &messages, &commands);
+        assert_eq!(app.queue_selection.selected(), Some(2));
+        assert_eq!(app.state.queue[2].id, selected);
+
+        // Removal targets the queue entry behind the visible row.
+        app.key(key(KeyCode::Char('x')), &commands).unwrap();
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::QueueRemove { id } if id == selected
+        ));
     }
 
     #[test]
@@ -3521,7 +3761,8 @@ mod tests {
             tracks: vec![],
             total: 0,
             offset: 0,
-            query: "가 음악 🎵".into(),
+            library_query: "가 음악 🎵".into(),
+            queue_query: String::new(),
             library_selection: ListState::default(),
             queue_selection: ListState::default(),
             focus: Focus::Library,
@@ -3941,7 +4182,7 @@ mod tests {
         assert_eq!(app.offset, 400);
         assert_eq!(app.library_selection.selected(), Some(25));
         assert_eq!(app.selected_track().unwrap().id, "425");
-        assert!(app.query.is_empty());
+        assert!(app.library_query.is_empty());
         assert!(app.notice.contains("Search cleared"));
         assert!(!app.spectrum.enabled);
         assert_eq!(serde_json::to_value(&app.state).unwrap(), state);
@@ -3998,8 +4239,7 @@ mod tests {
                 2 => app.help = true,
                 _ => app.open_theme_picker(),
             }
-            let page =
-                serde_json::json!({"tracks":app.tracks, "total":3, "offset":0, "query":app.query});
+            let page = serde_json::json!({"tracks":app.tracks, "total":3, "offset":0, "query":app.library_query});
             app.message(
                 Message::Reply(request, Ok(page.clone())),
                 &messages,
@@ -4014,7 +4254,10 @@ mod tests {
             app.message(Message::Reply(request, Ok(page)), &messages, &commands);
             assert_eq!(app.focus, Focus::Library);
             assert_eq!(app.selected_track().unwrap().id, "2");
-            assert!(!app.query.is_empty(), "Matching search is preserved");
+            assert!(
+                !app.library_query.is_empty(),
+                "Matching search is preserved"
+            );
             assert!(requests.try_recv().is_err());
         }
     }
@@ -4092,7 +4335,7 @@ mod tests {
             );
             assert_eq!(app.library_selection.selected(), selected);
             assert_eq!(app.focus, focus);
-            assert!(!app.query.is_empty());
+            assert!(!app.library_query.is_empty());
             assert!(app.library_reveal.is_none());
             assert!(requests.try_recv().is_err());
         }
@@ -4142,7 +4385,7 @@ mod tests {
             Message::Reply(
                 request,
                 Ok(serde_json::json!({
-                    "tracks": app.tracks.clone(), "total": 3, "offset": 0, "query": app.query.clone()
+                    "tracks": app.tracks.clone(), "total": 3, "offset": 0, "query": app.library_query.clone()
                 })),
             ),
             &messages,

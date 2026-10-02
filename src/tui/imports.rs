@@ -112,14 +112,14 @@ impl App {
             && reveal.requested_query.is_none()
             && commands
                 .try_send(Command::LibraryList {
-                    query: self.query.clone(),
+                    query: self.library_query.clone(),
                     offset: 0,
                     limit: PAGE_SIZE,
                     anchor: Some(reveal.id.clone()),
                 })
                 .is_ok()
         {
-            reveal.requested_query = Some(self.query.clone());
+            reveal.requested_query = Some(self.library_query.clone());
         }
     }
 
@@ -160,8 +160,8 @@ impl App {
             self.notice("Could not locate the track in Library.");
             return;
         };
-        let cleared = !self.query.is_empty() && effective_query.is_empty();
-        self.query = effective_query.into();
+        let cleared = !self.library_query.is_empty() && effective_query.is_empty();
+        self.library_query = effective_query.into();
         self.offset = value["offset"].as_u64().unwrap_or(0) as usize;
         self.total = value["total"].as_u64().unwrap_or(0) as usize;
         self.tracks = tracks;

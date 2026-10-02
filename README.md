@@ -32,7 +32,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 ## What ships in v0.2
 
 - Persistent playback server, with multiple TUI and CLI clients.
-- Folder-based library, title/artist/album search, and an editable shared queue.
+- Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
 - Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
@@ -180,7 +180,7 @@ still depends on the broadcaster and your network/location.
 
 `vtamp` and `vtamp attach` start a per-user background server if none is running. It is a detached process using the same binary, with no controlling terminal. Exiting the interface, closing its pane, or detaching tmux leaves playback running.
 
-`q`, `Esc`, and `Ctrl+C` close the TUI. `Esc` first closes an open search or folder prompt, then clears an applied search; once no search is applied, it closes the TUI. **Stopping playback and stopping the server are separate actions:**
+`q`, `Esc`, and `Ctrl+C` close the TUI. `Esc` first closes an open search or folder prompt; after that it clears the filter applied to the focused list (`/` searches the Library or filters the Queue, wherever focus is), then the other list's filter, and only then it closes the TUI. **Stopping playback and stopping the server are separate actions:**
 
 ```sh
 vtamp stop          # Keep the server and queue; reset playback position.
@@ -293,7 +293,7 @@ the desktop integration cannot initialize.
 
 | Key | Action |
 | --- | --- |
-| `q`, `Esc`, `Ctrl+C` | Detach the interface (`Esc` clears an applied search first) |
+| `q`, `Esc`, `Ctrl+C` | Detach the interface (`Esc` clears an applied filter first) |
 | `Space` | Play / pause |
 | `n` or `>` / `b` or `<` | Next / previous track |
 | `←` / `→` | Seek backward / forward 10 seconds |
@@ -304,7 +304,7 @@ the desktop integration cannot initialize.
 | `j` / `k`, `↓` / `↑` | Move selection |
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
-| `/` | Start a blank title/artist/album search; Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears the filter |
+| `/` | Search the focused list: title/artist/album on Library, a queue filter on Queue. Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears it |
 | `Ctrl-U` | Clear the text in a search, folder, or track-editor field |
 | `a` | Add a folder, stream URL, or M3U/PLS channel list |
 | `R` | Rescan registered folders |
@@ -313,7 +313,7 @@ the desktop integration cannot initialize.
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `x` / `d` | Remove the selected queue entry; Library `d` unregisters a stream after confirmation |
-| `J` / `K` | Move the selected queue entry down / up |
+| `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |
 | `t` | Preview and choose a color theme |
 | `?` | Show key reference |
@@ -353,9 +353,10 @@ Analysis uses the decoded signal before app volume, so the bars also move when m
 Mono and stereo are supported; multichannel files visualize the front stereo pair.
 
 In short panes, the spectrum replaces the Library/Queue area. **`Tab`** returns to
-the previous list; **`/`** returns to Library and opens a blank search. Hidden lists
-cannot be played or edited with selection keys. At 28+ rows and 72+ columns, the
-spectrum occupies the right half of Now Playing while lists remain available below.
+the previous list; **`/`** returns to the focused list and opens a blank search
+there. Hidden lists cannot be played or edited with selection keys. At 28+ rows
+and 72+ columns, the spectrum occupies the right half of Now Playing while lists
+remain available below.
 Narrower panes use the list area. **`v`** closes it in either layout.
 
 The view starts off and remembers your choice in `ui.json`. Each attached TUI has

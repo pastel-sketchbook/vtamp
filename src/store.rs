@@ -1,6 +1,6 @@
 mod imports;
 use crate::{
-    library::{Record, normalized},
+    library::{Record, normalized, search_blob},
     model::{ApiError, PlaybackStatus, Reply, ScanJob, SearchFilter, State, Track},
 };
 use anyhow::{Context, Result, bail};
