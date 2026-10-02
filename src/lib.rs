@@ -1,5 +1,6 @@
 mod artwork;
 pub mod audio;
+pub mod cast;
 pub mod cli;
 pub mod client;
 mod cover;

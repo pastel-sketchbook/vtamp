@@ -35,6 +35,7 @@ Put new feature details in those documents, not here.
 | Playback state machine, batch queue edits | `src/engine.rs`, `src/queue_edit.rs` |
 | Server, transport | `src/daemon.rs`, `src/daemon/`, `src/client.rs`, `src/wire.rs` |
 | Decoding, output, radio | `src/audio.rs`, `src/audio/` |
+| Ogg Opus cast for headless servers and remote listeners | `src/cast.rs`, `src/cast/` |
 | Spectrum analysis and drawing | `src/spectrum.rs`, `src/spectrum_view.rs` |
 | Media keys, Now Playing, app bundle | `src/media_controls.rs`, `src/media_controls/`, `build.rs` |
 | Library, persistence, radio registrations | `src/library.rs`, `src/store.rs`, `src/store/`, `src/streams.rs` |

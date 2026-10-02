@@ -23,6 +23,8 @@ libc = "0.2"
 lofty = "0.25"
 # Handles extended-size mdat atoms found in real-world m4a files.
 mp4ameta = "0.13"
+# Bundled libopus (cmake build) for the headless server cast and remote listening.
+opus = "0.4"
 rand = "0.10"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
@@ -65,6 +67,8 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 rodio = { version = "0.22", default-features = false, features = ["symphonia-aac"] }
 
 [dev-dependencies]
+# Independent Ogg implementation that cross-checks the cast page layout.
+ogg_pager = "0.7"
 tempfile = "3"
 
 [profile.release]
