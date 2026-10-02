@@ -159,7 +159,9 @@ connection; resume connects to the current broadcast. A server restart restores
 radio paused without contacting the station. Network interruptions retry the same
 channel with backoff (1, 2, 4, 8, 16, then 30 seconds); pause, stop, and switching
 channels cancel retries. Unsupported sources pause with a diagnostic. A dropped
-connection does not advance the queue. Next/previous remain manual navigation.
+connection does not advance the queue. Next/previous remain manual navigation and
+cancel a pending connection, so they switch channels immediately while a station
+is still connecting.
 
 Live radio has no seekable timeline, natural ending, or spectrum in this release.
 Use `vtamp sleep set 30m` to stop on a timer; `stop --after-current` rejects live
@@ -265,7 +267,9 @@ with the server stopped and are recreated on the next start.
 macOS chooses which app receives media commands. Starting playback in another
 app can move control there; vtamp does not globally intercept or monopolize the
 keys. Merely starting the server or restoring a paused session does not publish
-a Now Playing item. Start playback in vtamp to make it eligible. Pausing retains
+a Now Playing item. Start playback in vtamp to make it eligible. A live station
+becomes eligible as soon as you play it, including while it is still connecting,
+so the media keys can skip a station that never connects. Pausing retains
 the item; stopping, clearing the queue, or shutting down the server removes it.
 
 This integration is on by default for the regular macOS server. Set

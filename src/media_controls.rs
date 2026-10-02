@@ -89,7 +89,11 @@ impl Publication {
             self.current_id = state.current_id.clone();
             self.started = false;
         }
-        if state.status == PlaybackStatus::Playing && !waiting {
+        // A selected live stream counts as playing before its first frame so
+        // media keys can skip a station that is still connecting. Files wait for
+        // audio, keeping a lost output device out of Now Playing.
+        let live = state.current().is_some_and(|q| q.track.is_live());
+        if state.status == PlaybackStatus::Playing && (!waiting || live) {
             self.started = true;
         } else if state.status == PlaybackStatus::Stopped {
             self.started = false;
@@ -266,7 +270,7 @@ mod tests {
         }
     }
     #[test]
-    fn live_publication_waits_for_audio_and_resets_on_station_change() {
+    fn live_publication_follows_the_station_while_it_connects() {
         let mut publication = Publication::default();
         let mut state = state();
         state.status = PlaybackStatus::Playing;
@@ -275,7 +279,9 @@ mod tests {
             url: "https://example.com/live".into(),
         }
         .track();
-        assert!(publication.snapshot(&state, true).track.is_none());
+        // Connecting stations are already playing for media keys, so next and
+        // previous can cancel the connection instead of being ignored.
+        assert!(publication.snapshot(&state, true).track.is_some());
         assert!(publication.snapshot(&state, false).track.is_some());
         // A reconnect retains an already published station, frozen at zero.
         let waiting = publication.snapshot(&state, true);
@@ -286,7 +292,15 @@ mod tests {
         );
         state.queue[0].id = "next-station".into();
         state.current_id = Some("next-station".into());
+        assert!(publication.snapshot(&state, true).track.is_some());
+    }
+    #[test]
+    fn file_publication_waits_for_audio() {
+        let mut publication = Publication::default();
+        let mut state = state();
+        state.status = PlaybackStatus::Playing;
         assert!(publication.snapshot(&state, true).track.is_none());
+        assert!(publication.snapshot(&state, false).track.is_some());
     }
     #[test]
     fn media_preferences_isolate_tests_and_allow_explicit_override() {
