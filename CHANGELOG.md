@@ -10,6 +10,22 @@
   Every style uses the active theme's colors. The waterfall scrolls one row per
   analysis frame, freezes while paused, and resets on a track change. No server
   or protocol change; attached TUIs pick it up on reattach.
+- Deleting managed YouTube downloads: `d` in Library opens a confirmation, and
+  `vtamp library delete TRACK_ID` removes the audio, cover, source metadata, and
+  catalog entry. Local originals and tracks in Queue or playback are refused.
+  Protocol **8** adds `library_delete`.
+
+### Fixed
+
+- Relay mode spectrum frames now carry the remote's `current_id`, so an attached
+  TUI shows the spectrum of the audio the relay plays instead of dropping every
+  frame.
+
+### Upgrade notes
+
+- Protocol is **8**; database version remains **6**, so no migration runs.
+  Restart the server with the new binary (`vtamp server stop`, then start
+  vtamp) before reattaching, or clients report `version_mismatch`.
 
 ## [0.3.0] — 2026-10-02
 
