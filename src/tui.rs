@@ -41,7 +41,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume\ns       Shuffle           r       Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -205,8 +205,12 @@ struct App {
     queue_query: String,
     library_selection: ListState,
     queue_selection: ListState,
+    /// Body rows of the last drawn browser panel. Library and Queue always
+    /// share the same height, so either draw can record it.
+    browser_viewport_rows: u16,
     focus: Focus,
     pending_g: bool,
+    pending_z: bool,
     pending_ctrl_w: bool,
     library_jump: Option<ListEdge>,
     input: Option<Input>,
@@ -312,8 +316,10 @@ pub async fn run(
         queue_query: String::new(),
         library_selection: ListState::default().with_selected(Some(0)),
         queue_selection: ListState::default().with_selected(Some(0)),
+        browser_viewport_rows: 0,
         focus: Focus::Library,
         pending_g: false,
+        pending_z: false,
         pending_ctrl_w: false,
         library_jump: None,
         input: None,
@@ -901,6 +907,54 @@ impl App {
                 .map(|(index, _)| index)
         }
     }
+    /// Jump the Queue selection to the playing entry, dropping a queue filter
+    /// that hides it. Mirrors the reveal done when a TUI attaches during
+    /// playback.
+    fn reveal_current(&mut self) {
+        let Some(index) = self.state.current_index() else {
+            self.notice(if self.state.current_id.is_some() {
+                "The playing track is not in the queue."
+            } else {
+                "Nothing is playing."
+            });
+            return;
+        };
+        self.focus = Focus::Queue;
+        // Show the entry even when the saved spectrum view would hide the
+        // list. Keep the saved preference unchanged.
+        if self.spectrum_replaces_list() {
+            self.spectrum.enabled = false;
+        }
+        match self.visible_queue_index(index) {
+            Some(row) => {
+                self.queue_selection.select(Some(row));
+                self.center_queue_row(row);
+            }
+            None => {
+                self.apply_queue_filter(String::new());
+                self.queue_selection.select(Some(index));
+                self.center_queue_row(index);
+                self.notice("Queue filter cleared to show the playing entry.");
+            }
+        }
+    }
+    /// Center a visible queue row in the list, as far as the ends allow. Each
+    /// entry draws as two rows (title and metadata).
+    fn center_queue_row(&mut self, row: usize) {
+        let rows = usize::from(self.browser_viewport_rows);
+        if rows < 4 {
+            // The browser was never drawn, or a single entry fits.
+            return;
+        }
+        let visible = rows / 2;
+        let len = self.queue_visible_len();
+        let offset = if len <= visible {
+            0
+        } else {
+            row.saturating_sub(visible / 2).min(len - visible)
+        };
+        *self.queue_selection.offset_mut() = offset;
+    }
     fn refresh(&mut self, commands: &mpsc::Sender<Command>) {
         self.send(
             commands,
@@ -1188,6 +1242,7 @@ impl App {
     fn key_inner(&mut self, mut key: KeyEvent, commands: &mpsc::Sender<Command>) -> Result<bool> {
         // Any intervening key (including opening a prompt) cancels a prefix.
         let previous_g = std::mem::take(&mut self.pending_g);
+        let previous_z = std::mem::take(&mut self.pending_z);
         let previous_ctrl_w = std::mem::take(&mut self.pending_ctrl_w);
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
@@ -1303,6 +1358,13 @@ impl App {
             }
             KeyCode::Char('G') if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.jump_selection(ListEdge::Last, commands);
+            }
+            KeyCode::Char('z') if key.modifiers.is_empty() => {
+                if previous_z {
+                    self.reveal_current();
+                } else {
+                    self.pending_z = true;
+                }
             }
             // Esc clears an applied filter before it detaches: the focused
             // list's filter first, then the other list's.
@@ -2006,6 +2068,7 @@ impl App {
             }
         );
         let panel = block(p, &title, self.focus == Focus::Library);
+        self.browser_viewport_rows = panel.inner(area).height;
         if self.tracks.is_empty() {
             frame.render_widget(Paragraph::new(if self.library_jump.is_some() { "\n  Loading library…" } else if self.library_query.is_empty() { "\n  Start with music or live radio.\n\n  Press a to add a folder,\n  stream URL, or M3U/PLS list.\n\n  Press R to rescan music folders." } else { "\n  No matching tracks.\n  Press / to change the search or Esc to clear it." }).block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
@@ -2069,6 +2132,7 @@ impl App {
             }
         );
         let panel = block(p, &title, self.focus == Focus::Queue);
+        self.browser_viewport_rows = panel.inner(area).height;
         if self.state.queue.is_empty() {
             frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else if visible == 0 {
@@ -3166,6 +3230,98 @@ mod tests {
     }
 
     #[test]
+    fn zz_reveals_the_playing_entry_and_clears_a_hiding_filter() {
+        let mut app = navigation_app(6);
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let z = key(KeyCode::Char('z'));
+
+        // Library focus, a hidden list, and the playing entry far down.
+        app.state.current_id = Some(app.state.queue[4].id.clone());
+        app.focus = Focus::Library;
+        app.queue_selection.select(Some(1));
+        app.viewport = Rect::new(0, 0, 72, 20);
+        app.spectrum.enabled = true;
+
+        // A lone z is only a prefix.
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.focus, Focus::Library);
+        assert_eq!(app.queue_selection.selected(), Some(1));
+        assert!(app.spectrum.enabled);
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.focus, Focus::Queue);
+        assert_eq!(app.queue_selection.selected(), Some(4));
+        assert!(!app.spectrum.enabled);
+
+        // Any intervening key cancels the prefix.
+        app.queue_selection.select(Some(0));
+        app.focus = Focus::Library;
+        app.key(z, &commands).unwrap();
+        app.key(key(KeyCode::Tab), &commands).unwrap();
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.focus, Focus::Queue);
+        assert_eq!(app.queue_selection.selected(), Some(0));
+        // Clear the prefix the last z left pending.
+        app.key(key(KeyCode::F(5)), &commands).unwrap();
+
+        // A filter that hides the playing entry is dropped to show it.
+        app.queue_query = "Track 5".into();
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.queue_query, "Track 5");
+        app.key(z, &commands).unwrap();
+        assert!(app.queue_query.is_empty());
+        assert_eq!(app.queue_selection.selected(), Some(4));
+        assert!(app.notice.contains("Queue filter cleared"));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn zz_reports_nothing_to_reveal_outside_the_queue() {
+        let mut app = navigation_app(3);
+        let (commands, _) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let z = key(KeyCode::Char('z'));
+        app.focus = Focus::Library;
+        app.queue_selection.select(Some(2));
+
+        app.key(z, &commands).unwrap();
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.notice, "Nothing is playing.");
+        assert_eq!(app.focus, Focus::Library);
+        assert_eq!(app.queue_selection.selected(), Some(2));
+
+        // Direct playback outside the queue leaves nothing to select.
+        app.state.current_id = Some("99".into());
+        app.key(z, &commands).unwrap();
+        app.key(z, &commands).unwrap();
+        assert_eq!(app.notice, "The playing track is not in the queue.");
+        assert_eq!(app.focus, Focus::Library);
+        assert_eq!(app.queue_selection.selected(), Some(2));
+    }
+
+    #[test]
+    fn zz_centers_the_revealed_entry_as_far_as_the_ends_allow() {
+        use ratatui::backend::TestBackend;
+        let mut app = navigation_app(20);
+        let (commands, _) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let z = key(KeyCode::Char('z'));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.browser_viewport_rows, 19);
+
+        // Nine two-row entries fit; middle rows center, the ends clamp.
+        for (index, offset) in [(15, 11), (19, 11), (0, 0)] {
+            app.focus = Focus::Library;
+            app.state.current_id = Some(app.state.queue[index].id.clone());
+            app.key(z, &commands).unwrap();
+            app.key(z, &commands).unwrap();
+            assert_eq!(app.queue_selection.selected(), Some(index));
+            assert_eq!(app.queue_selection.offset(), offset, "queue index {index}");
+        }
+    }
+
+    #[test]
     fn line_editing_clears_with_ctrl_u_and_deletes_whole_characters() {
         let edit =
             |text: &mut String, code, modifiers| edit_line(text, KeyEvent::new(code, modifiers));
@@ -3765,8 +3921,10 @@ mod tests {
             queue_query: String::new(),
             library_selection: ListState::default(),
             queue_selection: ListState::default(),
+            browser_viewport_rows: 0,
             focus: Focus::Library,
             pending_g: false,
+            pending_z: false,
             pending_ctrl_w: false,
             library_jump: None,
             input: None,

@@ -50,6 +50,9 @@ selects the current queue entry, scrolling it into view. Paused/stopped sessions
 keep Library focus. Subsequent state updates and automatic reconnections preserve
 the user's focus and selection. If the saved spectrum view would replace the
 list, hide it for this attachment without changing the saved preference.
+`zz` repeats that reveal at any time, from either panel, and clears a queue
+filter that hides the playing entry. It centers the entry in the list as far as
+the ends allow.
 Tab, Ctrl-W w, and Ctrl-W Ctrl-W switch Library/Queue. Both Ctrl-W sequences
 follow Tab's behavior when returning from the spectrum, and do not switch panels
 inside prompts or overlays. Any other intervening key cancels the prefix.
