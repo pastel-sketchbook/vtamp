@@ -6,7 +6,11 @@
 //! bytes back into stream boundaries and Opus packets for a [`codec::Decoder`].
 //! Everything here is pure computation; transport and clocks live elsewhere.
 use anyhow::{Result, bail, ensure};
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::broadcast;
 
 pub mod codec;
 pub mod ogg;
@@ -19,6 +23,80 @@ const OPUS_HEAD: &[u8; 8] = b"OpusHead";
 const OPUS_TAGS: &[u8; 8] = b"OpusTags";
 
 pub type Tags = Vec<(String, String)>;
+/// Bytes of one or more whole Ogg pages.
+pub type Chunk = Arc<[u8]>;
+pub type Listener = broadcast::Receiver<Chunk>;
+
+/// Buffered chunks a slow listener may fall behind by before it skips ahead.
+const HUB_CAPACITY: usize = 256;
+
+/// Fan-out point between the thread that produces the cast and its listeners.
+///
+/// Listeners that join mid-stream first receive the open logical stream's
+/// header pages so they can decode from the next page.
+pub struct Hub {
+    inner: Mutex<HubInner>,
+}
+
+struct HubInner {
+    headers: Option<Chunk>,
+    sender: broadcast::Sender<Chunk>,
+}
+
+impl Default for Hub {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(HubInner {
+                headers: None,
+                sender: broadcast::channel(HUB_CAPACITY).0,
+            }),
+        }
+    }
+}
+
+impl Hub {
+    /// The current stream's header pages, if one is open, and every chunk
+    /// published from now on.
+    pub fn subscribe(&self) -> (Option<Chunk>, Listener) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        (inner.headers.clone(), inner.sender.subscribe())
+    }
+
+    pub fn listeners(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sender
+            .receiver_count()
+    }
+
+    /// Publish audio pages of the open stream.
+    pub fn publish(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = inner.sender.send(bytes.into());
+    }
+
+    /// Publish the header pages of a new logical stream and remember them for
+    /// listeners who join later.
+    pub fn begin(&self, headers: &[u8]) {
+        let chunk: Chunk = headers.into();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.headers = Some(chunk.clone());
+        let _ = inner.sender.send(chunk);
+    }
+
+    /// Publish the end-of-stream page; later joiners get no headers.
+    pub fn end(&self, bytes: &[u8]) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.headers = None;
+        if !bytes.is_empty() {
+            let _ = inner.sender.send(bytes.into());
+        }
+    }
+}
 
 pub struct Muxer {
     encoder: codec::Encoder,

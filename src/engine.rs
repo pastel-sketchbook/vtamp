@@ -121,6 +121,7 @@ impl<B: PlaybackBackend> Engine<B> {
     fn load_direct(&mut self, item: Box<QueueItem>, position: u64, paused: bool) -> Result<()> {
         let live = item.track.is_live();
         let position = if live { 0 } else { position };
+        self.backend.announce(&item);
         let result =
             self.backend
                 .load_source(&item.track.playback, position, self.state.volume, paused);
@@ -449,6 +450,7 @@ impl<B: PlaybackBackend> Engine<B> {
             };
             self.upcoming.retain(|id| id != &item.id);
             self.state.play_next.retain(|id| id != &item.id);
+            self.backend.announce(item);
             match self.backend.load_source(
                 &item.track.playback,
                 position,
@@ -648,6 +650,7 @@ impl<B: PlaybackBackend> Engine<B> {
             };
             // Do not use play_at: an unavailable output must never skip songs or
             // reset shuffle/history, and a paused track must remain paused.
+            self.backend.announce(item);
             match self.backend.load_source(
                 &item.track.playback,
                 self.state.position_ms,

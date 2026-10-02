@@ -17,6 +17,7 @@ use std::{
 };
 
 mod buffered;
+pub mod headless;
 #[cfg(target_os = "macos")]
 mod macos;
 mod output;
@@ -44,6 +45,8 @@ pub fn decode_file(path: &Path) -> Result<Box<dyn Source + Send>> {
 }
 
 pub trait PlaybackBackend: Send {
+    /// Describe the entry about to be loaded, for backends that label their output.
+    fn announce(&mut self, _item: &crate::model::QueueItem) {}
     fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()>;
     fn load_source(
         &mut self,
