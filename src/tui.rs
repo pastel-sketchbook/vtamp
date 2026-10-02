@@ -1763,6 +1763,13 @@ impl App {
         } else {
             now_playing_regions(inner, self.show_art, shape)
         };
+        let item = self.state.current();
+        // Streams carry no artwork to load; never report them as missing art.
+        let placeholder = if item.is_some_and(|q| q.track.is_live()) {
+            "Live stream"
+        } else {
+            "No album art"
+        };
         if let Some(cover) = cover {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide for help/themes, and redraw when they close.
@@ -1782,7 +1789,7 @@ impl App {
                         (cover.x, cover.width)
                     };
                     frame.render_widget(
-                        Paragraph::new("No album art")
+                        Paragraph::new(placeholder)
                             .centered()
                             .style(Style::default().fg(p.muted)),
                         Rect::new(x, cover.y + cover.height.saturating_sub(1) / 2, width, 1),
@@ -1790,7 +1797,6 @@ impl App {
                 }
             }
         }
-        let item = self.state.current();
         let title = item.map_or("Your music, your terminal.", |q| q.track.title.as_str());
         if inner.height < 4 {
             frame.render_widget(
@@ -3457,6 +3463,43 @@ mod tests {
             app.message(decoded, &messages, &commands);
             assert!(!app.cover_loading);
             check_label(&mut app, index == 3);
+        }
+    }
+
+    #[test]
+    fn live_streams_label_the_cover_slot_as_streaming() {
+        let mut app = navigation_app(1);
+        app.show_art = true;
+        let mut track = app.tracks[0].clone();
+        track.playback = crate::model::PlaybackSource::Stream {
+            url: "https://example.com/live.m3u8".into(),
+        };
+        track.title = "Example Radio".into();
+        track.artist = String::new();
+        track.album = String::new();
+        track.duration_ms = None;
+        app.tracks[0] = track.clone();
+        app.state.queue[0] = QueueItem::new(track);
+        app.state.current_id = Some(app.state.queue[0].id.clone());
+        for (width, height) in [(120, 36), (100, 24), (72, 12)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("Live stream"),
+                "the cover slot labels streams at {width}x{height}"
+            );
+            assert!(
+                !text.contains("No album art"),
+                "streams are not missing artwork at {width}x{height}"
+            );
         }
     }
 
