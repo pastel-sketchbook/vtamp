@@ -29,7 +29,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.1
+## What ships in v0.2
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, and an editable shared queue.
@@ -44,10 +44,11 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Agent-friendly CLI: compact now-playing JSON, field filters, atomic queue edits with retry receipts, scan reports, and server-owned stop timers.
 - JSON commands and an event stream for scripts and AI agents.
 - An optional tmux status-bar plugin for the current track and playback time.
+- Headless servers that cast Ogg Opus to remote listeners, a relay mode that plays a remote server through the local device, and optional casting from device servers, including a plain HTTP endpoint for players.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
 - A small, dependency-free [landing page](https://vtamp.told.me/) in English and [Korean](https://vtamp.told.me/ko/), with [source in `site/`](site/).
 
-macOS is the supported platform for this release. The platform and playback boundaries are isolated for future Linux support; Linux is not yet part of the tested support matrix. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
+macOS is the supported platform for playback. Linux ships as a headless server: each release attaches a prebuilt 64-bit ARM build, tested on Ubuntu 24.04, without device playback, relay, media keys, or radio. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
 ## Install
 
@@ -65,9 +66,23 @@ Upgrade with `brew update && brew upgrade vtamp`, then run `vtamp server stop`
 so the next `vtamp` starts the new build: a running playback server is never
 replaced by an install. Intel Macs build from source.
 
+### Linux (headless server)
+
+Each release attaches `vtamp-aarch64-unknown-linux-gnu.tar.gz`, a self-contained headless server for 64-bit ARM Linux with glibc 2.39 or newer (Ubuntu 24.04 or later). It needs no ALSA or other audio libraries. Download, verify, and install it:
+
+```sh
+curl -LO https://github.com/rath/vtamp/releases/latest/download/vtamp-aarch64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/rath/vtamp/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf vtamp-aarch64-unknown-linux-gnu.tar.gz
+install -D -m 755 vtamp-aarch64-unknown-linux-gnu/vtamp ~/.local/bin/vtamp
+```
+
+Every server this build starts is headless; see [Linux builds are headless servers](#linux-builds-are-headless-servers) for what that means. Other Linux architectures build from source.
+
 ### Install from source
 
-You need **Rust 1.90 or newer**, the macOS Command Line Tools (`xcode-select --install` if you do not have them), and **cmake** (`brew install cmake`), which builds the bundled libopus for the audio cast. Clone the repository and install:
+You need **Rust 1.90 or newer**, the macOS Command Line Tools (`xcode-select --install` if you do not have them), and **cmake** (`brew install cmake`), which builds the bundled libopus for the audio cast. On Linux, a C compiler and cmake (`apt install build-essential cmake` on Debian and Ubuntu) take the place of the Command Line Tools, and the result is a headless server. Clone the repository and install:
 
 ```sh
 git clone https://github.com/rath/vtamp.git
@@ -205,7 +220,7 @@ The token is created once and kept in `cast.json` in the data directory; delete 
 
 ### Linux builds are headless servers
 
-On Linux the binary builds without an audio device backend, so every server it starts is headless and `server start` behaves like `server start --headless`. Device playback, the relay described below, and live radio are macOS features. AAC decodes in software there (macOS keeps AudioToolbox). Building needs a C compiler and cmake for the bundled libopus; nothing else, in particular no ALSA, is required. The build is tested on Ubuntu 24.04 (aarch64) and in CI; a typical setup is a headless server on a Linux machine with the music files and relays or `vtamp cast listen` on the Macs that play it.
+On Linux the binary builds without an audio device backend, so every server it starts is headless and `server start` behaves like `server start --headless`. Device playback, the relay described below, and live radio are macOS features. AAC decodes in software there (macOS keeps AudioToolbox). Building needs a C compiler and cmake for the bundled libopus; nothing else, in particular no ALSA, is required. The build is tested on Ubuntu 24.04 (aarch64) and in CI, and each release attaches a prebuilt aarch64 build (see [Install](#linux-headless-server)); a typical setup is a headless server on a Linux machine with the music files and relays or `vtamp cast listen` on the Macs that play it.
 
 ### Listen with vtamp itself
 
