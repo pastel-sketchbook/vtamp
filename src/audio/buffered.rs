@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use crossbeam_queue::ArrayQueue;
 use rodio::{ChannelCount, SampleRate, Source, source::UniformSourceIterator};
 use std::{
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -45,6 +46,7 @@ pub(super) struct DecoderWorker {
     samples_per_second: u64,
     reported: (u64, u64),
     last_report: Instant,
+    context: Option<(PathBuf, u64)>,
 }
 
 impl DecoderWorker {
@@ -126,8 +128,9 @@ impl DecoderWorker {
             samples_per_second,
             reported: (0, 0),
             last_report: Instant::now(),
+            context: None,
         };
-        // Fill before attaching to the mixer; short files finish preloading at EOF.
+        // Fill before attaching to the output; short files finish preloading at EOF.
         ready_rx
             .recv()
             .context("Audio decoder stopped before buffering")?;
@@ -146,6 +149,10 @@ impl DecoderWorker {
             ended: false,
         };
         Ok((worker, source))
+    }
+
+    pub(super) fn set_context(&mut self, path: &Path, offset_ms: u64) {
+        self.context = Some((path.to_owned(), offset_ms));
     }
 
     pub(super) fn position_ms(&self) -> u64 {
@@ -177,6 +184,8 @@ impl DecoderWorker {
         );
         if current != self.reported {
             tracing::warn!(
+                path = ?self.context.as_ref().map(|(path, _)| path),
+                position_ms = self.position_ms().saturating_add(self.context.as_ref().map_or(0, |(_, offset)| *offset)),
                 underruns = current.0.saturating_sub(self.reported.0),
                 silence_ms =
                     current.1.saturating_sub(self.reported.1) * 1000 / self.samples_per_second,

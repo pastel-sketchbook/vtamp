@@ -682,7 +682,8 @@ This places data, covers, and the runtime socket under that directory. Keep the 
 
 - **No sound:** inspect `vtamp doctor`, system output selection, player volume, and `last_error`. Sandboxed development shells may not see CoreAudio devices even when decoding succeeds. Run the built binary in a normal terminal for output-device access.
 - **A changed output device:** vtamp follows the system default output, including AirPods-to-speaker changes. It checks the device every 500 ms and reopens playback at the saved position, preserving volume, queue, and pause state. Stream errors or three seconds without playback progress also trigger recovery. If an output is temporarily unavailable, it retries once a second; `last_error` explains the wait. Pause and stop remain available during recovery.
-- **Brief playback interruptions:** decoding runs ahead on a separate worker, with about half a second of PCM buffered for ordinary outputs and a fixed memory limit. The output callback consumes prepared samples; it does not read or decode files. If decoding falls behind, it emits silence without advancing the song position. `Audio decode buffer underrun` in `server.log` records the number of starvation episodes and silence duration, aggregated at most once every five seconds and on track cleanup. This diagnoses vtamp's PCM supply, not every CoreAudio or Bluetooth interruption. Output-open logs include the stream configuration.
+- **Brief playback interruptions:** decoding runs ahead on a separate worker, with about half a second of PCM buffered for ordinary outputs and a fixed memory limit. The output callback consumes prepared samples through a persistent CPAL stream; it does not read or decode files, acquire application locks, or allocate/free sources. Track changes reuse that stream; superseded sources are reclaimed on the control thread. If decoding falls behind, it emits silence without advancing the song position. `Audio decode buffer underrun` in `server.log` records the number of starvation episodes and silence duration, aggregated at most once every five seconds and on track cleanup. This diagnoses vtamp's PCM supply, not every CoreAudio or Bluetooth interruption.
+- **Output timing diagnostics:** `Audio output timing` separately reports cumulative callback counts, frame-size range, maximum callback interval and excess over the previous buffer duration, and maximum render time for each stream. `late_callbacks` counts intervals longer than twice the previous buffer duration; `over_budget` counts render work longer than the current buffer duration. These are diagnostics, not automatic restart triggers. Reports appear every five seconds and on source cleanup, with stream ID, file path, and song position. Output-open and source-preparation logs record device and input/output formats. Bluetooth packet loss can occur after CoreAudio has consumed PCM and therefore need not produce a decode underrun or stream error; compare timestamps with macOS Bluetooth diagnostics before attributing the cause.
 - **Idle audio and power:** pause and stop release the audio output and decoder worker. Resume reopens the current default output at the saved position; paused seeking does not open a device. The OS chooses its output buffer size. Spectrum analysis sleeps without viewers or while paused, and unchanged inactive frames are not repeatedly transmitted. These reduce unnecessary work; battery-life improvements depend on the device and workload.
 - **Missing songs:** rescan with `vtamp library scan`, wait for `scanning` to become false, and inspect `last_error` or the server log. Only supported local formats are scanned.
 - **Client/server version mismatch after rebuilding:** stop the old server with its matching binary before replacing it. `doctor` reports paths; `server run` is also available as a foreground diagnostic command.
@@ -716,18 +717,24 @@ An optional muted output test checks stream reopening, pause/stop resource relea
 VTAMP_TEST_AUDIO_FILE=/path/to/track.m4a cargo test --lib audio::tests::real_output -- --ignored
 ```
 
-The implementation separates the queue state machine (`engine`), the rodio adapter (`audio`), metadata/catalog work (`library`, `store`), local transport (`wire`, `client`, `daemon`), platform paths (`platform`), and human/CLI interfaces (`tui`, `cli`). The server alone owns authoritative state and SQLite writes. Scans and artwork work run separately from playback control. See [the protocol notes](docs/protocol.md) for low-level integration.
+The implementation separates the queue state machine (`engine`), the audio backend (`audio`), metadata/catalog work (`library`, `store`), local transport (`wire`, `client`, `daemon`), platform paths (`platform`), and human/CLI interfaces (`tui`, `cli`). The server alone owns authoritative state and SQLite writes. Scans and artwork work run separately from playback control. See [the protocol notes](docs/protocol.md) for low-level integration.
 
 On macOS, vtamp uses Apple's built-in AudioToolbox decoder for AAC playback to
 reduce the patent-licensing concerns associated with distributing an AAC codec
 implementation. No AAC software decoder is bundled in the macOS build. ALAC, MP3,
-FLAC, WAV, and Vorbis continue to use Symphonia; rodio handles playback, volume,
-and output recovery.
+FLAC, WAV, and Vorbis continue to use Symphonia through rodio. A direct CPAL
+stream consumes float PCM at the default device rate and channel count; CoreAudio
+handles the hardware representation. Volume uses an atomic gain, and output
+recovery remains owned by the playback backend.
 
 The decoder worker also converts samples to the output format, then supplies a
 bounded PCM queue. Buffering tests deliberately block the producer to check
 continued consumption, underrun recovery, exact sample ordering, and position
-accounting. Native decoder disposal never runs in the output callback.
+accounting. Callback tests also check source replacement, EOF, stereo resampling,
+and spectrum delivery with a thread-local allocation/deallocation guard. Native
+decoder disposal and source reclamation never run in the output callback. The
+optional muted output test verifies stream reuse during rapid seeks as well as
+output recovery; it does not prove audible Bluetooth playback quality.
 
 The synthesized AAC, ALAC, and WAV fixtures cover decoder selection, stereo
 samples, EOF, and AAC seeking without opening an output device. Native AAC tests

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rodio::{
-    DeviceSinkBuilder, MixerDeviceSink, Player, Source,
+    Source,
     cpal::{
         self, DeviceId,
         traits::{DeviceTrait, HostTrait},
@@ -9,13 +9,17 @@ use rodio::{
 use std::{
     fs::File,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 mod buffered;
 #[cfg(target_os = "macos")]
 mod macos;
+mod output;
 #[cfg(target_os = "macos")]
 pub mod radio;
 use buffered::DecoderWorker;
@@ -98,13 +102,11 @@ pub struct RodioBackend {
     #[cfg(target_os = "macos")]
     radio: Option<radio::Player>,
     spectrum: Option<Arc<crate::spectrum::Spectrum>>,
-    // Player must be dropped before its output stream.
-    player: Option<Player>,
+    player: Option<Arc<output::VoiceState>>,
     decoder: Option<DecoderWorker>,
-    // Keep PCM allocations alive until rodio releases its old source. The
-    // control thread then reclaims them, instead of the audio callback.
+    // Keep decoder ownership until control reclaims retired output voices.
     retired: Vec<DecoderWorker>,
-    device: Option<MixerDeviceSink>,
+    device: Option<output::Output>,
     device_id: Option<DeviceId>,
     last_device_check: Option<Instant>,
     progress: ProgressWatch,
@@ -112,7 +114,7 @@ pub struct RodioBackend {
     volume: u8,
     paused: bool,
     position_offset_ms: u64,
-    error: Arc<Mutex<Option<String>>>,
+    error: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -142,11 +144,12 @@ impl RodioBackend {
         backend
     }
     fn clear_player(&mut self) {
+        self.report_output(true);
         if let Some(spectrum) = &self.spectrum {
             spectrum.reset();
         }
         if let Some(player) = self.player.take() {
-            player.stop();
+            player.cancelled.store(true, Ordering::Release);
         }
         self.retired.retain(DecoderWorker::consumer_alive);
         if let Some(mut decoder) = self.decoder.take() {
@@ -167,13 +170,19 @@ impl RodioBackend {
         self.stop();
     }
 
-    fn ensure_output(&mut self) -> Result<()> {
-        self.retired.retain(DecoderWorker::consumer_alive);
-        // A stalled output may never discard old mixer sources. Bound retired
-        // allocations even if many play/seek requests arrive before recovery.
-        if self.retired.len() >= 2 {
-            self.reset_output();
+    fn report_output(&mut self, force: bool) {
+        let position = self.position();
+        if let Some(device) = &mut self.device {
+            device.report(force, self.path.as_deref(), position);
+            device.collect();
         }
+    }
+
+    fn ensure_output(&mut self) -> Result<()> {
+        if let Some(device) = &self.device {
+            device.collect();
+        }
+        self.retired.retain(DecoderWorker::consumer_alive);
         let Some(device) = cpal::default_host().default_output_device() else {
             self.reset_output();
             anyhow::bail!("No output device available");
@@ -181,32 +190,12 @@ impl RodioBackend {
         let id = device
             .id()
             .context("Cannot identify the default output device")?;
-        let failed = self
-            .error
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-            .is_some();
+        let failed = self.error.swap(false, Ordering::AcqRel);
         if self.device_id.as_ref() != Some(&id) || failed {
             self.reset_output();
         }
         if self.device.is_none() {
-            let error = self.error.clone();
-            self.device = Some(
-                DeviceSinkBuilder::from_device(device)
-                    .context("Cannot configure the default output device")?
-                    // Decode-ahead provides our safety margin. On CoreAudio a
-                    // fixed buffer request changes a device-wide property.
-                    .with_buffer_size(cpal::BufferSize::Default)
-                    .with_error_callback(move |e| {
-                        if let Ok(mut slot) = error.lock() {
-                            *slot = Some(format!("Audio device error: {e}"));
-                        }
-                    })
-                    .open_sink_or_fallback()
-                    .context("Cannot open the default output device")?,
-            );
-            tracing::info!(config = ?self.device.as_ref().unwrap().config(), "Audio output opened");
+            self.device = Some(output::Output::open(&device, self.error.clone())?);
             self.device_id = Some(id);
         }
         self.last_device_check = Some(Instant::now());
@@ -269,23 +258,23 @@ impl PlaybackBackend for RodioBackend {
             self.stop();
         } else {
             self.ensure_output().context(OutputUnavailable)?;
-            let config = self.device.as_ref().unwrap().config();
-            let (decoder, prepared) =
-                DecoderWorker::start(source, config.channel_count(), config.sample_rate())?;
+            let output = self.device.as_ref().unwrap();
+            tracing::info!(stream_id = output.id, path = %path.display(), position_ms,
+                input_rate = source.sample_rate().get(), input_channels = source.channels().get(),
+                output_rate = output.rate.get(), output_channels = output.channels.get(),
+                "Audio source prepared");
+            let (mut decoder, prepared) =
+                DecoderWorker::start(source, output.channels, output.rate)?;
+            decoder.set_context(path, position_ms);
             self.clear_player();
             let mut source: Box<dyn Source + Send> = Box::new(prepared);
             if let Some(spectrum) = &self.spectrum {
                 source = Box::new(spectrum.tap(source));
             }
-            let player = Player::connect_new(self.device.as_ref().unwrap().mixer());
-            player.pause();
-            player.set_volume(f32::from(volume) / 100.0);
-            player.append(source);
             if let Some(spectrum) = &self.spectrum {
                 spectrum.playing(true);
             }
-            player.play();
-            self.player = Some(player);
+            self.player = Some(self.device.as_ref().unwrap().play(source, volume));
             self.decoder = Some(decoder);
         }
         self.path = Some(path.to_owned());
@@ -302,7 +291,7 @@ impl PlaybackBackend for RodioBackend {
             return;
         }
         if let Some(player) = &self.player {
-            player.pause();
+            player.cancelled.store(true, Ordering::Release);
         }
         let position = self.position();
         self.clear_player();
@@ -344,8 +333,8 @@ impl PlaybackBackend for RodioBackend {
         if let Some(radio) = &mut self.radio {
             radio.volume(value);
         }
-        if let Some(p) = &self.player {
-            p.set_volume(f32::from(value) / 100.0);
+        if let Some(output) = &self.device {
+            output.volume(value);
         }
     }
     fn position(&self) -> u64 {
@@ -353,14 +342,20 @@ impl PlaybackBackend for RodioBackend {
             .saturating_add(self.decoder.as_ref().map_or(0, DecoderWorker::position_ms))
     }
     fn finished(&self) -> bool {
-        self.player.as_ref().is_some_and(Player::empty)
+        self.player
+            .as_ref()
+            .is_some_and(|p| p.finished.load(Ordering::Acquire))
     }
     fn output_event(&mut self) -> Option<String> {
+        self.report_output(false);
         self.retired.retain(DecoderWorker::consumer_alive);
         if let Some(decoder) = &mut self.decoder {
             decoder.report(false);
         }
-        let mut event = self.error.lock().ok()?.take();
+        let mut event = self
+            .error
+            .swap(false, Ordering::AcqRel)
+            .then(|| "Audio device stream error".to_owned());
         let now = Instant::now();
         if event.is_none() && self.device.is_some() {
             if self
@@ -375,10 +370,9 @@ impl PlaybackBackend for RodioBackend {
                     event = Some("Default audio output changed".into());
                 }
             }
-            let playing = self
-                .player
-                .as_ref()
-                .is_some_and(|p| !p.is_paused() && !p.empty());
+            let playing = self.player.as_ref().is_some_and(|p| {
+                !p.cancelled.load(Ordering::Acquire) && !p.finished.load(Ordering::Acquire)
+            });
             if self.progress.stalled(self.position(), playing, now) {
                 event = Some("Audio output stopped consuming samples".into());
             }
@@ -470,11 +464,21 @@ mod tests {
 
         // An error from the old stream must not affect its replacement.
         let old_error = backend.error.clone();
-        *old_error.lock().unwrap() = Some("Simulated stream error".into());
+        old_error.store(true, Ordering::Release);
         assert!(backend.output_event().is_some());
         backend.load(&path, 10000, 0, false).unwrap();
-        *old_error.lock().unwrap() = Some("Late callback".into());
+        old_error.store(true, Ordering::Release);
         assert!(backend.output_event().is_none());
+        // Seeking and restarting a track reuse the same stream, including rapid
+        // requests that supersede voices before the next hardware callback.
+        let stream_id = backend.device.as_ref().unwrap().id;
+        for position in [0, 1000, 2000, 0, 4000, 5000] {
+            backend.seek(position).unwrap();
+            assert_eq!(backend.device.as_ref().unwrap().id, stream_id);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(backend.output_event().is_none());
+        assert!((5000..6000).contains(&backend.position()));
         backend.stop();
         assert!(backend.device.is_none());
         assert!(backend.decoder.is_none());

@@ -19,8 +19,8 @@ struct AudioFile(NonNull<OpaqueExtAudioFile>);
 
 // SAFETY: The handle is exclusively owned, never cloned or shared. AudioToolbox's
 // sequential file API requires serialized access, not a particular thread. The
-// source is moved to rodio's consumer after initialization; reads/seeks require
-// &mut self, and disposal happens only after that consumer releases ownership.
+// source is moved to the decoder worker after initialization; reads/seeks require
+// &mut self, and disposal stays on the worker or control thread.
 // Deliberately do not implement Sync.
 unsafe impl Send for AudioFile {}
 
