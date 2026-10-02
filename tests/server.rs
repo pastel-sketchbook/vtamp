@@ -747,6 +747,15 @@ fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
     let frame = receive(&mut spectrum);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["data"]["levels"].as_array().unwrap().len(), 32);
+    // The analyzer wakes on subscription and names the remote's queue entry, so
+    // an attached TUI does not drop the relay's frames as another track's.
+    let frame = receive(&mut spectrum);
+    assert_eq!(
+        frame["data"]["current_id"],
+        remote.ok(&["status"])["current_id"],
+        "{frame}"
+    );
+    assert!(frame["data"]["current_id"].is_string());
     drop(spectrum);
     let mut watch = UnixStream::connect(relay.socket()).unwrap();
     watch

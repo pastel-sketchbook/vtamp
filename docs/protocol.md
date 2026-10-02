@@ -301,8 +301,8 @@ no database. Each client request is forwarded to the remote socket on a fresh
 connection and the reply bytes are copied back, including long-lived `watch`
 streams and the raw `cast_watch` stream. Exceptions: `shutdown` stops the relay
 itself and never the remote server; `spectrum_watch` is served locally from the
-audio the relay plays; `server_info` reports `mode: "relay"` and the remote
-path. When the remote is unreachable a request fails with `remote_unavailable`.
+audio the relay plays, with frames carrying the remote's `current_id`;
+`server_info` reports `mode: "relay"` and the remote path. When the remote is unreachable a request fails with `remote_unavailable`.
 
 The relay subscribes to the remote cast, plays each logical stream through the
 local output device, and applies the remote `volume` to that output. The

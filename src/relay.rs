@@ -70,6 +70,9 @@ impl Relay {
             *volume = Some(state.volume);
             let _ = self.local.try_send(Local::Volume(state.volume));
         }
+        // Spectrum frames must name the remote's queue entry, or the TUI drops
+        // them as belonging to a different track.
+        self.spectrum.context(state.current_id.as_deref());
         let _ = self.local.try_send(Local::State(Box::new(state.clone())));
         *lock(&self.snapshot) = Some(state);
     }
