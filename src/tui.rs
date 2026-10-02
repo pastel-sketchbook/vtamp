@@ -40,13 +40,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
+/// Library tracks per request while queueing a whole view; the server caps a
+/// page at 1000.
+const BULK_PAGE: usize = 1000;
+/// Entries the server accepts in a queue; a bulk add stops at the room left.
+const QUEUE_LIMIT: usize = 10_000;
 
 /// A live library search waits this long after the last keystroke before it
 /// asks the server, so a fast typist starts one search instead of one per key.
 /// The queue filter is local and applies at once.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -195,6 +200,19 @@ struct SearchRestore {
     queue_id: Option<String>,
 }
 
+/// A "queue everything matching" walk: the client pages the whole result set,
+/// then sends one atomic add, so the visible page never moves and a scan cannot
+/// interleave half a library into the queue.
+struct QueueAll {
+    /// Library query the walk started with; a change cancels it.
+    query: String,
+    /// Offset of the next page to request, in tracks.
+    offset: usize,
+    track_ids: Vec<String>,
+    /// Queue slots left when the walk started; the walk stops there.
+    capacity: usize,
+}
+
 struct ThemePicker {
     original: Theme,
     selection: ListState,
@@ -234,6 +252,8 @@ struct App {
     search_restore: Option<SearchRestore>,
     /// Deadline for the debounced library search while a draft is typed.
     search_pending: Option<Instant>,
+    /// In-flight "queue everything matching" walk, if any.
+    queue_all: Option<QueueAll>,
     help: bool,
     help_scroll: HelpScroll,
     connected: bool,
@@ -345,6 +365,7 @@ pub async fn run(
         input: None,
         search_restore: None,
         search_pending: None,
+        queue_all: None,
         help: false,
         help_scroll: HelpScroll::default(),
         connected: false,
@@ -966,6 +987,114 @@ impl App {
             self.refresh(commands);
         }
     }
+    /// Queue every track in the current library view: the active `/` search
+    /// when there is one, the whole library otherwise. The client pages the
+    /// result set and then sends one atomic add, so playback, the queue cursor,
+    /// and the visible page all stay where they are.
+    fn queue_all_matching(&mut self, commands: &mpsc::Sender<Command>) {
+        let capacity = QUEUE_LIMIT.saturating_sub(self.state.queue.len());
+        if capacity == 0 {
+            self.notice(format!("Queue is full ({QUEUE_LIMIT} entries)."));
+            return;
+        }
+        if self.total == 0 {
+            self.notice("Nothing to queue.");
+            return;
+        }
+        self.queue_all = Some(QueueAll {
+            query: self.library_query.clone(),
+            offset: 0,
+            track_ids: Vec::new(),
+            capacity,
+        });
+        self.request_queue_page(commands);
+    }
+    /// Ask for the next page of a walk; the reply handler finishes it.
+    fn request_queue_page(&mut self, commands: &mpsc::Sender<Command>) {
+        let Some(all) = &self.queue_all else {
+            return;
+        };
+        self.send(
+            commands,
+            Command::LibrarySearch {
+                filter: SearchFilter {
+                    query: all.query.clone(),
+                    ..Default::default()
+                },
+                offset: all.offset,
+                limit: BULK_PAGE,
+            },
+        );
+    }
+    /// Collect one page of a walk, request the next, and finish with a single
+    /// add. Pages of a superseded walk, or pages that arrive after the view
+    /// moved on, are dropped instead of queueing stale rows.
+    fn queue_all_reply(
+        &mut self,
+        query: &str,
+        offset: usize,
+        result: Result<Value, String>,
+        commands: &mpsc::Sender<Command>,
+    ) {
+        match &self.queue_all {
+            Some(all) if all.query == query && all.offset == offset => (),
+            _ => return,
+        }
+        if self.library_query != query {
+            self.queue_all = None;
+            return;
+        }
+        let Some(mut all) = self.queue_all.take() else {
+            return;
+        };
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => {
+                self.notice(error);
+                return;
+            }
+        };
+        let tracks: Vec<Track> =
+            serde_json::from_value(value["tracks"].clone()).unwrap_or_default();
+        let total = value["total"].as_u64().unwrap_or(0) as usize;
+        for track in &tracks {
+            if all.track_ids.len() >= all.capacity {
+                break;
+            }
+            all.track_ids.push(track.id.clone());
+        }
+        all.offset += tracks.len();
+        if !tracks.is_empty() && all.offset < total && all.track_ids.len() < all.capacity {
+            self.queue_all = Some(all);
+            self.request_queue_page(commands);
+            return;
+        }
+        let queued = all.track_ids.len();
+        if queued == 0 {
+            self.notice("Nothing to queue.");
+            return;
+        }
+        self.send(
+            commands,
+            Command::QueueEdit {
+                edit: QueueEdit {
+                    operations: vec![QueueOperation::Add {
+                        track_ids: all.track_ids,
+                        after_current: false,
+                        index: None,
+                    }],
+                },
+                dry_run: false,
+                if_queue_revision: None,
+                request_id: None,
+            },
+        );
+        self.notice(if queued < total {
+            format!("Queued {queued} of {total} tracks: queue limit {QUEUE_LIMIT}.")
+        } else {
+            format!("Queued {queued} tracks. s shuffles, Space plays.")
+        });
+    }
     /// The queue filter is local: the whole queue already lives in the client.
     fn apply_queue_filter(&mut self, query: String) {
         self.queue_query = query;
@@ -1200,6 +1329,9 @@ impl App {
                 result,
             ) => {
                 self.library_reveal_reply(&id, &query, result);
+            }
+            Message::Reply(Command::LibrarySearch { filter, offset, .. }, result) => {
+                self.queue_all_reply(&filter.query, offset, result, commands);
             }
             Message::Reply(command, result)
                 if matches!(
@@ -1608,6 +1740,7 @@ impl App {
                 self.library_selection.select(Some(0));
                 self.refresh(commands);
             }
+            KeyCode::Char('A') if self.focus == Focus::Library => self.queue_all_matching(commands),
             KeyCode::Enter | KeyCode::Char('e') if self.focus == Focus::Library => {
                 if let Some(track) = self
                     .library_selection
@@ -2228,7 +2361,7 @@ impl App {
         let panel = block(p, &title, self.focus == Focus::Queue);
         self.browser_viewport_rows = panel.inner(area).height;
         if self.state.queue.is_empty() {
-            frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
+            frame.render_widget(Paragraph::new("\n  Nothing queued yet.\n\n  Enter plays a library track.\n  e adds it without interrupting playback.\n  A queues everything Library shows.\n\n  Or: vtamp play /path/to/music").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else if visible == 0 {
             frame.render_widget(Paragraph::new("\n  No matching queue entries.\n  Press / to change the filter or Esc to clear it.").block(panel).style(Style::default().fg(p.muted)).wrap(Wrap { trim: false }), area);
         } else {
@@ -3322,6 +3455,169 @@ mod tests {
     }
 
     #[test]
+    fn queue_all_pages_the_whole_view_and_sends_one_atomic_add() {
+        let track = |i: usize| Track {
+            id: format!("t{i}"),
+            playback: crate::model::PlaybackSource::File {
+                path: format!("/{i}.m4a").into(),
+            },
+            title: format!("Track {i}"),
+            artist: "Artist".into(),
+            album: "Album".into(),
+            track_number: i as u32,
+            duration_ms: Some(180_000),
+            cover: None,
+            source: None,
+        };
+        let page = |start: usize, count: usize, total: usize| {
+            let tracks: Vec<Track> = (start..start + count).map(track).collect();
+            serde_json::json!({"tracks": tracks, "total": total, "offset": start})
+        };
+        let mut app = navigation_app(3);
+        app.library_query = "album".into();
+        app.total = 2500;
+        app.tracks = (0..PAGE_SIZE).map(track).collect();
+        let (commands, mut requests) = mpsc::channel(8);
+        let (messages, _) = mpsc::unbounded_channel();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // `A` walks the result set at the bulk page size, not the visible page.
+        app.key(key(KeyCode::Char('A')), &commands).unwrap();
+        let command = requests.try_recv().unwrap();
+        assert!(matches!(
+            &command,
+            Command::LibrarySearch { filter, offset: 0, limit: BULK_PAGE }
+                if filter.query == "album" && filter.artist.is_none() && !filter.exact
+        ));
+        app.message(
+            Message::Reply(command, Ok(page(0, BULK_PAGE, 2500))),
+            &messages,
+            &commands,
+        );
+        let command = requests.try_recv().unwrap();
+        assert!(matches!(
+            &command,
+            Command::LibrarySearch {
+                offset: BULK_PAGE,
+                ..
+            }
+        ));
+        app.message(
+            Message::Reply(command, Ok(page(BULK_PAGE, BULK_PAGE, 2500))),
+            &messages,
+            &commands,
+        );
+        let command = requests.try_recv().unwrap();
+        assert!(matches!(
+            &command,
+            Command::LibrarySearch { offset: 2000, .. }
+        ));
+        app.message(
+            Message::Reply(command, Ok(page(2000, 500, 2500))),
+            &messages,
+            &commands,
+        );
+
+        let Command::QueueEdit { edit, dry_run, .. } = requests.try_recv().unwrap() else {
+            panic!("expected one atomic queue edit");
+        };
+        assert!(!dry_run);
+        let [
+            QueueOperation::Add {
+                track_ids,
+                after_current: false,
+                index: None,
+            },
+        ] = &edit.operations[..]
+        else {
+            panic!("expected a single append");
+        };
+        assert_eq!(track_ids.len(), 2500);
+        assert_eq!(track_ids[0], "t0");
+        assert_eq!(track_ids[2499], "t2499");
+        assert!(app.queue_all.is_none());
+        assert!(app.notice.contains("Queued 2500 tracks"));
+        // The visible page and its offset never moved.
+        assert_eq!(app.tracks.len(), PAGE_SIZE);
+        assert_eq!(app.offset, 0);
+    }
+
+    #[test]
+    fn queue_all_stops_at_the_queue_limit_and_drops_stale_pages() {
+        let mut app = navigation_app(2);
+        app.state.queue = (0..QUEUE_LIMIT - 2)
+            .map(|_| QueueItem::new(app.tracks[0].clone()))
+            .collect();
+        let (commands, mut requests) = mpsc::channel(8);
+        let (messages, _) = mpsc::unbounded_channel();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // A full queue never asks the library.
+        let mut full = navigation_app(2);
+        full.state.queue = (0..QUEUE_LIMIT)
+            .map(|_| QueueItem::new(full.tracks[0].clone()))
+            .collect();
+        full.key(key(KeyCode::Char('A')), &commands).unwrap();
+        assert!(requests.try_recv().is_err());
+        assert!(full.notice.contains("Queue is full"));
+
+        // Two free slots stop the walk after the first page.
+        app.key(key(KeyCode::Char('A')), &commands).unwrap();
+        let command = requests.try_recv().unwrap();
+        let tracks: Vec<Track> = (0..BULK_PAGE)
+            .map(|i| Track {
+                id: format!("t{i}"),
+                playback: crate::model::PlaybackSource::File {
+                    path: format!("/{i}.m4a").into(),
+                },
+                title: format!("Track {i}"),
+                artist: "Artist".into(),
+                album: "Album".into(),
+                track_number: i as u32,
+                duration_ms: Some(180_000),
+                cover: None,
+                source: None,
+            })
+            .collect();
+        app.message(
+            Message::Reply(
+                command,
+                Ok(serde_json::json!({"tracks": tracks, "total": 20_000, "offset": 0})),
+            ),
+            &messages,
+            &commands,
+        );
+        let Command::QueueEdit { edit, .. } = requests.try_recv().unwrap() else {
+            panic!("expected one atomic queue edit");
+        };
+        let [QueueOperation::Add { track_ids, .. }] = &edit.operations[..] else {
+            panic!("expected a single append");
+        };
+        assert_eq!(track_ids, &["t0", "t1"], "the walk stops at the free slots");
+        assert!(app.notice.contains("Queued 2 of 20000 tracks"));
+
+        // A page that arrives after the view moved on is dropped.
+        app.library_query.clear();
+        app.offset = 0;
+        app.total = app.state.queue.len();
+        let command = {
+            app.key(key(KeyCode::Char('A')), &commands).unwrap();
+            requests.try_recv().unwrap()
+        };
+        app.library_query = "other".into();
+        app.message(
+            Message::Reply(
+                command,
+                Ok(serde_json::json!({"tracks": tracks, "total": 20_000, "offset": 0})),
+            ),
+            &messages,
+            &commands,
+        );
+        assert!(app.queue_all.is_none());
+        assert!(requests.try_recv().is_err(), "no stale add");
+    }
+
+    #[test]
     fn escape_clears_an_applied_search_before_detaching() {
         let mut app = app();
         let (commands, mut requests) = mpsc::channel(8);
@@ -4229,6 +4525,7 @@ mod tests {
             input: None,
             search_restore: None,
             search_pending: None,
+            queue_all: None,
             help: false,
             help_scroll: HelpScroll::default(),
             connected: true,
