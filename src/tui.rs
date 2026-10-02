@@ -52,7 +52,7 @@ const QUEUE_LIMIT: usize = 10_000;
 /// The queue filter is local and applies at once.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue   X Empty queue\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -201,6 +201,14 @@ struct SearchRestore {
     queue_id: Option<String>,
 }
 
+/// A destructive action that asks before it runs. While one is pending, it owns
+/// the keyboard.
+#[derive(Clone, Copy)]
+enum Confirm {
+    /// Empty the whole queue, which also stops playback.
+    ClearQueue,
+}
+
 /// A "queue everything matching" walk: the client pages the whole result set,
 /// then sends one atomic add, so the visible page never moves and a scan cannot
 /// interleave half a library into the queue.
@@ -260,6 +268,8 @@ struct App {
     search_pending: Option<Instant>,
     /// In-flight "queue everything matching" walk, if any.
     queue_all: Option<QueueAll>,
+    /// Destructive action waiting for Enter, if any.
+    confirm: Option<Confirm>,
     help: bool,
     help_scroll: HelpScroll,
     connected: bool,
@@ -372,6 +382,7 @@ pub async fn run(
         search_restore: None,
         search_pending: None,
         queue_all: None,
+        confirm: None,
         help: false,
         help_scroll: HelpScroll::default(),
         connected: false,
@@ -993,6 +1004,33 @@ impl App {
             self.refresh(commands);
         }
     }
+    /// A destructive action owns the keyboard while it waits: Enter runs it,
+    /// Esc or q cancels, and every other key is swallowed so it cannot act on
+    /// the list behind the dialog.
+    fn confirm_key(&mut self, key: KeyEvent, commands: &mpsc::Sender<Command>) -> bool {
+        let Some(confirm) = self.confirm else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Enter => {
+                self.confirm = None;
+                match confirm {
+                    Confirm::ClearQueue => self.send(commands, Command::QueueClear),
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.confirm = None,
+            _ => (),
+        }
+        true
+    }
+    /// `X`: ask before emptying the queue, because nothing here can be undone.
+    fn clear_queue_prompt(&mut self) {
+        if self.state.queue.is_empty() {
+            self.notice("Queue is already empty.");
+            return;
+        }
+        self.confirm = Some(Confirm::ClearQueue);
+    }
     /// Queue every track in the current library view: the active `/` search
     /// when there is one, the whole library otherwise. The client pages the
     /// result set and then sends one atomic add, so playback, the queue cursor,
@@ -1537,6 +1575,9 @@ impl App {
         if self.import_key(key, commands) {
             return Ok(false);
         }
+        if self.confirm_key(key, commands) {
+            return Ok(false);
+        }
         if self.theme_picker.is_some() {
             self.theme_key(key.code);
             return Ok(false);
@@ -1824,6 +1865,7 @@ impl App {
                     self.send(commands, command);
                 }
             }
+            KeyCode::Char('X') if self.focus == Focus::Queue => self.clear_queue_prompt(),
             KeyCode::Enter if self.focus == Focus::Queue => {
                 if let Some(item) = self
                     .queue_selection
@@ -2148,6 +2190,7 @@ impl App {
         }
         self.draw_imports(frame, area);
         self.draw_stream_dialog(frame, area, content);
+        self.draw_confirm(frame, area);
         if self.help {
             self.caret = None;
             self.draw_help(frame, area);
@@ -2156,6 +2199,51 @@ impl App {
             self.caret = None;
             self.draw_theme_picker(frame, content);
         }
+    }
+    /// A pending destructive action, drawn over everything else. The counts come
+    /// from the live state, so a queue change behind the dialog is reflected.
+    fn draw_confirm(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
+        let Some(confirm) = self.confirm else {
+            return;
+        };
+        self.caret = None;
+        let (title, question, consequence, hint) = match confirm {
+            Confirm::ClearQueue => {
+                let queued = self.state.queue.len();
+                let consequence = if self.state.direct.is_some() {
+                    "Playback keeps going: the current track plays outside the queue."
+                } else {
+                    "Playback stops with the queue. This cannot be undone."
+                };
+                (
+                    " Empty Queue ",
+                    format!("Remove all {queued} queue entries?"),
+                    consequence,
+                    " Enter empty · Esc cancel ",
+                )
+            }
+        };
+        let popup = centered(area, 58, 9);
+        let panel = block(p, title, true).style(Style::default().fg(p.text).bg(p.panel));
+        let inner = panel.inner(popup);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(panel, popup);
+        let [body, footer] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(question),
+                Line::from(""),
+                Line::styled(consequence, Style::default().fg(p.warning)),
+            ])
+            .wrap(Wrap { trim: false }),
+            body,
+        );
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::default().fg(p.muted)),
+            footer,
+        );
     }
     fn now_playing(&mut self, frame: &mut Frame, area: Rect, spectrum: bool) {
         let p = self.theme.palette();
@@ -3598,6 +3686,82 @@ mod tests {
     }
 
     #[test]
+    fn clear_queue_asks_first_and_swallows_other_keys() {
+        let mut app = navigation_app(3);
+        app.focus = Focus::Queue;
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // Nothing to clear.
+        app.state.queue.clear();
+        app.key(key(KeyCode::Char('X')), &commands).unwrap();
+        assert!(app.confirm.is_none());
+        assert!(app.notice.contains("already empty"));
+        assert!(requests.try_recv().is_err());
+
+        // Library focus leaves the key to the lists.
+        app.state.queue = (0..3)
+            .map(|i| QueueItem::new(app.tracks[i].clone()))
+            .collect();
+        app.focus = Focus::Library;
+        app.key(key(KeyCode::Char('X')), &commands).unwrap();
+        assert!(app.confirm.is_none());
+
+        // With entries the dialog owns the keyboard until Enter or Esc.
+        app.focus = Focus::Queue;
+        app.queue_selection.select(Some(0));
+        app.key(key(KeyCode::Char('X')), &commands).unwrap();
+        assert!(matches!(app.confirm, Some(Confirm::ClearQueue)));
+        app.key(key(KeyCode::Char('j')), &commands).unwrap();
+        assert_eq!(
+            app.queue_selection.selected(),
+            Some(0),
+            "the list is frozen"
+        );
+        assert!(requests.try_recv().is_err());
+        app.key(key(KeyCode::Esc), &commands).unwrap();
+        assert!(app.confirm.is_none());
+        assert!(requests.try_recv().is_err(), "cancel sends nothing");
+
+        app.key(key(KeyCode::Char('X')), &commands).unwrap();
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert!(app.confirm.is_none());
+        assert!(matches!(requests.try_recv().unwrap(), Command::QueueClear));
+    }
+
+    #[test]
+    fn clear_queue_dialog_names_the_count_and_the_consequence() {
+        use ratatui::backend::TestBackend;
+        let mut app = navigation_app(3);
+        app.focus = Focus::Queue;
+        app.clear_queue_prompt();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Remove all 3 queue entries?"), "{text}");
+        assert!(text.contains("Playback stops with the queue"), "{text}");
+        assert!(text.contains("Enter empty · Esc cancel"), "{text}");
+
+        // A direct track keeps playing, and the wording says so.
+        app.state.direct = Some(Box::new(app.state.queue[0].clone()));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Playback keeps going"), "{text}");
+    }
+
+    #[test]
     fn queue_all_hints_only_the_steps_that_are_left() {
         let walk = |shuffle: bool, status: PlaybackStatus| {
             let mut app = navigation_app(2);
@@ -4735,6 +4899,7 @@ mod tests {
             search_restore: None,
             search_pending: None,
             queue_all: None,
+            confirm: None,
             help: false,
             help_scroll: HelpScroll::default(),
             connected: true,

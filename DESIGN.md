@@ -70,6 +70,10 @@ entire result set in bulk-sized requests rather than the visible page, and ignor
 replies that arrive after the view moved on.
 Its notice names only the steps still ahead: no shuffle hint when shuffle is
 already on, no play hint while playing, and the resume wording while paused.
+`X` in Queue asks before emptying it. The dialog shows the live entry count and
+names the consequence: playback stops unless a direct track plays outside the
+queue. A pending confirmation owns the keyboard — Enter runs it, Esc cancels,
+every other key is swallowed — so it cannot act on the list behind it.
 
 The website is a Persuade surface, but its copy stays literal: say what vtamp is and what sets it apart (a music player for the terminal whose playback server keeps playing after the interface detaches), show the Homebrew command with a copy button, label the primary action “Install”, and avoid slogans or metaphors. Follow the headline with a full-width gallery of the real terminal interface. Follow with the detachable lifecycle, executable CLI examples, and installation instructions: the Homebrew command for Apple Silicon first, then the source build as the alternative for Intel Macs or machines without Homebrew. The headline and introduction share a row above the gallery. Show Wide, Compact Library, and Compact Queue in a fixed image area without cropping; provide full-resolution links. Named layout controls and a pause button accompany a six-second rotation. Hover, keyboard focus, and offscreen state pause rotation; reduced motion disables automatic rotation and fading. Without JavaScript, the first screenshot remains visible.
 
