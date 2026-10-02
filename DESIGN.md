@@ -101,6 +101,8 @@ search draft.
 Disable hidden-list actions. Help/theme overlays obscure the spectrum and suspend
 its subscription. Labels remain neutral and the axes read LOW / HIGH. Paused,
 stopped, or stale data settles to zero instead of showing decorative motion.
+An idle spectrum connection stays open without requiring periodic frames; quiet
+or paused audio must not trigger a disconnection warning or a reconnect loop.
 Once bars and peaks settle, suspend the animation timer until fresh audio or a
 view change needs it. Do not send terminal output for unchanged frames. Keep
 input and artwork completion immediate, and preserve progress and notice expiry.

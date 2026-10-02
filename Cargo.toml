@@ -70,6 +70,7 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 rodio = { version = "0.22", default-features = false, features = ["symphonia-isomp4", "symphonia-alac", "symphonia-aac", "mp3", "flac", "wav", "vorbis", "tracing"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 # Independent Ogg implementation that cross-checks the cast page layout.
 ogg_pager = "0.7"
 tempfile = "3"

@@ -76,7 +76,9 @@ the latest value, socket writes have a two-second deadline, and EOF releases its
 subscription. There is no replay, persistence, or playback revision change.
 Analysis is shared across subscribers and sleeps without demand or while paused;
 unchanged inactive frames are not retransmitted. Active frames also serve as
-liveness heartbeats. Audio capture uses bounded preallocated
+liveness heartbeats while audio is being analyzed, but silence on an established
+connection is not a disconnect: clients wait for the next frame or a socket
+error/EOF without a per-frame read deadline. Audio capture uses bounded preallocated
 storage and never waits for analysis or sockets.
 A seek, reload, or output reset changes `generation`; clients discard old results
 and clear their peaks. Pause/resume also flushes internal capture epochs.

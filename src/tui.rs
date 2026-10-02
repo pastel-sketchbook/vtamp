@@ -632,8 +632,10 @@ async fn spectrum_stream(
                         if changed.is_err() { return; }
                         break;
                     },
-                    reply = tokio::time::timeout(Duration::from_secs(3), wire::read::<_, Reply>(&mut stream)) => {
-                        let frame = reply.ok().and_then(Result::ok).and_then(|r| r.into_data().ok())
+                    // Unchanged inactive frames are not retransmitted. Only a
+                    // socket/protocol error ends a quiet, established stream.
+                    reply = wire::read::<_, Reply>(&mut stream) => {
+                        let frame = reply.ok().and_then(|r| r.into_data().ok())
                             .and_then(|data| serde_json::from_value::<SpectrumFrame>(data).ok());
                         match frame {
                             Some(frame) => { frames.send_replace(Some(Ok(frame))); },
@@ -647,7 +649,7 @@ async fn spectrum_stream(
             continue;
         }
         frames.send_replace(Some(Err(
-            "Spectrum unavailable. Restart the server with this binary. v closes this view.".into(),
+            "Spectrum disconnected. Reconnecting… v closes this view.".into(),
         )));
         tokio::select! {
             changed = wanted.changed() => { if changed.is_err() { return; } },
@@ -5108,6 +5110,91 @@ mod tests {
         .unwrap();
         assert!(matches!(requests.try_recv(), Ok(Command::LibraryScan)));
         assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn spectrum_stream_keeps_idle_connections_and_recovers_after_eof() {
+        use tokio::{io::AsyncReadExt, net::UnixListener};
+        let home = tempfile::Builder::new()
+            .prefix("vts-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = platform::Paths {
+            data: home.path().into(),
+            runtime: home.path().into(),
+            cache: home.path().into(),
+        };
+        let listener = UnixListener::bind(paths.socket()).unwrap();
+        let (wanted, demand) = watch::channel(false);
+        let (frames, mut latest) = watch::channel(None);
+        let task = tokio::spawn(spectrum_stream(Client::new(paths), demand, frames));
+        tokio::task::yield_now().await;
+        assert!(!latest.has_changed().unwrap());
+        wanted.send(true).unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request: Request = wire::read(&mut stream).await.unwrap();
+        assert!(matches!(request.request, Command::SpectrumWatch));
+        wire::write(&mut stream, &Reply::success(SpectrumFrame::default()))
+            .await
+            .unwrap();
+        latest.changed().await.unwrap();
+        assert!(latest.borrow_and_update().as_ref().unwrap().is_ok());
+
+        // An inactive server publishes no heartbeats. Even a long idle interval
+        // must preserve the connection and the last frame without an error.
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !latest.has_changed().unwrap(),
+            "idle spectrum is not a disconnect"
+        );
+        tokio::time::resume();
+        let resumed = SpectrumFrame {
+            generation: 1,
+            active: true,
+            levels: [0.5; crate::spectrum::BANDS],
+            ..Default::default()
+        };
+        wire::write(&mut stream, &Reply::success(resumed))
+            .await
+            .unwrap();
+        latest.changed().await.unwrap();
+        assert_eq!(
+            latest
+                .borrow_and_update()
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .generation,
+            1
+        );
+
+        // Actual EOF still reports a disconnection and retries the subscription.
+        drop(stream);
+        latest.changed().await.unwrap();
+        assert!(latest.borrow_and_update().as_ref().unwrap().is_err());
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let _: Request = wire::read(&mut stream).await.unwrap();
+        wire::write(&mut stream, &Reply::success(SpectrumFrame::default()))
+            .await
+            .unwrap();
+        latest.changed().await.unwrap();
+        assert!(latest.borrow_and_update().as_ref().unwrap().is_ok());
+
+        // Hiding a quiet view releases the subscription immediately.
+        wanted.send(false).unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), stream.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        drop(wanted);
+        task.await.unwrap();
     }
 
     #[test]
