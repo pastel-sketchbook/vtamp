@@ -145,8 +145,21 @@ pub enum Action {
         #[command(subcommand)]
         command: Server,
     },
+    /// Read a headless server's Ogg Opus audio cast.
+    Cast {
+        #[command(subcommand)]
+        command: Cast,
+    },
     /// Inspect runtime paths, server health, and the default audio device.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Cast {
+    /// Write the Ogg Opus cast to standard output until interrupted; pipe it into a player.
+    Listen,
+    /// Describe the cast without subscribing.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -435,11 +448,18 @@ pub enum StreamAction {
 }
 #[derive(Debug, Subcommand)]
 pub enum Server {
-    Start,
+    Start {
+        /// Run without an audio device and cast Ogg Opus to listeners.
+        #[arg(long)]
+        headless: bool,
+    },
     Status,
     Stop,
     #[command(hide = true)]
-    Run,
+    Run {
+        #[arg(long)]
+        headless: bool,
+    },
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -632,7 +652,7 @@ pub async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Action::Server {
-            command: Server::Run,
+            command: Server::Run { headless },
         } => {
             tracing_subscriber::fmt()
                 .with_ansi(false)
@@ -641,16 +661,48 @@ pub async fn run(args: Args) -> Result<()> {
                         .unwrap_or_else(|_| "vtamp=info,rodio=warn".into()),
                 )
                 .init();
-            return crate::daemon::run(paths).await;
+            return crate::daemon::run(paths, headless).await;
         }
         Action::Server {
-            command: Server::Start,
+            command: Server::Start { headless },
         } => {
-            client.ensure().await?;
+            client.ensure_with(headless).await?;
+            let cast = client.cast_info().await?;
+            if headless && !cast.available {
+                bail!(
+                    "A server playing through the audio device is already running; run vtamp server stop first"
+                );
+            }
             return output(
-                Reply::success(json!({"running": true, "socket": paths.socket()})),
+                Reply::success(
+                    json!({"running": true, "socket": paths.socket(), "headless": cast.available}),
+                ),
                 args.json,
             );
+        }
+        Action::Cast {
+            command: Cast::Status,
+        } => {
+            return output(Reply::success(client.cast_info().await?), args.json);
+        }
+        Action::Cast {
+            command: Cast::Listen,
+        } => {
+            if args.json {
+                bail!("cast listen writes audio, not JSON; use vtamp cast status --json");
+            }
+            if io::stdout().is_terminal() {
+                bail!(
+                    "Refusing to write audio to a terminal; pipe into a player, for example: vtamp cast listen | mpv -"
+                );
+            }
+            let (_, mut stream) = client.cast().await?;
+            let mut stdout = tokio::io::stdout();
+            tokio::select! {
+                copied = tokio::io::copy(&mut stream, &mut stdout) => { copied?; }
+                _ = tokio::signal::ctrl_c() => {}
+            }
+            return Ok(());
         }
         Action::Doctor => {
             use rodio::cpal::traits::{DeviceTrait, HostTrait};
@@ -680,12 +732,16 @@ pub async fn run(args: Args) -> Result<()> {
             } else {
                 None
             };
+            let cast = client.cast_info().await.ok();
             let mut doctor_data = json!({"data_directory": paths.data, "socket": paths.socket(), "log": paths.log(),
                 "server_reachable": status.as_ref().is_ok_and(|r| r.ok), "server_error": status.err().map(|e| e.to_string()),
                 "default_output_device": device, "term": std::env::var("TERM").ok(), "tmux": std::env::var_os("TMUX").is_some(),
                 "protocol_version": PROTOCOL_VERSION, "version": env!("CARGO_PKG_VERSION")});
             if let Some(info) = import_info {
                 doctor_data["imports"] = info;
+            }
+            if let Some(cast) = cast {
+                doctor_data["cast"] = serde_json::to_value(cast)?;
             }
             return output(Reply::success(doctor_data), args.json);
         }
@@ -754,6 +810,7 @@ pub async fn run(args: Args) -> Result<()> {
             | Action::Server {
                 command: Server::Status | Server::Stop
             }
+            | Action::Cast { .. }
     );
     let queue_only = matches!(
         action,

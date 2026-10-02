@@ -81,6 +81,51 @@ pub trait PlaybackBackend: Send {
     }
 }
 
+impl PlaybackBackend for Box<dyn PlaybackBackend> {
+    fn announce(&mut self, item: &crate::model::QueueItem) {
+        (**self).announce(item)
+    }
+    fn load(&mut self, path: &Path, position_ms: u64, volume: u8, paused: bool) -> Result<()> {
+        (**self).load(path, position_ms, volume, paused)
+    }
+    fn load_source(
+        &mut self,
+        source: &crate::model::PlaybackSource,
+        position_ms: u64,
+        volume: u8,
+        paused: bool,
+    ) -> Result<()> {
+        (**self).load_source(source, position_ms, volume, paused)
+    }
+    fn stream_update(&mut self) -> Option<StreamUpdate> {
+        (**self).stream_update()
+    }
+    fn pause(&mut self) {
+        (**self).pause()
+    }
+    fn resume(&mut self) -> Result<()> {
+        (**self).resume()
+    }
+    fn stop(&mut self) {
+        (**self).stop()
+    }
+    fn seek(&mut self, position_ms: u64) -> Result<()> {
+        (**self).seek(position_ms)
+    }
+    fn volume(&mut self, value: u8) {
+        (**self).volume(value)
+    }
+    fn position(&self) -> u64 {
+        (**self).position()
+    }
+    fn finished(&self) -> bool {
+        (**self).finished()
+    }
+    fn output_event(&mut self) -> Option<String> {
+        (**self).output_event()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamUpdate {
     pub status: crate::model::StreamStatus,

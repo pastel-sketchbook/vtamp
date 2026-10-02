@@ -91,7 +91,36 @@ impl Client {
         }
         Ok((serde_json::from_value(reply.into_data()?)?, stream))
     }
+    /// Subscribe to the audio cast. After the returned description the
+    /// connection carries raw Ogg Opus pages; never starts a server.
+    pub async fn cast(&self) -> Result<(CastInfo, UnixStream)> {
+        let mut stream = self.connect().await?;
+        wire::write(
+            &mut stream,
+            &Request {
+                version: PROTOCOL_VERSION,
+                request: Command::CastWatch,
+            },
+        )
+        .await?;
+        let reply: Reply =
+            tokio::time::timeout(Duration::from_secs(3), wire::read(&mut stream)).await??;
+        if reply.version != PROTOCOL_VERSION {
+            bail!("Incompatible server protocol");
+        }
+        Ok((serde_json::from_value(reply.into_data()?)?, stream))
+    }
+    pub async fn cast_info(&self) -> Result<CastInfo> {
+        Ok(serde_json::from_value(
+            self.request(Command::CastInfo).await?.into_data()?,
+        )?)
+    }
     pub async fn ensure(&self) -> Result<()> {
+        self.ensure_with(false).await
+    }
+    /// Start a server if none is reachable, headless when requested. An
+    /// already running server keeps its own mode.
+    pub async fn ensure_with(&self, headless: bool) -> Result<()> {
         // Never spawn over a reachable server, even if its protocol is incompatible.
         if UnixStream::connect(self.paths.socket()).await.is_ok() {
             self.request(Command::Status).await?.into_data()?;
@@ -117,6 +146,7 @@ impl Client {
         command
             .arg("server")
             .arg("run")
+            .args(headless.then_some("--headless"))
             .current_dir(&self.paths.data)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))

@@ -177,7 +177,7 @@ impl Runtime {
         &mut self,
         message: jobs::Message,
         store: &mut Store,
-        engine: &mut Engine<RodioBackend>,
+        engine: &mut Engine<Box<dyn PlaybackBackend>>,
         events: &broadcast::Sender<Event>,
     ) -> Result<()> {
         match message {
@@ -201,7 +201,7 @@ impl Runtime {
     pub fn poll(
         &mut self,
         store: &mut Store,
-        engine: &mut Engine<RodioBackend>,
+        engine: &mut Engine<Box<dyn PlaybackBackend>>,
         events: &broadcast::Sender<Event>,
     ) -> Result<()> {
         while let Ok(message) = self.rx.try_recv() {

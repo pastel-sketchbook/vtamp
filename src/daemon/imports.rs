@@ -298,7 +298,7 @@ impl Drop for Runtime {
 }
 pub(super) fn update_queue_metadata(
     track: &Track,
-    engine: &mut Engine<RodioBackend>,
+    engine: &mut Engine<Box<dyn PlaybackBackend>>,
     store: &Store,
     events: &broadcast::Sender<Event>,
 ) -> Result<()> {

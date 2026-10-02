@@ -173,7 +173,21 @@ vtamp server start  # Restore the session, paused.
 
 The server saves queue/configuration changes immediately and checkpoints a changing position every five seconds. Unchanged paused/stopped sessions do not keep writing checkpoints. A normal server stop saves the latest position. After an unexpected crash, up to five seconds of position may be lost. A server restart always restores the current track **paused**, so merely inspecting or attaching does not unexpectedly start sound. The server is not a login service and does not restart itself after logout or a crash.
 
-Read-only commands (`status`, `watch`, volume without a value, queue listing, library queries, and server status/stop) do not start a server. Playback and library mutation commands do. A disconnected TUI waits for the server to return; it does not replay commands whose outcome might be unknown.
+Read-only commands (`status`, `watch`, volume without a value, queue listing, library queries, `cast`, and server status/stop) do not start a server. Playback and library mutation commands do. A disconnected TUI waits for the server to return; it does not replay commands whose outcome might be unknown.
+
+## Headless server
+
+A server can run without an audio device:
+
+```sh
+vtamp server start --headless
+vtamp cast listen | mpv -                # listen on the same machine
+ssh music-box vtamp cast listen | mpv -  # listen from another machine over SSH
+```
+
+The queue, the library, the playback commands, and the TUI work as usual; the audio leaves as an Ogg Opus stream (48 kHz stereo, 128 kbit/s) that listeners pull with `vtamp cast listen`. Each track start, seek, or resume begins a new logical stream carrying the title and the queue entry, so a player can drop what it buffered. Pausing keeps the stream flowing with silence; stopping ends it. The server stores and reports the volume setting but does not scale the stream; set the level in the listening player. Live radio cannot play on a headless server, and the spectrum stays empty because nothing is analyzed locally.
+
+Start a headless server explicitly. Commands that start a server on demand start one with an audio device, and `server start --headless` fails while such a server is running. `vtamp cast status` and `vtamp doctor` report whether the running server casts. See [docs/protocol.md](docs/protocol.md) for the stream contract.
 
 ## macOS media keys and Now Playing
 
@@ -456,7 +470,8 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `now` | Current track, remaining time, and settings without the full queue |
 | `tmux status [--max-width N] [--show-artist]` | One tmux-safe now-playing line; empty when stopped or unavailable |
 | `watch` | Initial state, state changes, progress heartbeats, and library events |
-| `server start\|status\|stop` | Explicit server lifecycle |
+| `server start [--headless]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device |
+| `cast listen`, `cast status` | Write a headless server's Ogg Opus stream to standard output, or describe it |
 | `doctor` | Paths, connectivity, terminal environment, and default output device |
 | `theme list\|current\|set NAME` | List themes, read the saved default, or save it for future attachments |
 
@@ -642,9 +657,9 @@ cancelling, or restarting the server clears the reservation. Closing the CLI or
 TUI does not. `scheduled_stop` is null or an object with `kind: "after_current"`
 and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds).
 
-### Updating from protocol 1, 2, 3, or 4
+### Updating from protocol 1 to 6
 
-This build uses **protocol 6** and migrates the library to **database version 6**
+This build uses **protocol 7** and migrates the library to **database version 6**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,

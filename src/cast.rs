@@ -62,6 +62,15 @@ impl Hub {
         (inner.headers.clone(), inner.sender.subscribe())
     }
 
+    /// Header pages of the open logical stream, if any.
+    pub fn headers(&self) -> Option<Chunk> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .headers
+            .clone()
+    }
+
     pub fn listeners(&self) -> usize {
         self.inner
             .lock()

@@ -21,7 +21,7 @@ fn main() {
     let result = if matches!(
         &args.command,
         Some(Action::Server {
-            command: vtamp::cli::Server::Run
+            command: vtamp::cli::Server::Run { headless: false }
         })
     ) && cfg!(target_os = "macos")
     {

@@ -125,8 +125,13 @@ The documents above hold the full contracts; these are the most common regressio
 - Queue entry IDs are not library track IDs, and direct `--no-queue` IDs are
   neither. Never silently deduplicate a queue. Shuffle changes playback order, not
   visible order. Repeat-one applies only to natural endings.
-- Protocol and database versions are 6. A schema change needs a transactional,
-  ID-preserving migration, a version bump, and a `docs/protocol.md` update.
+- The protocol version is 7 and the database version is 6. A schema change needs
+  a transactional, ID-preserving migration, a version bump, and a `docs/protocol.md`
+  update.
+- A headless server casts full-scale audio; volume is a listener setting. Every
+  load, seek, and resume begins a new logical Ogg stream, a pause fills the open
+  stream with silence, and only a stop ends it. The cast thread never waits on
+  sockets; a listener that falls behind loses pages, the server loses nothing.
 - Decoding, format conversion, file I/O, allocation, locks, logging, FFT, and
   socket I/O stay out of the audio output callback and the spectrum tap. PCM
   decode-ahead stays bounded; underflow silence never advances position or ends a

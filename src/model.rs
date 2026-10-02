@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Untagged to retain the existing on-disk and wire representation of files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -262,6 +262,10 @@ pub enum Command {
     SleepCancel,
     Watch,
     SpectrumWatch,
+    /// Subscribe to a headless server's Ogg Opus cast on a dedicated connection.
+    CastWatch,
+    /// Describe the cast without subscribing.
+    CastInfo,
     Shutdown,
     Play {
         paths: Vec<PathBuf>,
@@ -332,6 +336,19 @@ pub enum Command {
 pub struct Request {
     pub version: u32,
     pub request: Command,
+}
+
+/// The audio cast of a server. `available` is false for a server that plays
+/// through a local audio device.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CastInfo {
+    pub available: bool,
+    pub codec: String,
+    pub container: String,
+    pub bitrate: u32,
+    pub sample_rate: u32,
+    pub channels: u8,
+    pub listeners: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -547,3 +547,139 @@ fn spectrum_is_a_separate_read_only_latest_frame_stream() {
     drop(watchers);
     assert!(server.ok(&["now"]).get("levels").is_none());
 }
+
+#[test]
+fn headless_server_casts_tagged_ogg_opus_and_device_servers_refuse() {
+    use std::{io::Read as _, sync::mpsc, time::Instant};
+    use vtamp::cast::{Demuxer, Event};
+    fn packets(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::Packet { .. }))
+            .count()
+    }
+    fn pump(stream: &mut UnixStream, demuxer: &mut Demuxer, events: &mut Vec<Event>) {
+        let mut buf = [0u8; 8192];
+        let n = stream
+            .read(&mut buf)
+            .expect("cast bytes before the read deadline");
+        assert!(n > 0, "cast connection closed");
+        demuxer.push(&buf[..n]);
+        while let Some(event) = demuxer.pop() {
+            events.push(event);
+        }
+    }
+
+    let server = Server::new();
+    assert_eq!(
+        server.ok(&["server", "start", "--headless"])["headless"],
+        true
+    );
+    let info = server.ok(&["cast", "status"]);
+    assert_eq!(info["available"], true);
+    assert_eq!(info["listeners"], 0);
+    assert_eq!(info["sample_rate"], 48000);
+    assert_eq!(info["channels"], 2);
+    assert_eq!(server.ok(&["doctor"])["cast"]["available"], true);
+
+    let mut listener = UnixStream::connect(server.socket()).unwrap();
+    listener
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    send(
+        &mut listener,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"cast_watch"}}),
+    );
+    let first = receive(&mut listener);
+    assert_eq!(first["ok"], true);
+    assert_eq!(first["data"]["available"], true);
+    assert_eq!(server.ok(&["cast", "status"])["listeners"], 1);
+
+    let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav");
+    let state = server.ok(&["play", wav]);
+    let item = state["current_id"].as_str().unwrap().to_owned();
+    let title = state["queue"][0]["track"]["title"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut demuxer = Demuxer::default();
+    let mut events = vec![];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while packets(&events) < 5 {
+        assert!(Instant::now() < deadline, "no cast audio: {events:?}");
+        pump(&mut listener, &mut demuxer, &mut events);
+    }
+    let tags = events
+        .iter()
+        .find_map(|event| match event {
+            Event::Start { tags, .. } => Some(tags.clone()),
+            _ => None,
+        })
+        .expect("a logical stream starts with the track");
+    let tag = |key: &str| tags.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    assert_eq!(tag("VTAMP_ITEM"), Some(item.as_str()));
+    assert_eq!(tag("TITLE"), Some(title.as_str()));
+    assert_eq!(tag("VTAMP_POSITION_MS"), Some("0"));
+
+    // Volume is stored for listeners; the cast keeps flowing at full scale, and
+    // silence follows the short track until something else happens.
+    assert_eq!(server.ok(&["volume", "0"])["volume"], 0);
+    let before = packets(&events);
+    pump(&mut listener, &mut demuxer, &mut events);
+    assert!(packets(&events) > before);
+
+    server.ok(&["stop"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !events.iter().any(|e| matches!(e, Event::End { .. })) {
+        assert!(Instant::now() < deadline, "stop did not end the stream");
+        pump(&mut listener, &mut demuxer, &mut events);
+    }
+    assert_eq!(demuxer.skipped(), 0);
+    drop(listener);
+
+    // The CLI pipes the raw pages to a player.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vtamp"))
+        .env("VTAMP_MEDIA_KEYS", "0")
+        .env("VTAMP_HOME", server.home.path())
+        .args(["cast", "listen"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut piped = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut magic = [0u8; 4];
+        let _ = tx.send(piped.read_exact(&mut magic).map(|()| magic));
+    });
+    server.ok(&["play", wav]);
+    let magic = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("cast listen produced output")
+        .unwrap();
+    assert_eq!(&magic, b"OggS");
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    // A server with an audio device refuses casts and a second, headless start.
+    let device = Server::new();
+    assert_eq!(device.ok(&["server", "start"])["headless"], false);
+    assert_eq!(device.ok(&["cast", "status"])["available"], false);
+    assert!(
+        !device
+            .cmd(&["server", "start", "--headless"])
+            .status
+            .success()
+    );
+    let mut stream = UnixStream::connect(device.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    send(
+        &mut stream,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"cast_watch"}}),
+    );
+    let refused = receive(&mut stream);
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"]["code"], "cast_unavailable");
+}

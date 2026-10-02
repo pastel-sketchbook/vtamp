@@ -1,4 +1,4 @@
-# Local protocol, version 6
+# Local protocol, version 7
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":6,"request":{"command":"pause"}}
+{"version":7,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":6,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":7,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -47,14 +47,14 @@ At most four direct imports and one catalog scan run at a time. There are bounde
 
 ## Watch
 
-Send `{"version":6,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":7,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":6,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
+{"version":7,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
 ```
 
 ```json
-{"version":6,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":7,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -63,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":6,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":7,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -220,9 +220,53 @@ request receipts are preserved; old binaries reject this schema. Radio restores
 paused with zero position and without network activity. Native stream playback
 requires macOS, including when `VTAMP_MEDIA_KEYS=0`.
 
+## Cast (version 7)
+
+A server started with `vtamp server start --headless` has no audio device.
+Playback, the queue, the library, and every command above work unchanged, but
+the audio leaves as an Ogg Opus stream (48 kHz stereo, 128 kbit/s, 20 ms
+packets, pages of five packets) that listeners pull from the server. The
+server's `volume` is stored and reported but does not scale the cast; listeners
+set their own level. Live radio entries cannot play on a headless server.
+
+Send `{"version":7,"request":{"command":"cast_watch"}}` on a separate connection.
+The first reply is a success envelope whose `data` is a `CastInfo`:
+
+```json
+{"version":7,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
+```
+
+After that reply the connection carries raw Ogg pages without length prefixes,
+exactly as a player expects; no JSON follows the handshake. A listener that
+joins while a stream is open receives that stream's two header pages first and
+then live pages whose sequence numbers continue from the server's position;
+decode from the next page. Socket writes have a five-second deadline. A listener
+that falls behind the server's bounded buffer loses pages and receives the
+current headers again before newer pages. EOF from the listener releases the
+subscription. On a server with an audio device the handshake fails with
+`cast_unavailable`. `cast_info` returns the same `CastInfo` on an ordinary
+connection without subscribing; a device server reports `available: false` and
+no listeners.
+
+Every track start, seek, and resume begins a new logical stream: a new serial
+number, an `OpusHead` page, an `OpusTags` page, then audio. A listener discards
+audio buffered from the previous serial at that point. Tags are Vorbis comments:
+`TITLE`, `ARTIST`, and `ALBUM` when known, `VTAMP_ITEM` (the queue entry or
+direct playback ID), `VTAMP_TRACK` (the library track ID), `VTAMP_DURATION_MS`
+when known, and `VTAMP_POSITION_MS`, the track position at the stream's first
+sample. Until silence is inserted, the position within the stream is
+`VTAMP_POSITION_MS + (granule - pre_skip) / 48` milliseconds. A pause keeps the
+stream open and fills it with silence; the resumed audio starts a new stream. A
+track's natural end also continues with silence until the next entry starts its
+own stream. `stop` and server shutdown end the open stream with an end-of-stream
+page; nothing is sent while stopped.
+
+`vtamp cast listen` writes the raw stream to standard output and refuses a
+terminal; `vtamp cast status` prints `CastInfo`. Neither starts a server.
+
 ## Compatibility and storage
 
-All envelopes advertise protocol 6. Clients must report `version_mismatch` when
+All envelopes advertise protocol 7. Protocol 7 adds `cast_watch` and `cast_info`; the database version stays 6. Clients must report `version_mismatch` when
 connected to older versions; restart with matching binaries and reattach clients.
 Database version 5 protects saved direct-playback items and queue cursors from
 older binaries; previous sessions load with both fields null. Direct playback also

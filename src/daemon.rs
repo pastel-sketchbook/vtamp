@@ -1,7 +1,8 @@
 mod covers;
 mod imports;
 use crate::{
-    audio::RodioBackend,
+    audio::{PlaybackBackend, RodioBackend, headless::HeadlessBackend},
+    cast::{self, Hub},
     engine::Engine,
     library::{self, Scan},
     model::*,
@@ -54,7 +55,7 @@ enum Work {
     },
 }
 
-pub async fn run(paths: Paths) -> Result<()> {
+pub async fn run(paths: Paths, headless: bool) -> Result<()> {
     paths.prepare()?;
     let lock = OpenOptions::new()
         .read(true)
@@ -89,19 +90,33 @@ pub async fn run(paths: Paths) -> Result<()> {
             .is_ok()
     });
     let spectrum = Spectrum::start()?;
+    let cast = headless.then(|| Arc::new(Hub::default()));
     let shutdown = Arc::new(Notify::new());
     let thread = {
         let events = events.clone();
         let shutdown = shutdown.clone();
         let tx = sender.clone();
         let spectrum = spectrum.clone();
+        let cast = cast.clone();
         std::thread::Builder::new()
             .name("vtamp-player".into())
             .spawn(move || {
+                let backend: Box<dyn PlaybackBackend> = match &cast {
+                    Some(hub) => match HeadlessBackend::new(hub.clone(), cast::DEFAULT_BITRATE) {
+                        Ok(backend) => Box::new(backend),
+                        Err(error) => {
+                            tracing::error!("Cannot start the headless backend: {error:#}");
+                            let _ = events.send(Event::Shutdown);
+                            shutdown.notify_one();
+                            return;
+                        }
+                    },
+                    None => Box::new(RodioBackend::with_spectrum(spectrum.clone())),
+                };
                 let result = worker(
                     paths,
                     store,
-                    Engine::new(state, RodioBackend::with_spectrum(spectrum.clone())),
+                    Engine::new(state, backend),
                     receiver,
                     tx,
                     Observers {
@@ -120,7 +135,7 @@ pub async fn run(paths: Paths) -> Result<()> {
     let permits = Arc::new(Semaphore::new(64));
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    tracing::info!("vtamp server ready");
+    tracing::info!(headless, "vtamp server ready");
     loop {
         tokio::select! {
             _ = shutdown.notified() => break,
@@ -129,10 +144,10 @@ pub async fn run(paths: Paths) -> Result<()> {
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
-                    let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone();
+                    let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone(); let cast = cast.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        if let Err(error) = connection(stream, sender, events, spectrum).await { tracing::debug!("Client disconnected: {error:#}"); }
+                        if let Err(error) = connection(stream, sender, events, spectrum, cast).await { tracing::debug!("Client disconnected: {error:#}"); }
                     });
                 }
             }
@@ -171,6 +186,7 @@ async fn connection(
     sender: mpsc::SyncSender<Work>,
     events: broadcast::Sender<Event>,
     spectrum: Arc<Spectrum>,
+    cast: Option<Arc<Hub>>,
 ) -> Result<()> {
     let request: Request =
         match tokio::time::timeout(Duration::from_secs(5), wire::read(&mut stream)).await {
@@ -200,6 +216,25 @@ async fn connection(
     }
     if matches!(request.request, Command::SpectrumWatch) {
         return spectrum_connection(stream, spectrum).await;
+    }
+    if matches!(request.request, Command::CastInfo) {
+        let reply = Reply::success(cast_info(cast.as_deref()));
+        tokio::time::timeout(Duration::from_secs(5), wire::write(&mut stream, &reply)).await??;
+        return Ok(());
+    }
+    if matches!(request.request, Command::CastWatch) {
+        return match cast {
+            Some(hub) => cast_connection(stream, hub).await,
+            None => {
+                let reply = Reply::failure(ApiError::new(
+                    "cast_unavailable",
+                    "This server plays through its audio device; start it with --headless to cast",
+                ));
+                tokio::time::timeout(Duration::from_secs(5), wire::write(&mut stream, &reply))
+                    .await??;
+                Ok(())
+            }
+        };
     }
     let watch = matches!(request.request, Command::Watch);
     let mut subscription = events.subscribe();
@@ -286,10 +321,55 @@ async fn spectrum_connection(mut stream: UnixStream, spectrum: Arc<Spectrum>) ->
     Ok(())
 }
 
+fn cast_info(hub: Option<&Hub>) -> CastInfo {
+    CastInfo {
+        available: hub.is_some(),
+        codec: "opus".into(),
+        container: "ogg".into(),
+        bitrate: hub.map_or(0, |_| cast::DEFAULT_BITRATE),
+        sample_rate: cast::codec::SAMPLE_RATE,
+        channels: cast::codec::CHANNELS as u8,
+        listeners: hub.map_or(0, Hub::listeners),
+    }
+}
+
+/// After the JSON handshake the connection carries raw Ogg pages. A listener
+/// that joins mid-stream receives the open stream's headers first.
+async fn cast_connection(mut stream: UnixStream, hub: Arc<Hub>) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (headers, mut listener) = hub.subscribe();
+    let reply = Reply::success(cast_info(Some(&hub)));
+    tokio::time::timeout(Duration::from_secs(2), wire::write(&mut stream, &reply)).await??;
+    if let Some(headers) = headers {
+        tokio::time::timeout(Duration::from_secs(5), stream.write_all(&headers)).await??;
+    }
+    loop {
+        let mut byte = [0u8; 1];
+        tokio::select! {
+            // Read-only after subscribing: EOF or any byte releases the listener.
+            _ = stream.read(&mut byte) => break,
+            chunk = listener.recv() => match chunk {
+                Ok(chunk) => {
+                    tokio::time::timeout(Duration::from_secs(5), stream.write_all(&chunk)).await??;
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    // The missed pages may include a new stream's headers.
+                    tracing::debug!(skipped, "Cast listener fell behind");
+                    if let Some(headers) = hub.headers() {
+                        tokio::time::timeout(Duration::from_secs(5), stream.write_all(&headers)).await??;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+    Ok(())
+}
+
 fn worker(
     paths: Paths,
     mut store: Store,
-    mut engine: Engine<RodioBackend>,
+    mut engine: Engine<Box<dyn PlaybackBackend>>,
     rx: mpsc::Receiver<Work>,
     tx: mpsc::SyncSender<Work>,
     observers: Observers,
@@ -867,7 +947,7 @@ fn worker(
 fn finish_command(
     result: Result<()>,
     answer: Answer,
-    engine: &mut Engine<RodioBackend>,
+    engine: &mut Engine<Box<dyn PlaybackBackend>>,
     store: &Store,
     events: &broadcast::Sender<Event>,
 ) -> Result<()> {
