@@ -75,4 +75,7 @@ Codex must support `exec` with `--output-schema`, `--ephemeral`, and
 This replaces its default coding instructions for that request. API requests
 likewise separate system instructions from user data; Codex receives both in its
 `exec` input. Missing tools, unsupported options, or authentication failures
-produce errors. The selected tool may use its normal subscription or API billing.
+produce errors. The `--help` and `--version` checks that precede a request may
+take up to 15 seconds, which covers a cold start of these Node programs; the
+request itself has a 60-second deadline. The selected tool may use its normal
+subscription or API billing.

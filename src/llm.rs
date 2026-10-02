@@ -9,6 +9,11 @@ pub use config::{Config, Provider, setup};
 use serde_json::{Value, json};
 use std::{process::Command, time::Duration};
 
+/// Budget for the `--help` and `--version` probes of the codex and claude CLIs. Both are
+/// Node programs whose first launch on a busy or slow machine can take several seconds;
+/// a probe that times out makes the whole request fall back to the built-in rules.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub(crate) fn request(
     config: &Config,
     paths: &Paths,
@@ -101,7 +106,7 @@ pub(crate) fn request(
                 }),
                 None,
                 stop,
-                Duration::from_secs(5),
+                PROBE_TIMEOUT,
                 |_| {},
             )?;
             let help = String::from_utf8_lossy(&help);
@@ -243,7 +248,7 @@ pub fn status(config: &Config, paths: &Paths) -> Result<Value> {
                 Command::new(&path).arg("--version"),
                 None,
                 &subprocess::cancel(),
-                Duration::from_secs(5),
+                PROBE_TIMEOUT,
                 |_| {},
             )?;
             let version = String::from_utf8_lossy(&bytes)

@@ -337,6 +337,16 @@ mod tests {
             include_str!("prompts/music_metadata.txt"),
         )
         .unwrap();
+        // The fake CLI is a Python script. On a fresh macOS runner the first launch of
+        // /usr/bin/python3 goes through the Command Line Tools shim and can take seconds, so
+        // pay that cost before the probe whose timeout the test exercises.
+        assert!(
+            std::process::Command::new("/usr/bin/python3")
+                .args(["-c", "import json"])
+                .status()
+                .unwrap()
+                .success()
+        );
         for provider in [Provider::Codex, Provider::Claude] {
             let exe = dir.path().join("fake-cli");
             let is_codex = provider == Provider::Codex;
