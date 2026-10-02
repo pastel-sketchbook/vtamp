@@ -1092,7 +1092,22 @@ impl App {
         self.notice(if queued < total {
             format!("Queued {queued} of {total} tracks: queue limit {QUEUE_LIMIT}.")
         } else {
-            format!("Queued {queued} tracks. s shuffles, Space plays.")
+            let mut hints = Vec::new();
+            if !self.state.shuffle {
+                hints.push("s shuffles");
+            }
+            match self.state.status {
+                PlaybackStatus::Stopped => hints.push("Space plays"),
+                PlaybackStatus::Paused => hints.push("Space resumes"),
+                PlaybackStatus::Playing => (),
+            }
+            // Only name the steps that are still ahead: a hint for a setting
+            // that is already on reads as a mistake.
+            if hints.is_empty() {
+                format!("Queued {queued} tracks.")
+            } else {
+                format!("Queued {queued} tracks. {}.", hints.join(", "))
+            }
         });
     }
     /// The queue filter is local: the whole queue already lives in the client.
@@ -3540,6 +3555,46 @@ mod tests {
         // The visible page and its offset never moved.
         assert_eq!(app.tracks.len(), PAGE_SIZE);
         assert_eq!(app.offset, 0);
+    }
+
+    #[test]
+    fn queue_all_hints_only_the_steps_that_are_left() {
+        let walk = |shuffle: bool, status: PlaybackStatus| {
+            let mut app = navigation_app(2);
+            app.state.shuffle = shuffle;
+            app.state.status = status;
+            let (commands, mut requests) = mpsc::channel(8);
+            let (messages, _) = mpsc::unbounded_channel();
+            app.key(
+                KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+                &commands,
+            )
+            .unwrap();
+            let command = requests.try_recv().unwrap();
+            let tracks: Vec<Track> = app.tracks.clone();
+            app.message(
+                Message::Reply(
+                    command,
+                    Ok(serde_json::json!({"tracks": tracks, "total": 2, "offset": 0})),
+                ),
+                &messages,
+                &commands,
+            );
+            app.notice
+        };
+        assert_eq!(
+            walk(false, PlaybackStatus::Stopped),
+            "Queued 2 tracks. s shuffles, Space plays."
+        );
+        assert_eq!(
+            walk(true, PlaybackStatus::Stopped),
+            "Queued 2 tracks. Space plays."
+        );
+        assert_eq!(
+            walk(false, PlaybackStatus::Paused),
+            "Queued 2 tracks. s shuffles, Space resumes."
+        );
+        assert_eq!(walk(true, PlaybackStatus::Playing), "Queued 2 tracks.");
     }
 
     #[test]
