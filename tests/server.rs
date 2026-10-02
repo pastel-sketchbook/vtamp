@@ -683,3 +683,105 @@ fn headless_server_casts_tagged_ogg_opus_and_device_servers_refuse() {
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error"]["code"], "cast_unavailable");
 }
+
+#[test]
+fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
+    let remote = Server::new();
+    assert_eq!(
+        remote.ok(&["server", "start", "--headless"])["headless"],
+        true
+    );
+    assert_eq!(remote.ok(&["volume", "0"])["volume"], 0);
+    let remote_socket = remote.socket();
+    let remote_socket = remote_socket.to_str().unwrap();
+
+    let relay = Server::new();
+    let started = relay.ok(&["server", "start", "--remote", remote_socket]);
+    assert_eq!(started["mode"], "relay");
+    assert_eq!(started["remote"], remote_socket);
+    assert_eq!(started["headless"], false);
+    let info = relay.ok(&["doctor"]);
+    assert_eq!(info["server"]["mode"], "relay");
+    assert_eq!(info["server"]["remote"], remote_socket);
+    assert_eq!(remote.ok(&["doctor"])["server"]["mode"], "headless");
+    // Starting the relay again with another remote is refused; without flags it
+    // simply reports the running relay.
+    assert!(
+        !relay
+            .cmd(&["server", "start", "--remote", "/nonexistent.sock"])
+            .status
+            .success()
+    );
+    assert_eq!(relay.ok(&["server", "start"])["mode"], "relay");
+
+    // Commands and state pass through to the remote server.
+    let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav");
+    let state = relay.ok(&["play", wav]);
+    assert_eq!(state["status"], "playing");
+    assert_eq!(state["volume"], 0);
+    let through_relay = relay.ok(&["queue", "list"]);
+    let direct = remote.ok(&["queue", "list"]);
+    assert_eq!(through_relay["queue"], direct["queue"]);
+    assert_eq!(relay.ok(&["cast", "status"])["available"], true);
+    let now = relay.ok(&["now"]);
+    assert_eq!(
+        now["current"]["track"]["title"],
+        remote.ok(&["status"])["queue"][0]["track"]["title"]
+    );
+
+    // The spectrum is local to the relay, and watch frames pass through.
+    let mut spectrum = UnixStream::connect(relay.socket()).unwrap();
+    spectrum
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    send(
+        &mut spectrum,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"spectrum_watch"}}),
+    );
+    let frame = receive(&mut spectrum);
+    assert_eq!(frame["ok"], true);
+    assert_eq!(frame["data"]["levels"].as_array().unwrap().len(), 32);
+    drop(spectrum);
+    let mut watch = UnixStream::connect(relay.socket()).unwrap();
+    watch
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    send(
+        &mut watch,
+        json!({"version":vtamp::model::PROTOCOL_VERSION,"request":{"command":"watch"}}),
+    );
+    let snapshot = receive(&mut watch);
+    assert_eq!(snapshot["ok"], true);
+    assert_eq!(snapshot["data"]["volume"], 0);
+    relay.ok(&["pause"]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no state event through the relay"
+        );
+        let event = receive(&mut watch);
+        if event["data"]["event"] == "state" && event["data"]["data"]["status"] == "paused" {
+            break;
+        }
+    }
+    drop(watch);
+    assert_eq!(remote.ok(&["status"])["status"], "paused");
+
+    // Stopping the relay leaves the remote server running.
+    relay.ok(&["server", "stop"]);
+    relay.wait_stopped();
+    assert_eq!(remote.ok(&["status"])["status"], "paused");
+
+    // A relay whose remote is gone answers with an error instead of hanging.
+    let orphan = Server::new();
+    let missing = orphan.home.path().join("missing.sock");
+    assert_eq!(
+        orphan.ok(&["server", "start", "--remote", missing.to_str().unwrap()])["mode"],
+        "relay"
+    );
+    let failed = orphan.cmd(&["status"]);
+    assert!(!failed.status.success());
+    let error: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "remote_unavailable");
+}

@@ -1,5 +1,5 @@
 use crate::{
-    client::Client,
+    client::{Client, Launch},
     model::*,
     platform::{self, Paths},
     settings::Settings,
@@ -452,6 +452,9 @@ pub enum Server {
         /// Run without an audio device and cast Ogg Opus to listeners.
         #[arg(long)]
         headless: bool,
+        /// Relay the server reachable at this socket path: forward commands to it and play its cast here.
+        #[arg(long, value_name = "SOCKET", conflicts_with = "headless")]
+        remote: Option<PathBuf>,
     },
     Status,
     Stop,
@@ -459,6 +462,8 @@ pub enum Server {
     Run {
         #[arg(long)]
         headless: bool,
+        #[arg(long, value_name = "SOCKET", conflicts_with = "headless")]
+        remote: Option<PathBuf>,
     },
 }
 
@@ -652,7 +657,7 @@ pub async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Action::Server {
-            command: Server::Run { headless },
+            command: Server::Run { headless, remote },
         } => {
             tracing_subscriber::fmt()
                 .with_ansi(false)
@@ -661,22 +666,44 @@ pub async fn run(args: Args) -> Result<()> {
                         .unwrap_or_else(|_| "vtamp=info,rodio=warn".into()),
                 )
                 .init();
-            return crate::daemon::run(paths, headless).await;
+            return match remote {
+                Some(remote) => crate::relay::run(paths, remote).await,
+                None => crate::daemon::run(paths, headless).await,
+            };
         }
         Action::Server {
-            command: Server::Start { headless },
+            command: Server::Start { headless, remote },
         } => {
-            client.ensure_with(headless).await?;
-            let cast = client.cast_info().await?;
-            if headless && !cast.available {
+            let launch = match remote {
+                Some(remote) => Launch::Relay(std::path::absolute(remote)?),
+                None if headless => Launch::Headless,
+                None => Launch::Device,
+            };
+            client.ensure_with(&launch).await?;
+            let info = client.server_info().await?;
+            let explicit = launch != Launch::Device;
+            let matches = info.mode == launch.mode()
+                && match &launch {
+                    Launch::Relay(remote) => info.remote.as_deref() == Some(remote),
+                    _ => true,
+                };
+            if explicit && !matches {
                 bail!(
-                    "A server playing through the audio device is already running; run vtamp server stop first"
+                    "A server is already running in {} mode{}; run vtamp server stop first",
+                    serde_json::to_value(info.mode)?
+                        .as_str()
+                        .unwrap_or("another"),
+                    info.remote
+                        .as_ref()
+                        .map(|remote| format!(" for {}", remote.display()))
+                        .unwrap_or_default()
                 );
             }
             return output(
-                Reply::success(
-                    json!({"running": true, "socket": paths.socket(), "headless": cast.available}),
-                ),
+                Reply::success(json!({
+                    "running": true, "socket": paths.socket(), "mode": info.mode,
+                    "remote": info.remote, "headless": info.mode == ServerMode::Headless,
+                })),
                 args.json,
             );
         }
@@ -733,6 +760,7 @@ pub async fn run(args: Args) -> Result<()> {
                 None
             };
             let cast = client.cast_info().await.ok();
+            let server = client.server_info().await.ok();
             let mut doctor_data = json!({"data_directory": paths.data, "socket": paths.socket(), "log": paths.log(),
                 "server_reachable": status.as_ref().is_ok_and(|r| r.ok), "server_error": status.err().map(|e| e.to_string()),
                 "default_output_device": device, "term": std::env::var("TERM").ok(), "tmux": std::env::var_os("TMUX").is_some(),
@@ -742,6 +770,9 @@ pub async fn run(args: Args) -> Result<()> {
             }
             if let Some(cast) = cast {
                 doctor_data["cast"] = serde_json::to_value(cast)?;
+            }
+            if let Some(server) = server {
+                doctor_data["server"] = serde_json::to_value(server)?;
             }
             return output(Reply::success(doctor_data), args.json);
         }

@@ -38,6 +38,19 @@ struct Shared {
     missing: AtomicU64,
 }
 
+/// Reads the consumed position of a running decoder from any thread.
+#[derive(Clone)]
+pub struct Progress {
+    shared: Arc<Shared>,
+    samples_per_second: u64,
+}
+
+impl Progress {
+    pub fn position_ms(&self) -> u64 {
+        self.shared.consumed.load(Ordering::Relaxed) * 1000 / self.samples_per_second
+    }
+}
+
 /// Owned by the control thread, so decoder disposal and joining never run in
 /// the audio callback (including when rodio discards an exhausted source).
 pub(super) struct DecoderWorker {
@@ -156,7 +169,14 @@ impl DecoderWorker {
     }
 
     pub(super) fn position_ms(&self) -> u64 {
-        self.shared.consumed.load(Ordering::Relaxed) * 1000 / self.samples_per_second
+        self.progress().position_ms()
+    }
+
+    pub(super) fn progress(&self) -> Progress {
+        Progress {
+            shared: self.shared.clone(),
+            samples_per_second: self.samples_per_second,
+        }
     }
 
     pub(super) fn consumer_alive(&self) -> bool {

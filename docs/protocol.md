@@ -264,6 +264,31 @@ page; nothing is sent while stopped.
 `vtamp cast listen` writes the raw stream to standard output and refuses a
 terminal; `vtamp cast status` prints `CastInfo`. Neither starts a server.
 
+`server_info` describes any server: `{"mode":"device"|"headless"|"relay","remote":<socket path, relays only>,"version":"0.1.0"}`.
+
+### Relay
+
+`vtamp server start --remote SOCKET` starts a local server in relay mode. It owns
+the local lock and control socket like any server, but holds no state and opens
+no database. Each client request is forwarded to the remote socket on a fresh
+connection and the reply bytes are copied back, including long-lived `watch`
+streams and the raw `cast_watch` stream. Exceptions: `shutdown` stops the relay
+itself and never the remote server; `spectrum_watch` is served locally from the
+audio the relay plays; `server_info` reports `mode: "relay"` and the remote
+path. When the remote is unreachable a request fails with `remote_unavailable`.
+
+The relay subscribes to the remote cast, plays each logical stream through the
+local output device, and applies the remote `volume` to that output. The
+`position_ms` of `status`, `now`, and watch `state` events, and the position of
+`progress` events, are replaced by the locally audible position while the same
+entry is playing: `VTAMP_POSITION_MS` of the current stream plus the samples
+played, never more than the remote value. Paused and stopped positions, titles,
+and queue contents are passed through unchanged, so a track change is visible
+before it is audible by the buffered amount, about a second. Media controls on
+the relay machine send their commands to the remote server. A lost local output
+device, or audio that cannot be played, makes the relay rejoin the live cast
+instead of rewinding it.
+
 ## Compatibility and storage
 
 All envelopes advertise protocol 7. Protocol 7 adds `cast_watch` and `cast_info`; the database version stays 6. Clients must report `version_mismatch` when

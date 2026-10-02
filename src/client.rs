@@ -13,6 +13,25 @@ pub struct Client {
     pub paths: Paths,
 }
 
+/// How a server should be started when none is running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Launch {
+    Device,
+    Headless,
+    /// Relay the server reachable at this socket path.
+    Relay(std::path::PathBuf),
+}
+
+impl Launch {
+    pub fn mode(&self) -> ServerMode {
+        match self {
+            Self::Device => ServerMode::Device,
+            Self::Headless => ServerMode::Headless,
+            Self::Relay(_) => ServerMode::Relay,
+        }
+    }
+}
+
 impl Client {
     pub fn new(paths: Paths) -> Self {
         Self { paths }
@@ -115,15 +134,26 @@ impl Client {
             self.request(Command::CastInfo).await?.into_data()?,
         )?)
     }
-    pub async fn ensure(&self) -> Result<()> {
-        self.ensure_with(false).await
+    pub async fn server_info(&self) -> Result<ServerInfo> {
+        Ok(serde_json::from_value(
+            self.request(Command::ServerInfo).await?.into_data()?,
+        )?)
     }
-    /// Start a server if none is reachable, headless when requested. An
-    /// already running server keeps its own mode.
-    pub async fn ensure_with(&self, headless: bool) -> Result<()> {
+    pub async fn ensure(&self) -> Result<()> {
+        self.ensure_with(&Launch::Device).await
+    }
+    /// Start a server if none is reachable, in the requested mode. An already
+    /// running server keeps its own mode.
+    pub async fn ensure_with(&self, launch: &Launch) -> Result<()> {
+        // A relay answers server_info itself even while its remote is down;
+        // other servers prove their player thread with a status round trip.
+        let probe = || match launch {
+            Launch::Relay(_) => Command::ServerInfo,
+            _ => Command::Status,
+        };
         // Never spawn over a reachable server, even if its protocol is incompatible.
         if UnixStream::connect(self.paths.socket()).await.is_ok() {
-            self.request(Command::Status).await?.into_data()?;
+            self.request(probe()).await?.into_data()?;
             return Ok(());
         }
         self.paths.prepare()?;
@@ -143,10 +173,17 @@ impl Client {
             .append(true)
             .open(self.paths.log())?;
         let mut command = Process::new(std::env::current_exe()?);
+        command.arg("server").arg("run");
+        match launch {
+            Launch::Device => {}
+            Launch::Headless => {
+                command.arg("--headless");
+            }
+            Launch::Relay(remote) => {
+                command.arg("--remote").arg(remote);
+            }
+        }
         command
-            .arg("server")
-            .arg("run")
-            .args(headless.then_some("--headless"))
             .current_dir(&self.paths.data)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
@@ -164,7 +201,7 @@ impl Client {
         let mut child = command.spawn().context("Cannot start background server")?;
         for _ in 0..100 {
             if UnixStream::connect(self.paths.socket()).await.is_ok() {
-                self.request(Command::Status).await?.into_data()?;
+                self.request(probe()).await?.into_data()?;
                 // Reap when a concurrent starter won, or when the daemon eventually stops.
                 std::thread::spawn(move || {
                     let _ = child.wait();

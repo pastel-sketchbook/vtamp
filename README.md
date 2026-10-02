@@ -189,6 +189,20 @@ The queue, the library, the playback commands, and the TUI work as usual; the au
 
 Start a headless server explicitly. Commands that start a server on demand start one with an audio device, and `server start --headless` fails while such a server is running. `vtamp cast status` and `vtamp doctor` report whether the running server casts. See [docs/protocol.md](docs/protocol.md) for the stream contract.
 
+### Listen with vtamp itself
+
+A local server can relay a remote one: it forwards every command to the remote server and plays the remote cast through the local audio device. The TUI and the CLI attach to the local socket as usual, and the music keeps playing after they exit. SSH carries the remote socket; `vtamp doctor --json` on the remote machine prints its socket path.
+
+```sh
+# REMOTE_SOCKET is the "socket" that vtamp doctor --json prints on music-box.
+ssh -N -o StreamLocalBindUnlink=yes -L /tmp/music-box.sock:"$REMOTE_SOCKET" music-box &
+vtamp server start --remote /tmp/music-box.sock
+vtamp               # The remote queue, local sound; q keeps it playing.
+vtamp server stop   # Stops the relay only; the remote server keeps its state.
+```
+
+The relay shows the remote queue and settings, and it analyzes the spectrum from the audio it plays. Progress and `status` report the position that is audible locally, which trails the remote by the buffered audio (about a second); titles and queue changes appear as soon as the remote reports them. The remote volume setting is applied locally, so the volume keys work as usual. Media keys on the relay machine control the remote server. If the local output device disappears, the relay rejoins the live cast as soon as a device is available. Latency can grow after a network stall and resets at the next track start or seek.
+
 ## macOS media keys and Now Playing
 
 Start a track in vtamp, then use the keyboard's **play/pause**, **previous**, and
@@ -470,7 +484,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `now` | Current track, remaining time, and settings without the full queue |
 | `tmux status [--max-width N] [--show-artist]` | One tmux-safe now-playing line; empty when stopped or unavailable |
 | `watch` | Initial state, state changes, progress heartbeats, and library events |
-| `server start [--headless]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device |
+| `server start [--headless\|--remote SOCKET]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device, `--remote` relays another server and plays its cast here |
 | `cast listen`, `cast status` | Write a headless server's Ogg Opus stream to standard output, or describe it |
 | `doctor` | Paths, connectivity, terminal environment, and default output device |
 | `theme list\|current\|set NAME` | List themes, read the saved default, or save it for future attachments |

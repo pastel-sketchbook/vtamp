@@ -24,6 +24,7 @@ mod output;
 #[cfg(target_os = "macos")]
 pub mod radio;
 use buffered::DecoderWorker;
+pub use buffered::Progress;
 
 /// Open a streaming decoder without opening an audio output device.
 /// AAC uses the system decoder on macOS; other codecs use rodio/Symphonia.
@@ -191,6 +192,54 @@ impl RodioBackend {
         backend.spectrum = Some(spectrum);
         backend
     }
+
+    /// Play a prepared source from its first sample, replacing the current voice.
+    /// Used for audio that has no file, such as a remote cast.
+    pub fn play(&mut self, source: Box<dyn Source + Send>, volume: u8) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            self.radio = None;
+        }
+        self.start(source, volume, None)?;
+        self.path = None;
+        self.volume = volume;
+        self.paused = false;
+        self.position_offset_ms = 0;
+        Ok(())
+    }
+
+    /// Consumed position of the current voice, readable from other threads.
+    pub fn progress(&self) -> Option<Progress> {
+        self.decoder.as_ref().map(DecoderWorker::progress)
+    }
+
+    fn start(
+        &mut self,
+        source: Box<dyn Source + Send>,
+        volume: u8,
+        context: Option<(&Path, u64)>,
+    ) -> Result<()> {
+        self.ensure_output().context(OutputUnavailable)?;
+        let output = self.device.as_ref().unwrap();
+        tracing::info!(stream_id = output.id, path = ?context.map(|(path, _)| path.display().to_string()),
+            position_ms = context.map(|(_, position)| position),
+            input_rate = source.sample_rate().get(), input_channels = source.channels().get(),
+            output_rate = output.rate.get(), output_channels = output.channels.get(),
+            "Audio source prepared");
+        let (mut decoder, prepared) = DecoderWorker::start(source, output.channels, output.rate)?;
+        if let Some((path, position_ms)) = context {
+            decoder.set_context(path, position_ms);
+        }
+        self.clear_player();
+        let mut source: Box<dyn Source + Send> = Box::new(prepared);
+        if let Some(spectrum) = &self.spectrum {
+            source = Box::new(spectrum.tap(source));
+            spectrum.playing(true);
+        }
+        self.player = Some(self.device.as_ref().unwrap().play(source, volume));
+        self.decoder = Some(decoder);
+        Ok(())
+    }
     fn clear_player(&mut self) {
         self.report_output(true);
         if let Some(spectrum) = &self.spectrum {
@@ -305,25 +354,7 @@ impl PlaybackBackend for RodioBackend {
             // decoder thread running for a paused selection or restored session.
             self.stop();
         } else {
-            self.ensure_output().context(OutputUnavailable)?;
-            let output = self.device.as_ref().unwrap();
-            tracing::info!(stream_id = output.id, path = %path.display(), position_ms,
-                input_rate = source.sample_rate().get(), input_channels = source.channels().get(),
-                output_rate = output.rate.get(), output_channels = output.channels.get(),
-                "Audio source prepared");
-            let (mut decoder, prepared) =
-                DecoderWorker::start(source, output.channels, output.rate)?;
-            decoder.set_context(path, position_ms);
-            self.clear_player();
-            let mut source: Box<dyn Source + Send> = Box::new(prepared);
-            if let Some(spectrum) = &self.spectrum {
-                source = Box::new(spectrum.tap(source));
-            }
-            if let Some(spectrum) = &self.spectrum {
-                spectrum.playing(true);
-            }
-            self.player = Some(self.device.as_ref().unwrap().play(source, volume));
-            self.decoder = Some(decoder);
+            self.start(source, volume, Some((path, position_ms)))?;
         }
         self.path = Some(path.to_owned());
         self.volume = volume;

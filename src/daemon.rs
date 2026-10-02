@@ -55,22 +55,51 @@ enum Work {
     },
 }
 
+/// The per-user lock and control socket that every server mode owns.
+pub(crate) struct Bind {
+    _lock: fs::File,
+    socket: std::path::PathBuf,
+    pub(crate) listener: UnixListener,
+}
+
+impl Bind {
+    /// `None` when another server already holds this home's lock.
+    pub(crate) fn open(paths: &Paths) -> Result<Option<Self>> {
+        paths.prepare()?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(paths.runtime.join("server.lock"))?;
+        if lock.try_lock_exclusive().is_err() {
+            return Ok(None);
+        }
+        let socket = paths.socket();
+        if socket.exists() {
+            fs::remove_file(&socket)?;
+        }
+        let listener = UnixListener::bind(&socket).context("Cannot bind the control socket")?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        Ok(Some(Self {
+            _lock: lock,
+            socket,
+            listener,
+        }))
+    }
+}
+
+impl Drop for Bind {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.socket);
+    }
+}
+
 pub async fn run(paths: Paths, headless: bool) -> Result<()> {
-    paths.prepare()?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(paths.runtime.join("server.lock"))?;
-    if lock.try_lock_exclusive().is_err() {
+    let Some(bind) = Bind::open(&paths)? else {
         return Ok(());
-    }
-    let socket = paths.socket();
-    if socket.exists() {
-        fs::remove_file(&socket)?;
-    }
+    };
     let mut store = Store::open(&paths.database())?;
     store.interrupt_scans(unix_ms())?;
     store.interrupt_imports()?;
@@ -78,8 +107,6 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
         store.add_root(&paths.data.join("imports/youtube"))?;
     }
     let state = store.restore()?;
-    let listener = UnixListener::bind(&socket).context("Cannot bind the control socket")?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
     let (sender, receiver) = mpsc::sync_channel(64);
     let (events, _) = broadcast::channel(64);
     let media_commands = sender.clone();
@@ -141,7 +168,7 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
             _ = shutdown.notified() => break,
             _ = terminate.recv() => { let _ = dispatch(&sender, Command::Shutdown).await; },
             _ = interrupt.recv() => { let _ = dispatch(&sender, Command::Shutdown).await; },
-            accepted = listener.accept() => {
+            accepted = bind.listener.accept() => {
                 let (stream, _) = accepted?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
                     let sender = sender.clone(); let events = events.clone(); let spectrum = spectrum.clone(); let cast = cast.clone();
@@ -158,9 +185,7 @@ pub async fn run(paths: Paths, headless: bool) -> Result<()> {
     thread
         .join()
         .map_err(|_| anyhow::anyhow!("Player thread panicked"))?;
-    drop(listener);
-    let _ = fs::remove_file(&socket);
-    drop(lock);
+    drop(bind);
     Ok(())
 }
 
@@ -216,6 +241,19 @@ async fn connection(
     }
     if matches!(request.request, Command::SpectrumWatch) {
         return spectrum_connection(stream, spectrum).await;
+    }
+    if matches!(request.request, Command::ServerInfo) {
+        let reply = Reply::success(ServerInfo {
+            mode: if cast.is_some() {
+                ServerMode::Headless
+            } else {
+                ServerMode::Device
+            },
+            remote: None,
+            version: env!("CARGO_PKG_VERSION").into(),
+        });
+        tokio::time::timeout(Duration::from_secs(5), wire::write(&mut stream, &reply)).await??;
+        return Ok(());
     }
     if matches!(request.request, Command::CastInfo) {
         let reply = Reply::success(cast_info(cast.as_deref()));
@@ -297,7 +335,10 @@ async fn connection(
     Ok(())
 }
 
-async fn spectrum_connection(mut stream: UnixStream, spectrum: Arc<Spectrum>) -> Result<()> {
+pub(crate) async fn spectrum_connection(
+    mut stream: UnixStream,
+    spectrum: Arc<Spectrum>,
+) -> Result<()> {
     use tokio::io::AsyncReadExt;
     let mut subscription = spectrum.subscribe();
     let first = subscription.frames.borrow_and_update().clone();

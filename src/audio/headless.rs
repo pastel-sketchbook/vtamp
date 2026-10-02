@@ -348,7 +348,7 @@ mod tests {
         DecoderWorker::start(Box::new(source), CHANNELS, RATE).unwrap()
     }
 
-    fn drain(receiver: &mut crate::cast::Listener, demuxer: &mut Demuxer) -> Vec<Event> {
+    fn drain(receiver: &mut crate::cast::Chunks, demuxer: &mut Demuxer) -> Vec<Event> {
         while let Ok(chunk) = receiver.try_recv() {
             demuxer.push(&chunk);
         }

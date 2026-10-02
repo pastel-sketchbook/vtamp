@@ -266,6 +266,8 @@ pub enum Command {
     CastWatch,
     /// Describe the cast without subscribing.
     CastInfo,
+    /// Describe the server: its mode and, for a relay, the remote socket.
+    ServerInfo,
     Shutdown,
     Play {
         paths: Vec<PathBuf>,
@@ -336,6 +338,25 @@ pub enum Command {
 pub struct Request {
     pub version: u32,
     pub request: Command,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerMode {
+    /// Plays through the local audio device.
+    Device,
+    /// Casts Ogg Opus to listeners instead of playing.
+    Headless,
+    /// Forwards commands to a remote server and plays its cast locally.
+    Relay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub mode: ServerMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<PathBuf>,
+    pub version: String,
 }
 
 /// The audio cast of a server. `available` is false for a server that plays

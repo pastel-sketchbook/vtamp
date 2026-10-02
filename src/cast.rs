@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 
 pub mod codec;
 pub mod ogg;
+pub mod source;
 
 pub const DEFAULT_BITRATE: u32 = 128_000;
 const VENDOR: &str = concat!("vtamp ", env!("CARGO_PKG_VERSION"));
@@ -25,7 +26,7 @@ const OPUS_TAGS: &[u8; 8] = b"OpusTags";
 pub type Tags = Vec<(String, String)>;
 /// Bytes of one or more whole Ogg pages.
 pub type Chunk = Arc<[u8]>;
-pub type Listener = broadcast::Receiver<Chunk>;
+pub type Chunks = broadcast::Receiver<Chunk>;
 
 /// Buffered chunks a slow listener may fall behind by before it skips ahead.
 const HUB_CAPACITY: usize = 256;
@@ -57,7 +58,7 @@ impl Default for Hub {
 impl Hub {
     /// The current stream's header pages, if one is open, and every chunk
     /// published from now on.
-    pub fn subscribe(&self) -> (Option<Chunk>, Listener) {
+    pub fn subscribe(&self) -> (Option<Chunk>, Chunks) {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         (inner.headers.clone(), inner.sender.subscribe())
     }
@@ -233,6 +234,11 @@ pub enum Event {
     End {
         serial: u32,
     },
+    /// Pages went missing before the next packet: a late join or a lagging
+    /// listener. Decoded audio right after it is unreliable.
+    Gap {
+        serial: u32,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -318,6 +324,11 @@ impl Demuxer {
         if page.sequence != stream.sequence.wrapping_add(1) {
             self.gaps += 1;
             stream.partial.clear();
+            if stream.phase == Phase::Audio {
+                self.events.push_back(Event::Gap {
+                    serial: stream.serial,
+                });
+            }
         }
         stream.sequence = page.sequence;
         if !page.continued() {
@@ -526,6 +537,7 @@ mod tests {
                 Event::Start { .. } => 'S',
                 Event::Packet { .. } => 'P',
                 Event::End { .. } => 'E',
+                Event::Gap { .. } => 'G',
             })
             .collect();
         let expected: String = format!("S{}ES{}E", "P".repeat(50), "P".repeat(12));
@@ -567,6 +579,13 @@ mod tests {
         let (events, demuxer) = demux(&bytes, 97);
         assert!(demuxer.skipped() > 0);
         assert_eq!(demuxer.gaps, 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::Gap { serial: 1 }))
+                .count(),
+            1
+        );
         let packets = events
             .iter()
             .filter(|e| matches!(e, Event::Packet { .. }))
