@@ -26,18 +26,16 @@ pub struct CastSource {
 }
 
 impl CastSource {
-    fn new(packets: mpsc::Receiver<Vec<u8>>, pre_skip: u16, late_join: bool) -> Result<Self> {
-        let settle = if late_join {
-            SETTLE_PACKETS * codec::FRAME_LEN
-        } else {
-            0
-        };
+    /// `skip_frames` are discarded first: the pre-skip for a stream heard from
+    /// its start, or the settling time while the decoder converges after a
+    /// late join.
+    fn new(packets: mpsc::Receiver<Vec<u8>>, skip_frames: usize) -> Result<Self> {
         Ok(Self {
             packets,
             decoder: codec::Decoder::new()?,
             pcm: Vec::with_capacity(codec::FRAME_LEN),
             cursor: 0,
-            skip: usize::from(pre_skip) * codec::CHANNELS + settle,
+            skip: skip_frames * codec::CHANNELS,
             ended: false,
         })
     }
@@ -97,6 +95,9 @@ impl Source for CastSource {
 pub struct StreamStart {
     pub serial: u32,
     pub tags: Tags,
+    /// Stream time of the first sample the source yields: zero when the stream
+    /// was heard from its start, later for a listener that joined mid-stream.
+    pub offset_ms: u64,
     pub source: CastSource,
 }
 
@@ -112,13 +113,53 @@ impl StreamStart {
 struct Current {
     serial: u32,
     sender: Option<mpsc::SyncSender<Vec<u8>>>,
-    /// Headers seen, first packet pending: `(tags, pre_skip, late_join)`.
-    pending: Option<(Tags, u16, bool)>,
+    pending: Option<Pending>,
     dropped: u64,
 }
 
-/// Read a cast until EOF, handing each logical stream to `on_start` as soon as
-/// its first packet arrives. Returning `false` from `on_start` stops reading.
+/// Headers seen; the first page's packets wait for that page's granule, which
+/// tells where in the stream a late joiner came in.
+struct Pending {
+    tags: Tags,
+    pre_skip: u16,
+    late_join: bool,
+    packets: Vec<Vec<u8>>,
+}
+
+type Started = (StreamStart, Vec<Vec<u8>>, mpsc::SyncSender<Vec<u8>>);
+
+impl Pending {
+    fn start(self, serial: u32, granule: u64) -> Result<Started> {
+        let decoded: u64 = self
+            .packets
+            .iter()
+            .map(|packet| codec::packet_frames(packet).unwrap_or(codec::FRAME_FRAMES) as u64)
+            .sum();
+        // Decoder output index of the first sample; audible time starts pre_skip later.
+        let first = granule.saturating_sub(decoded);
+        let skip_frames = if self.late_join {
+            SETTLE_PACKETS * codec::FRAME_FRAMES
+        } else {
+            usize::from(self.pre_skip)
+        };
+        let offset_frames = (first + skip_frames as u64).saturating_sub(u64::from(self.pre_skip));
+        let (sender, receiver) = mpsc::sync_channel(CHANNEL_PACKETS);
+        let source = CastSource::new(receiver, skip_frames)?;
+        Ok((
+            StreamStart {
+                serial,
+                tags: self.tags,
+                offset_ms: offset_frames * 1000 / u64::from(codec::SAMPLE_RATE),
+                source,
+            },
+            self.packets,
+            sender,
+        ))
+    }
+}
+
+/// Read a cast until EOF, handing each logical stream to `on_start` once its
+/// first page is complete. Returning `false` from `on_start` stops reading.
 /// Packets of a stream whose source was dropped are discarded; packets that
 /// arrive faster than a source consumes them are dropped rather than blocking
 /// the connection.
@@ -145,7 +186,12 @@ pub fn read_streams(
                     current = Some(Current {
                         serial,
                         sender: None,
-                        pending: Some((tags, pre_skip, false)),
+                        pending: Some(Pending {
+                            tags,
+                            pre_skip,
+                            late_join: false,
+                            packets: vec![],
+                        }),
                         dropped: 0,
                     });
                 }
@@ -153,33 +199,45 @@ pub fn read_streams(
                     if let Some(stream) = &mut current
                         && stream.serial == serial
                         && let Some(pending) = &mut stream.pending
+                        && pending.packets.is_empty()
                     {
-                        pending.2 = true;
+                        pending.late_join = true;
                     }
                 }
-                Event::Packet { serial, data, .. } => {
+                Event::Packet {
+                    serial,
+                    data,
+                    granule,
+                } => {
                     let Some(stream) = &mut current else { continue };
                     if stream.serial != serial {
                         continue;
                     }
-                    if let Some((tags, pre_skip, late_join)) = stream.pending.take() {
-                        let (sender, receiver) = mpsc::sync_channel(CHANNEL_PACKETS);
-                        match CastSource::new(receiver, pre_skip, late_join) {
-                            Ok(source) => {
+                    let deliver = if let Some(pending) = &mut stream.pending {
+                        pending.packets.push(data);
+                        let Some(granule) = granule else { continue };
+                        let pending = stream.pending.take().unwrap();
+                        match pending.start(serial, granule) {
+                            Ok((start, packets, sender)) => {
                                 stream.sender = Some(sender);
-                                if !on_start(StreamStart {
-                                    serial,
-                                    tags,
-                                    source,
-                                }) {
+                                if !on_start(start) {
                                     return Ok(());
                                 }
+                                packets
                             }
-                            Err(error) => tracing::error!("Cannot decode the cast: {error:#}"),
+                            Err(error) => {
+                                tracing::error!("Cannot decode the cast: {error:#}");
+                                continue;
+                            }
                         }
-                    }
-                    if let Some(sender) = &stream.sender {
-                        match sender.try_send(data) {
+                    } else {
+                        vec![data]
+                    };
+                    let Some(sender) = &stream.sender else {
+                        continue;
+                    };
+                    for packet in deliver {
+                        match sender.try_send(packet) {
                             Ok(()) => {}
                             Err(mpsc::TrySendError::Full(_)) => {
                                 stream.dropped += 1;
@@ -189,7 +247,10 @@ pub fn read_streams(
                                     );
                                 }
                             }
-                            Err(mpsc::TrySendError::Disconnected(_)) => stream.sender = None,
+                            Err(mpsc::TrySendError::Disconnected(_)) => {
+                                stream.sender = None;
+                                break;
+                            }
                         }
                     }
                 }
@@ -252,6 +313,7 @@ mod tests {
         assert_eq!(starts[0].tag("VTAMP_POSITION_MS"), Some("1000"));
         assert_eq!(starts[1].tag("VTAMP_POSITION_MS"), Some("2000"));
         assert_eq!((starts[0].serial, starts[1].serial), (40, 41));
+        assert_eq!((starts[0].offset_ms, starts[1].offset_ms), (0, 0));
         let decoded: Vec<Vec<f32>> = starts
             .into_iter()
             .map(|start| start.source.collect())
@@ -286,20 +348,32 @@ mod tests {
         // Pages leave one packet late, so page_starts[3] is where page 3 begins.
         let mut late = headers.clone();
         late.extend_from_slice(&pages[page_starts[3]..]);
-        let mut sources = vec![];
+        let mut starts = vec![];
         read_streams(Cursor::new(&late), |start| {
-            sources.push(start.source);
+            starts.push(start);
             true
         })
         .unwrap();
-        assert_eq!(sources.len(), 1);
-        let decoded: Vec<f32> = sources.pop().unwrap().collect();
+        assert_eq!(starts.len(), 1);
+        let start = starts.pop().unwrap();
         let pre_skip = usize::from(codec::Encoder::new(DEFAULT_BITRATE).unwrap().lookahead());
-        // Packets 11..=40 arrived; the settle time discards four more.
+        // Packets 11..=40 arrived. The first audible sample is the start of packet
+        // 15, after the settling time: stream frame (10 + 4) * 960 minus the pre-skip.
+        let first_frame = (10 + SETTLE_PACKETS) * codec::FRAME_FRAMES - pre_skip;
+        assert_eq!(
+            start.offset_ms,
+            (first_frame * 1000 / codec::SAMPLE_RATE as usize) as u64
+        );
+        let decoded: Vec<f32> = start.source.collect();
         assert_eq!(
             decoded.len(),
-            30 * codec::FRAME_LEN - pre_skip * codec::CHANNELS - SETTLE_PACKETS * codec::FRAME_LEN
+            30 * codec::FRAME_LEN - SETTLE_PACKETS * codec::FRAME_LEN
         );
+        // Audio after the settling time matches the original at that offset.
+        let settle = codec::FRAME_LEN * 5;
+        let from = first_frame * codec::CHANNELS;
+        let snr = snr_db(&audio[from + settle..], &decoded[settle..]);
+        assert!(snr > 18.0, "SNR {snr} dB");
 
         let mut whole = headers;
         whole.extend_from_slice(&pages);

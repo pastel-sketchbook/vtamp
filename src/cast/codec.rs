@@ -13,6 +13,11 @@ const MAX_PACKET: usize = 4000;
 /// A packet may carry up to 120 ms of audio.
 const MAX_DECODED: usize = 5760 * CHANNELS;
 
+/// Frames (samples per channel) a packet decodes to, from its table of contents.
+pub fn packet_frames(packet: &[u8]) -> Option<usize> {
+    opus::packet::get_nb_samples(packet, SAMPLE_RATE).ok()
+}
+
 pub struct Encoder {
     inner: opus::Encoder,
     lookahead: u16,

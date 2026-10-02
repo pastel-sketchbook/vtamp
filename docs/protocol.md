@@ -282,7 +282,9 @@ local output device, and applies the remote `volume` to that output. The
 `position_ms` of `status`, `now`, and watch `state` events, and the position of
 `progress` events, are replaced by the locally audible position while the same
 entry is playing: `VTAMP_POSITION_MS` of the current stream plus the samples
-played, never more than the remote value. Paused and stopped positions, titles,
+played, never more than the remote value. A relay that joins mid-stream takes
+its first position from the granule of the first page it receives and discards
+80 ms while the decoder converges. Paused and stopped positions, titles,
 and queue contents are passed through unchanged, so a track change is visible
 before it is audible by the buffered amount, about a second. Media controls on
 the relay machine send their commands to the remote server. A lost local output

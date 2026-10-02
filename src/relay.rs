@@ -211,6 +211,7 @@ fn player(
                 let StreamStart {
                     serial,
                     tags,
+                    offset_ms,
                     source,
                 } = *start;
                 let tag = |key: &str| {
@@ -220,8 +221,9 @@ fn player(
                 };
                 let item = tag("VTAMP_ITEM").map(str::to_owned);
                 let start_ms = tag("VTAMP_POSITION_MS")
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(0);
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    + offset_ms;
                 let level = volume
                     .unwrap_or_else(|| lock(&snapshot).as_ref().map_or(70, |state| state.volume));
                 match backend.play(Box::new(source), level) {
