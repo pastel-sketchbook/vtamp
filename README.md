@@ -29,7 +29,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.2
+## What ships in v0.3
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
@@ -49,6 +49,8 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - A small, dependency-free [landing page](https://vtamp.told.me/) in English and [Korean](https://vtamp.told.me/ko/), with [source in `site/`](site/).
 
 macOS is the supported platform for playback. Linux ships as a headless server: each release attaches a prebuilt 64-bit ARM build, tested on Ubuntu 24.04, without device playback, relay, media keys, or radio. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
+
+See the [changelog](CHANGELOG.md) for changes since v0.2.0 and upgrade notes.
 
 ## Install
 
