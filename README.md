@@ -305,7 +305,7 @@ the desktop integration cannot initialize.
 | `PageDown` / `PageUp`, `Ctrl-F` / `Ctrl-B` | Move selection down / up by ten entries |
 | `gg` / `G` | Select the first / last entry in the focused list; Library jumps across pages in the current search results |
 | `zz` | Jump the Queue selection to the now-playing entry and scroll it into view, centered when the ends leave room; clears a queue filter that hides it |
-| `/` | Search the focused list: title/artist/album on Library, a queue filter on Queue. Enter applies (empty clears), Esc keeps the current filter. Outside the prompt, `Esc` clears it |
+| `/` | Search the focused list: title/artist/album on Library, a queue filter on Queue. Results follow what you type (the Queue filters instantly, the Library search starts when typing pauses). Enter keeps it (empty clears), Esc restores the filter from before. Outside the prompt, `Esc` clears it |
 | `Ctrl-U` | Clear the text in a search, folder, or track-editor field |
 | `a` | Add a folder, stream URL, or M3U/PLS channel list |
 | `R` | Rescan registered folders |

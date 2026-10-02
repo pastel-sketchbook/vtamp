@@ -561,7 +561,9 @@ impl App {
             self.send(commands, Command::Pause);
         }
     }
-    pub(super) fn import_paste(&mut self, text: &str) {
+    /// Appends pasted text to the open field. Returns the draft when the paste
+    /// landed in a search prompt, so it filters live like typed input.
+    pub(super) fn import_paste(&mut self, text: &str) -> Option<String> {
         let text: String = text
             .chars()
             .filter(|c| !c.is_control())
@@ -576,8 +578,15 @@ impl App {
         }) = &mut self.import_ui.modal
         {
             [title, artist, album][*field].push_str(&text);
-        } else if let Some(Input::Search(s) | Input::Folder(s)) = &mut self.input {
+            None
+        } else if let Some(Input::Search(s)) = &mut self.input {
             s.push_str(&text);
+            Some(s.clone())
+        } else if let Some(Input::Folder(s)) = &mut self.input {
+            s.push_str(&text);
+            None
+        } else {
+            None
         }
     }
 

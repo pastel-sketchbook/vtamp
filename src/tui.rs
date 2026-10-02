@@ -41,6 +41,11 @@ use unicode_width::UnicodeWidthStr;
 
 const PAGE_SIZE: usize = 200;
 
+/// A live library search waits this long after the last keystroke before it
+/// asks the server, so a fast typist starts one search instead of one per key.
+/// The queue filter is local and applies at once.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
+
 const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove   J/K Move queue item up/down\n\nv       Toggle spectrum   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
@@ -179,6 +184,17 @@ enum Input {
     Folder(String),
 }
 
+/// The filters the two lists had when a search prompt opened. A live draft
+/// never commits by accident: Esc puts these back.
+struct SearchRestore {
+    library: String,
+    offset: usize,
+    queue: String,
+    /// Selected queue entry when the prompt opened; the live filter moves the
+    /// visible row, so Esc follows the entry back.
+    queue_id: Option<String>,
+}
+
 struct ThemePicker {
     original: Theme,
     selection: ListState,
@@ -214,6 +230,10 @@ struct App {
     pending_ctrl_w: bool,
     library_jump: Option<ListEdge>,
     input: Option<Input>,
+    /// Filters applied before a search prompt opened; Esc restores them.
+    search_restore: Option<SearchRestore>,
+    /// Deadline for the debounced library search while a draft is typed.
+    search_pending: Option<Instant>,
     help: bool,
     help_scroll: HelpScroll,
     connected: bool,
@@ -323,6 +343,8 @@ pub async fn run(
         pending_ctrl_w: false,
         library_jump: None,
         input: None,
+        search_restore: None,
+        search_pending: None,
         help: false,
         help_scroll: HelpScroll::default(),
         connected: false,
@@ -513,7 +535,11 @@ pub async fn run(
                             presentation.invalidate();
                         }
                     }
-                    TerminalEvent::Paste(text)=>app.import_paste(&text),
+                    TerminalEvent::Paste(text) => {
+                        if let Some(draft) = app.import_paste(&text) {
+                            app.search_typed(draft);
+                        }
+                    }
                     TerminalEvent::Resize(_, _) => {
                         terminal.clear()?;
                         presentation.invalidate();
@@ -525,6 +551,7 @@ pub async fn run(
                 terminal.clear()?;
                 presentation.invalidate();
             }
+            app.flush_search(&commands);
             presentation.draw(&mut terminal, |frame| {
                 app.draw(frame);
                 app.caret
@@ -681,7 +708,11 @@ impl App {
         };
         let expiry = self.notice_at + Duration::from_secs(6);
         let notice = (Instant::now() < expiry).then_some(expiry);
-        animation.into_iter().chain(notice).min()
+        animation
+            .into_iter()
+            .chain(notice)
+            .chain(self.search_pending)
+            .min()
     }
 
     fn spectrum_replaces_list(&self) -> bool {
@@ -874,6 +905,67 @@ impl App {
         self.library_selection.select(Some(0));
         self.refresh(commands);
     }
+    /// Open a blank search draft for the focused list. The draft filters that
+    /// list live; Enter keeps it, Esc restores what was applied before.
+    fn open_search(&mut self) {
+        self.search_restore = Some(SearchRestore {
+            library: self.library_query.clone(),
+            offset: self.offset,
+            queue: self.queue_query.clone(),
+            queue_id: self
+                .queue_selection
+                .selected()
+                .and_then(|i| self.state.queue.get(i))
+                .map(|item| item.id.clone()),
+        });
+        self.input = Some(Input::Search(String::new()));
+    }
+    /// Filter the focused list with a live draft. The queue is local and
+    /// applies at once; the library waits out the debounce so a fast typist
+    /// starts one server search instead of one per keystroke.
+    fn search_typed(&mut self, draft: String) {
+        if self.focus == Focus::Queue {
+            self.apply_queue_filter(draft);
+        } else {
+            self.search_pending = Some(Instant::now() + SEARCH_DEBOUNCE);
+        }
+    }
+    /// Apply a debounced live search once typing pauses. Replies carry their
+    /// query, so answers for an older draft are dropped by the reply handling.
+    fn flush_search(&mut self, commands: &mpsc::Sender<Command>) {
+        if !self
+            .search_pending
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return;
+        }
+        self.search_pending = None;
+        let draft = match &self.input {
+            Some(Input::Search(draft)) => draft.clone(),
+            _ => return,
+        };
+        if draft != self.library_query {
+            self.apply_search(draft, commands);
+        }
+    }
+    /// Esc in a search prompt: put the focused list back to the filter it had
+    /// before the prompt opened.
+    fn restore_search(&mut self, commands: &mpsc::Sender<Command>) {
+        self.search_pending = None;
+        let Some(restore) = self.search_restore.take() else {
+            return;
+        };
+        if restore.queue != self.queue_query {
+            self.apply_queue_filter(restore.queue);
+            self.follow_queue_entry(restore.queue_id);
+        }
+        if restore.library != self.library_query || restore.offset != self.offset {
+            self.library_query = restore.library;
+            self.offset = restore.offset;
+            self.library_jump = None;
+            self.refresh(commands);
+        }
+    }
     /// The queue filter is local: the whole queue already lives in the client.
     fn apply_queue_filter(&mut self, query: String) {
         self.queue_query = query;
@@ -1001,15 +1093,20 @@ impl App {
         } else {
             // A visible row can shift when the queue changes; follow the entry
             // identity, then clamp when the filter hides it or it is gone.
-            let row = selected_queue_id
-                .and_then(|id| self.state.queue.iter().position(|item| item.id == id))
-                .and_then(|index| self.visible_queue_index(index));
-            match row {
-                Some(row) => self.queue_selection.select(Some(row)),
-                None => {
-                    let visible = self.queue_visible_len();
-                    clamp_selection(&mut self.queue_selection, visible);
-                }
+            self.follow_queue_entry(selected_queue_id);
+        }
+    }
+    /// Select the visible row of a queue entry, clamping when the filter hides
+    /// it or the entry is gone.
+    fn follow_queue_entry(&mut self, id: Option<String>) {
+        let row = id
+            .and_then(|id| self.state.queue.iter().position(|item| item.id == id))
+            .and_then(|index| self.visible_queue_index(index));
+        match row {
+            Some(row) => self.queue_selection.select(Some(row)),
+            None => {
+                let visible = self.queue_visible_len();
+                clamp_selection(&mut self.queue_selection, visible);
             }
         }
     }
@@ -1261,54 +1358,71 @@ impl App {
             self.help_key(key);
             return Ok(false);
         }
-        if let Some(input) = &mut self.input {
-            let text = match input {
+        if let Some(mut input) = self.input.take() {
+            let search = matches!(input, Input::Search(_));
+            let text = match &mut input {
                 Input::Search(text) | Input::Folder(text) => text,
             };
             if edit_line(text, key) {
+                // Live results follow a search draft while it is typed.
+                let draft = search.then(|| text.clone());
+                self.input = Some(input);
+                if let Some(draft) = draft {
+                    self.search_typed(draft);
+                }
                 return Ok(false);
             }
             match key.code {
-                KeyCode::Esc => self.input = None,
-                KeyCode::Enter => match self.input.take().unwrap() {
-                    Input::Search(query) if self.focus == Focus::Queue => {
-                        self.apply_queue_filter(query)
-                    }
-                    Input::Search(query) => self.apply_search(query, commands),
-                    Input::Folder(path) if !path.trim().is_empty() => {
-                        if self.stream_input(&path, commands) {
-                            return Ok(false);
+                KeyCode::Esc => self.restore_search(commands),
+                KeyCode::Enter => {
+                    self.search_pending = None;
+                    match input {
+                        Input::Search(query) if self.focus == Focus::Queue => {
+                            self.search_restore = None;
+                            self.apply_queue_filter(query);
                         }
-                        if self.import_ui.enabled
-                            && (path.trim().starts_with("https://")
-                                || path.trim().starts_with("http://"))
-                        {
-                            let mut request = crate::imports::ImportRequest {
-                                url: path,
-                                ..Default::default()
-                            };
-                            match request.validate() {
-                                Ok(()) if request.playlist => {
-                                    self.import_ui.scroll = 0;
-                                    self.import_ui.modal = Some(imports::Modal::Preview {
-                                        request: request.clone(),
-                                        result: None,
-                                    });
-                                    self.send(commands, Command::ImportPreview { request });
-                                }
-                                Ok(()) => self.send(commands, Command::ImportStart { request }),
-                                Err(e) => self.notice(e.to_string()),
+                        Input::Search(query) => {
+                            self.search_restore = None;
+                            // The live draft already applied; don't search twice.
+                            if query != self.library_query {
+                                self.apply_search(query, commands);
                             }
-                            return Ok(false);
                         }
-                        match platform::absolute(&PathBuf::from(path)) {
-                            Ok(path) => self.send(commands, Command::LibraryAdd { path }),
-                            Err(error) => self.notice(error.to_string()),
+                        Input::Folder(path) if !path.trim().is_empty() => {
+                            if self.stream_input(&path, commands) {
+                                return Ok(false);
+                            }
+                            if self.import_ui.enabled
+                                && (path.trim().starts_with("https://")
+                                    || path.trim().starts_with("http://"))
+                            {
+                                let mut request = crate::imports::ImportRequest {
+                                    url: path,
+                                    ..Default::default()
+                                };
+                                match request.validate() {
+                                    Ok(()) if request.playlist => {
+                                        self.import_ui.scroll = 0;
+                                        self.import_ui.modal = Some(imports::Modal::Preview {
+                                            request: request.clone(),
+                                            result: None,
+                                        });
+                                        self.send(commands, Command::ImportPreview { request });
+                                    }
+                                    Ok(()) => self.send(commands, Command::ImportStart { request }),
+                                    Err(e) => self.notice(e.to_string()),
+                                }
+                                return Ok(false);
+                            }
+                            match platform::absolute(&PathBuf::from(path)) {
+                                Ok(path) => self.send(commands, Command::LibraryAdd { path }),
+                                Err(error) => self.notice(error.to_string()),
+                            }
                         }
+                        _ => (),
                     }
-                    _ => (),
-                },
-                _ => (),
+                }
+                _ => self.input = Some(input),
             }
             return Ok(false);
         }
@@ -1406,9 +1520,7 @@ impl App {
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.move_selection(-10);
             }
-            KeyCode::Char('/') => {
-                self.input = Some(Input::Search(String::new()));
-            }
+            KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('a') => self.input = Some(Input::Folder(String::new())),
             KeyCode::Char('i') if self.import_ui.enabled => {
                 self.open_imports(commands);
@@ -2865,15 +2977,24 @@ mod tests {
         app.key(key('g'), &commands).unwrap();
         assert_eq!(app.queue_selection.selected(), Some(12));
 
-        for input in [Input::Search(String::new()), Input::Folder(String::new())] {
-            app.input = Some(input);
-            for c in ['g', 'g', 'G'] {
-                app.key(key(c), &commands).unwrap();
-            }
-            assert!(
-                matches!(app.input, Some(Input::Search(ref text) | Input::Folder(ref text)) if text == "ggG")
-            );
+        // Prompt text stays in the field; `gg` never reaches the lists.
+        app.key(key('/'), &commands).unwrap();
+        for c in ['g', 'g', 'G'] {
+            app.key(key(c), &commands).unwrap();
         }
+        assert!(matches!(&app.input, Some(Input::Search(text)) if text == "ggG"));
+        // The draft filters the queue live, so Esc follows the entry back.
+        assert_eq!(app.queue_query, "ggG");
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &commands)
+            .unwrap();
+        assert!(app.queue_query.is_empty());
+        assert_eq!(app.queue_selection.selected(), Some(12));
+        app.input = Some(Input::Folder(String::new()));
+        for c in ['g', 'g', 'G'] {
+            app.key(key(c), &commands).unwrap();
+        }
+        assert!(matches!(&app.input, Some(Input::Folder(text)) if text == "ggG"));
+        app.input = None;
         assert_eq!(app.queue_selection.selected(), Some(12));
         assert!(requests.try_recv().is_err());
     }
@@ -3096,6 +3217,82 @@ mod tests {
         assert!(
             matches!(requests.try_recv().unwrap(), Command::LibraryList { query, offset: 0, .. } if query.is_empty())
         );
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn search_prompts_filter_live_and_esc_restores_the_applied_filters() {
+        let mut app = navigation_app(6);
+        app.library_query.clear();
+        let (commands, mut requests) = mpsc::channel(8);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        // The queue filter is local: it applies while typing, without a request.
+        app.focus = Focus::Queue;
+        app.queue_selection.select(Some(4));
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        for c in "track 4".chars() {
+            app.key(key(KeyCode::Char(c)), &commands).unwrap();
+        }
+        assert_eq!(app.queue_query, "track 4");
+        assert_eq!(app.queue_visible_len(), 1);
+        assert!(
+            requests.try_recv().is_err(),
+            "Queue filtering is client-side"
+        );
+        app.key(key(KeyCode::Esc), &commands).unwrap();
+        assert!(app.queue_query.is_empty(), "Esc restores the filter");
+        assert_eq!(app.queue_selection.selected(), Some(4), "and its row");
+
+        // The library search waits out the debounce, then applies the draft.
+        app.focus = Focus::Library;
+        app.library_query = "album".into();
+        app.offset = PAGE_SIZE;
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        for c in "love".chars() {
+            app.key(key(KeyCode::Char(c)), &commands).unwrap();
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "typing waits for the debounce"
+        );
+        assert_eq!(app.library_query, "album");
+        app.search_pending = Some(Instant::now());
+        app.flush_search(&commands);
+        assert_eq!(app.library_query, "love");
+        assert_eq!(app.offset, 0, "A new search starts on the first page");
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::LibraryList { query, offset: 0, .. } if query == "love"
+        ));
+        app.flush_search(&commands);
+        assert!(requests.try_recv().is_err(), "one search per pause");
+
+        // Enter keeps the live draft without searching a second time.
+        app.key(key(KeyCode::Enter), &commands).unwrap();
+        assert!(app.input.is_none());
+        assert!(app.search_restore.is_none());
+        assert!(requests.try_recv().is_err());
+
+        // Esc in the prompt restores the applied filter and page.
+        app.offset = PAGE_SIZE;
+        app.key(key(KeyCode::Char('/')), &commands).unwrap();
+        app.key(key(KeyCode::Char('x')), &commands).unwrap();
+        app.search_pending = Some(Instant::now());
+        app.flush_search(&commands);
+        assert_eq!(app.library_query, "x");
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::LibraryList { .. }
+        ));
+        app.key(key(KeyCode::Esc), &commands).unwrap();
+        assert!(app.input.is_none());
+        assert_eq!(app.library_query, "love");
+        assert_eq!(app.offset, PAGE_SIZE);
+        assert!(matches!(
+            requests.try_recv().unwrap(),
+            Command::LibraryList { query, offset, .. } if query == "love" && offset == PAGE_SIZE
+        ));
         assert!(requests.try_recv().is_err());
     }
 
@@ -4005,6 +4202,8 @@ mod tests {
             pending_ctrl_w: false,
             library_jump: None,
             input: None,
+            search_restore: None,
+            search_pending: None,
             help: false,
             help_scroll: HelpScroll::default(),
             connected: true,
