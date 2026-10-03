@@ -264,8 +264,10 @@ Layout transitions clear and redraw without querying the terminal cursor;
 delayed terminal replies must not detach the client on a track change.
 Kitty scales the bounded source pixels in the terminal and uses compression only
 after a positive capability reply. Audio belongs to the server. Pause freezes
-the picture;
-covering overlays suspend decoding and hide pixels, and close/resize/reattach
+the picture. Seeking within the same video holds the last displayed frame until
+the target frame is ready, including while paused; never flash the cover between
+seek positions. Reject obsolete decoder results after rapid seeks.
+Covering overlays suspend decoding and hide pixels, and close/resize/reattach
 resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
 Video failure uses a single notice and the existing cover, without interrupting
 music. Import details distinguish audio added, video added, and video failure.

@@ -204,6 +204,8 @@ between attachments and never zooms tmux or changes the OS window.
 The server remains the sole audio player. Each TUI decodes its locally accessible
 managed sidecar with installed FFmpeg and follows the server's playback position.
 Pause freezes the frame; seek, repeat, and reattach synchronize to the audio.
+Seeking within the same video keeps the last displayed frame until the new
+position is ready, including while paused, without briefly showing the cover.
 Dialogs that cover the image, hidden tmux windows, and detach suspend or end video
 work. Resize and track changes discard obsolete frames. Missing video uses the cover. Missing tools or failed decoding show one notice
 and fall back to the cover; toggle video off/on to retry.

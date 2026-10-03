@@ -310,16 +310,18 @@ impl View {
             if let Some(request) = &previous {
                 request.cancel.store(true, Ordering::Relaxed);
             }
-            // Freeze a paused frame, but never show the old song or seek target.
+            // Keep the last picture while seeking within the same video. The
+            // new decoder replaces it when ready; cancellation/generation checks
+            // still prevent in-flight frames from the previous seek appearing.
             let retain = previous
                 .as_ref()
                 .zip(key.as_ref())
                 .is_some_and(|(old, new)| {
                     old.key.entry == new.entry
+                        && old.key.path == new.path
                         && old.key.area == new.area
                         && old.key.epoch == new.epoch
                         && old.key.background == new.background
-                        && old.clock.position().abs_diff(position) <= DRIFT_MS
                 });
             if !retain {
                 self.frame = None;
@@ -685,6 +687,16 @@ fn worker(
                 {
                     decoder = Some(Decoder::start(path, *info, &config, r, graphics, fps)?);
                 }
+                if decoder.is_none() && !r.cancel.load(Ordering::Relaxed) {
+                    // A seek may be holding the previous picture. Explicitly
+                    // release it when the sidecar is gone or the target is past
+                    // its end, rather than mistaking absence for decoder startup.
+                    mailbox.put(Packet {
+                        ended: asset.is_some(),
+                        generation: r.generation,
+                        result: Ok(None),
+                    });
+                }
             }
             let Some(d) = &mut decoder else {
                 return Ok(None);
@@ -861,6 +873,76 @@ mod tests {
         );
         assert_eq!(clock.position_at(at - Duration::from_secs(1)), 1000);
     }
+    #[test]
+    fn seeking_holds_the_displayed_frame_until_the_latest_target_is_ready() {
+        let (sender, _rx) = watch::channel(None);
+        let mut view = View::default();
+        view.sender = Some(sender);
+        view.area = Rect::new(0, 0, 16, 5);
+        let mut track = item();
+        let bg = Rgba([0, 0, 0, 255]);
+        view.sync(Some(&track), PlaybackStatus::Playing, true, true, 0, bg);
+        view.frame = View::with_test_frame().frame.take();
+        for (status, position) in [
+            (PlaybackStatus::Playing, 10_000),
+            (PlaybackStatus::Playing, 0),
+            (PlaybackStatus::Paused, 20_000),
+            (PlaybackStatus::Paused, 10_000),
+        ] {
+            let previous = view.request.clone().unwrap();
+            view.sync(Some(&track), status, true, true, position, bg);
+            assert!(previous.cancel.load(Ordering::Relaxed));
+            assert_ne!(view.generation, previous.generation);
+            assert_eq!(view.frame.as_ref().unwrap().position, 0);
+            let mut buffer = Buffer::empty(view.area);
+            assert!(
+                view.frame
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .render(view.area, &mut buffer)
+            );
+            let mut stale = View::with_test_frame().frame.take().unwrap();
+            stale.position = position;
+            view.mailbox.put(Packet {
+                generation: previous.generation,
+                ended: false,
+                result: Ok(Some(stale)),
+            });
+            assert!(view.accept().is_none());
+            assert_eq!(view.frame.as_ref().unwrap().position, 0);
+        }
+        let mut target = View::with_test_frame().frame.take().unwrap();
+        target.position = 10_000;
+        view.mailbox.put(Packet {
+            generation: view.generation,
+            ended: false,
+            result: Ok(Some(target)),
+        });
+        assert!(view.accept().is_none());
+        assert_eq!(view.frame.as_ref().unwrap().position, 10_000);
+        // A replacement file under the same queue entry must not retain old pixels.
+        track.track.playback = crate::model::PlaybackSource::File {
+            path: "/tmp/replacement.m4a".into(),
+        };
+        view.sync(Some(&track), PlaybackStatus::Paused, true, true, 10_000, bg);
+        assert!(!view.has_frame());
+        for failed in [false, true] {
+            view.frame = View::with_test_frame().frame.take();
+            view.mailbox.put(Packet {
+                generation: view.generation,
+                ended: !failed,
+                result: if failed {
+                    Err("decoder failed".into())
+                } else {
+                    Ok(None)
+                },
+            });
+            assert_eq!(view.accept().is_some(), failed);
+            assert!(!view.has_frame());
+        }
+    }
+
     #[test]
     fn seeks_tracks_visibility_and_resize_cancel_obsolete_frames() {
         let (sender, _rx) = watch::channel(None);
