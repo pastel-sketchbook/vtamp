@@ -800,6 +800,9 @@ cargo build --release --locked
 
 Core tests use a fake audio backend. Process integration tests run isolated real servers and cover concurrent startup, subscriptions, persistence, malformed requests, and stale-socket recovery without requiring an audio device. A tiny original synthesized AAC fixture tests extended-size MP4 `mdat` metadata and decoding in CI.
 
+Headless cast tests wait for published Ogg pages separately from playback
+completion: encoding and page buffering can make them observable at different times.
+
 With tmux and Python 3 installed, `python3 -m unittest discover -s scripts -p 'test_*.py'`
 also checks screenshot publication and the status-bar plugin. Plugin tests use
 private tmux servers and a pseudo-terminal to check actual rendering, reloads,

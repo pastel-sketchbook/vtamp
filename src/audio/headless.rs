@@ -464,7 +464,13 @@ mod tests {
         assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");
         let position = backend.position();
         assert!((280..=320).contains(&position), "{position}");
-        let events = drain(&mut receiver, &mut demuxer);
+        // Track completion precedes encoding and publishing the final frame.
+        // Wait for the pages independently, as with the resumed stream below.
+        let mut events = vec![];
+        wait_until("the initial stream's audio", || {
+            events.extend(drain(&mut receiver, &mut demuxer));
+            packets(&events).len() >= 10
+        });
         assert_eq!(tag(&events, "TITLE"), Some("Song"));
         assert_eq!(tag(&events, "ARTIST"), Some("Artist"));
         assert_eq!(tag(&events, "ALBUM"), None);
