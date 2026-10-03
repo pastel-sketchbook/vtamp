@@ -85,10 +85,11 @@ restarting the server loses it, and re-running the command is safe.
 
 To move or back up downloaded resources, use `library export FILE` and
 `library import FILE`, described in [Portable Library archives](../README.md#portable-library-archives).
-Archive commands are independent of the optional download tools and remain
-available without yt-dlp. They include saved audio, optional `video.mkv`, cover,
-source information and database metadata overrides, including an explicitly
-cleared album. Restored YouTube resources use the usual managed directory and
+Archive commands remain available without yt-dlp or an LLM. They always include
+local audio and YouTube downloads, with current tags and covers embedded in audio
+copies. Saved video is exported as an MKV with sound, using installed FFmpeg and
+FFprobe; restore separates its picture stream back into the silent `video.mkv`.
+Source information and overrides, including a cleared album, remain in the manifest. Restored YouTube resources use the usual managed directory and
 remain compatible with rescanning, retagging, cover refresh, and managed deletion.
 Existing video IDs are skipped as complete archive entries; restore does not
 upgrade their sidecars. Historical download job reports are not restored.

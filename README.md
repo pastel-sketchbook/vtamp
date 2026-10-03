@@ -551,7 +551,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `library list [--offset N] [--limit N]` | List indexed tracks, default 200, maximum 1000 per page |
 | `library search [QUERY] [--title TEXT] [--artist TEXT] [--album TEXT] [--exact] [--exclude TEXT]` | Combine normalized field filters and exclusions; supports pagination |
 | `library roots` | Show registered roots |
-| `library export FILE [--include-local]` | Export a portable tar.gz with downloaded media, metadata, covers and radio registrations |
+| `library export FILE` | Export all audio with embedded tags/covers, playable videos and radio registrations |
 | `library import FILE [--dry-run]` | Validate or merge a Library archive; waits for completion by default |
 | `library archive-status JOB_ID` | Inspect a restore; reports last until server restart |
 | `status` | Current playback state and queue |
@@ -569,68 +569,66 @@ Library scans are explicit, not filesystem watchers. A damaged file produces a w
 
 ### Portable Library archives
 
-Export downloaded YouTube audio, saved video, covers, source information, metadata
-edits, and registered radio names/URLs into one `.tar.gz`:
+Export the entire Library into one `.tar.gz`, including local audio files,
+YouTube downloads, saved video, metadata edits, and registered radio names/URLs:
 
 ```sh
 vtamp library export ~/Desktop/library.tar.gz
-vtamp library export ~/Desktop/library.tar.gz --include-local
 vtamp library import ~/Desktop/library.tar.gz --dry-run
 vtamp library import ~/Desktop/library.tar.gz
 vtamp library archive-status JOB_ID
 ```
 
-Local originals are external references by default: the archive records their
-absolute paths and SHA-256 checksums. Use `--include-local` for a self-contained
-copy of those files too. Previously restored file copies are always included.
-The export report distinguishes included audio, videos, references, and radio
-registrations. Existing output files are never overwritten. Missing included
-audio fails export; unreadable external references are reported without a checksum.
-Queue, playback position, settings, credentials, and download history are excluded.
-
-Included media are grouped in one readable artist/title folder per track,
-keeping audio, optional video, and cover together:
+The tarball is ready to use in other players after normal extraction. All media
+files sit at the top level with readable artist/title names:
 
 ```text
-김동률 - 감사/
-  김동률 - 감사.m4a
-  김동률 - 감사.video.mkv
-  cover.jpg
+manifest.json
+김동률 - 감사.m4a
+김동률 - 감사.mkv
+김동률 - 출발.m4a
 ```
 
-The tarball also contains `manifest.json` at its root. Track folders can be
-extracted and moved independently of vtamp; sibling `cover.jpg` or `cover.png`
-files work with players that discover local artwork.
-Names preserve Unicode, replace filesystem-unsafe characters, shorten very long
-names, and append `(2)`, `(3)`, etc. for collisions. The manifest keeps the full
-metadata. Import maps these archive names to vtamp's managed paths.
+Export embeds the current title, artist, album, and cover into audio copies.
+A cleared album remains empty. A track without a cover stays without one.
+Video copies combine the saved picture stream with their audio, so each MKV
+plays with sound independently. Audio and video are not re-encoded; Library
+originals are never rewritten. Names preserve Unicode, replace unsafe characters,
+shorten very long names, and append `(2)`, `(3)`, etc. for collisions.
+There are no per-track folders, separate cover images, or external file references.
+Queue, playback position, settings, credentials, and download history are excluded.
 
-Restore merges into the existing Library. YouTube video IDs, local audio
-checksums, and normalized radio URLs detect duplicates; existing files and
-metadata win. Duplicate tracks do not gain missing sidecars during restore.
-External references reconnect only when the original path still contains the
-matching file; missing, changed, or unverifiable references are skipped and
-reported. Reconnected files become individual internal scan roots, so rescans
-keep them without indexing neighboring files. `library roots` lists these paths;
-`library remove FILE` unregisters them. `library add` still accepts directories.
+Export temporarily prepares complete media copies before compression, so it
+needs free space for those copies as well as the tarball. Existing output files
+are never overwritten. Missing audio, failed tagging, or failed video remuxing
+fails the export and cleans up its temporary files. A missing cover is reported.
+
+Restore merges into the existing Library. YouTube video IDs, original/exported
+audio checksums, and normalized radio URLs detect duplicates; existing files and
+metadata win. Embedded artwork is restored for Library display, and MKV video
+is converted back to vtamp's silent sidecar without re-encoding. Duplicate tracks
+do not gain missing sidecars during restore. File paths are rewritten for the
+destination, and repeating the import skips existing tracks.
+
+Audio-only archives need no external tools. Archives containing video require
+installed FFmpeg and FFprobe for export, validation, and restore; these commands
+remain independent of yt-dlp and LLM configuration. Tools are never installed
+automatically. Archive commands are local only: run them on the server machine
+outside relay mode. There is no TUI archive dialog.
 
 Export and dry-run do not start a server or change Library state. Restore runs
 in the background while playback and Queue controls remain available; conflicting
-Library changes return `library_busy`. The CLI waits for completion and prints
-the job ID to stderr. Ctrl+C stops waiting only; inspect the job with
-`archive-status`. The server retains its latest 100 reports in memory. After a
-restart, repeating the import safely skips existing tracks. These commands work
-without yt-dlp, FFmpeg, or an LLM, and are local only: run them on the server
-machine outside relay mode. There is no TUI archive dialog.
+Library changes return `library_busy`. The CLI waits and prints the job ID to
+stderr. Ctrl+C stops waiting only; inspect the job with `archive-status`.
+The server retains its latest 100 reports in memory.
 
-Export, restore, and dry-run show progress on stderr: the current stage,
-processed tracks/files, bytes read, and the current item. Compression and
-extraction also show a percentage of the uncompressed asset bytes; counters reset
-at each stage. Terminals update one line, while redirected stderr logs stage
-changes and periodic updates without terminal escapes. `--json` still writes one
-final JSON response on stdout. `archive-status` includes the latest restore
-progress. Export progress is available immediately with the new CLI; restore
-progress requires a server running the updated build.
+Export, restore, and dry-run show the stage, item counts, bytes, and current item
+on stderr, including copying, embedding tags/artwork, video remuxing, hashing,
+and compression/extraction. Counters reset per stage. Compression and extraction
+show a percentage of uncompressed asset bytes. Terminals update one line;
+redirected stderr logs stages and periodic updates. `--json` still writes one
+final response on stdout. `archive-status` includes current restore progress.
+Use the updated CLI and server for archive operations.
 
 ## For scripts and agents
 

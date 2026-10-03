@@ -21,7 +21,7 @@ pub fn cancel() -> Cancel {
 pub fn run(
     command: &mut Command,
     input: Option<Vec<u8>>,
-    stop: &Cancel,
+    stop: &AtomicBool,
     timeout: Duration,
     mut line: impl FnMut(&str),
 ) -> Result<Vec<u8>> {

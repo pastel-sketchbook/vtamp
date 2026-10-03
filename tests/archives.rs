@@ -123,12 +123,7 @@ fn archive_cli_restores_without_tools_preserves_playback_and_survives_restart() 
         "Archive Radio",
     ]);
     let archive = source.home.path().join("library.tar.gz");
-    let report = source.ok(&[
-        "library",
-        "export",
-        archive.to_str().unwrap(),
-        "--include-local",
-    ]);
+    let report = source.ok(&["library", "export", archive.to_str().unwrap()]);
     assert_eq!(report["included"], 2);
     assert_eq!(report["radios"], 1);
 
@@ -191,6 +186,14 @@ fn archive_cli_restores_without_tools_preserves_playback_and_survives_restart() 
 fn archive_cli_export_works_offline_and_does_not_overwrite_output() {
     let server = Server::new();
     let archive = server.home.path().join("empty.tar.gz");
+    let removed_option = server.cmd(&[
+        "library",
+        "export",
+        archive.to_str().unwrap(),
+        "--include-local",
+    ]);
+    assert_eq!(removed_option.status.code(), Some(2));
+    assert!(!archive.exists());
     let exported = server.ok(&["library", "export", archive.to_str().unwrap()]);
     assert_eq!(exported["included"], 0);
     assert!(!server.home.path().join("state.db").exists());
@@ -214,12 +217,7 @@ fn archive_progress_uses_stderr_without_polluting_json_stdout() {
     wav(&music.join("one.wav"), 1);
     source.ok(&["library", "add", music.to_str().unwrap(), "--wait"]);
     let archive = source.home.path().join("progress.tar.gz");
-    let exported = source.cmd(&[
-        "library",
-        "export",
-        archive.to_str().unwrap(),
-        "--include-local",
-    ]);
+    let exported = source.cmd(&["library", "export", archive.to_str().unwrap()]);
     assert!(exported.status.success());
     let data: Value = serde_json::from_slice(&exported.stdout).unwrap();
     assert_eq!(data["data"]["included"], 1);

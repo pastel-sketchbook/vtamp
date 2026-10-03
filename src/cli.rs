@@ -323,12 +323,9 @@ pub enum Queue {
 }
 #[derive(Debug, Subcommand)]
 pub enum Library {
-    /// Export the Library, downloaded media, metadata and radio registrations.
+    /// Export all Library audio with embedded tags/artwork, playable videos and radio registrations.
     Export {
         file: PathBuf,
-        /// Include local audio files instead of recording external references.
-        #[arg(long)]
-        include_local: bool,
     },
     /// Merge a vtamp Library tarball without replacing existing tracks.
     Import {
@@ -1223,16 +1220,11 @@ async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool
         }
     }
     match command {
-        Library::Export {
-            file,
-            include_local,
-        } => {
+        Library::Export { file } => {
             let file = platform::absolute(&file)?;
             let report = tokio::task::spawn_blocking(move || {
                 let mut display = archive_progress::Display::new("Export");
-                crate::archive::export_with_progress(&paths, &file, include_local, &mut |p| {
-                    display.update(p)
-                })
+                crate::archive::export_with_progress(&paths, &file, &mut |p| display.update(p))
             })
             .await??;
             output(Reply::success(report), json)
@@ -1281,7 +1273,7 @@ async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool
                     .unwrap_or_default();
                 display.update(&progress);
                 match data["status"].as_str() {
-                    Some("completed" | "partial") => {
+                    Some("completed") => {
                         drop(display);
                         return output(Reply::success(data), json);
                     }
@@ -1399,7 +1391,7 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     let data = reply.data.unwrap_or(Value::Null);
-    if data.get("operation").is_some() && data.get("references").is_some() {
+    if data.get("operation").is_some() && data.get("included").is_some() {
         let report: crate::archive::Report = serde_json::from_value(data)?;
         writeln!(out, "Library {}: {}", report.operation, report.status)?;
         if report.status == "running"
@@ -1411,14 +1403,14 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         if report.operation == "export" {
             writeln!(
                 out,
-                "{} audio files · {} videos · {} external references · {} radio channels",
-                report.included, report.videos, report.references, report.radios
+                "{} audio files · {} videos · {} radio channels",
+                report.included, report.videos, report.radios
             )?;
         } else {
             writeln!(
                 out,
-                "{} added · {} reconnected · {} duplicates skipped · {} missing · {} radio channels added",
-                report.added, report.reconnected, report.duplicates, report.missing, report.radios
+                "{} added · {} duplicates skipped · {} radio channels added",
+                report.added, report.duplicates, report.radios
             )?;
         }
         for message in &report.reports {

@@ -4,12 +4,13 @@
 
 ### Added
 
-- Portable Library tarballs with downloaded YouTube audio/video, covers,
-  metadata edits and radio registrations. `library export --include-local`
-  also includes local originals; default exports preserve external references.
+- Portable Library tarballs always include local audio and YouTube downloads,
+  embed current tags/covers in audio copies, and export video with sound. Media
+  files sit at the archive root with readable artist/title names; radio
+  registrations and source metadata are retained in the manifest.
 - `library import`, `--dry-run`, and `library archive-status` validate and merge
-  archives while keeping existing tracks, Queue and playback intact. Matching
-  external files reconnect, and interrupted publication is recovered on startup.
+  archives while keeping existing tracks, Queue and playback intact. Interrupted
+  publication is recovered on startup.
 
 ### Upgrade notes
 
@@ -21,9 +22,8 @@
 - Archive export, restore and dry-run now report stages, item counts and byte
   progress on stderr, including updates within large files. Restore progress is
   also available through `library archive-status`.
-- Exported audio, video and cover files use readable artist/title names with
-  collision suffixes, grouped in one folder per track with sibling `cover.jpg`
-  or `cover.png`, so a normally extracted tarball is useful without vtamp.
+- Archive media can be played directly after normal extraction, without
+  per-track folders, separate artwork files, or external path references.
 
 ## [0.4.0] — 2026-10-03
 

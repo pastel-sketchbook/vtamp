@@ -40,7 +40,6 @@ fn fixture() -> (tempfile::TempDir, Paths, Store, PathBuf) {
     image::RgbImage::from_pixel(8, 8, image::Rgb([50, 60, 70]))
         .save(youtube.join("cover.jpg"))
         .unwrap();
-    fs::write(youtube.join("video.mkv"), b"saved-video-fixture").unwrap();
     let manifest = crate::imports::Manifest {
         track_id: "original-youtube".into(),
         source: crate::youtube::Source {
@@ -115,17 +114,12 @@ fn restore(paths: &Paths, store: &mut Store, archive: &Path) -> Report {
 fn archive_roundtrip_preserves_assets_overrides_rescans_and_session() {
     let (_source, paths, _store, local) = fixture();
     let archive = paths.data.join("library.tar.gz");
-    let exported = export(&paths, &archive, true).unwrap();
+    let exported = export(&paths, &archive).unwrap();
     assert_eq!(
-        (
-            exported.included,
-            exported.videos,
-            exported.references,
-            exported.radios
-        ),
-        (2, 1, 0, 1)
+        (exported.included, exported.videos, exported.radios),
+        (2, 0, 1)
     );
-    assert!(export(&paths, &archive, true).is_err());
+    assert!(export(&paths, &archive).is_err());
     let before = fs::read(&archive).unwrap();
     assert!(!before.is_empty());
 
@@ -150,11 +144,7 @@ fn archive_roundtrip_preserves_assets_overrides_rescans_and_session() {
     assert_eq!(youtube.track.artist, "김동률");
     assert_eq!(youtube.track.album, "");
     assert_ne!(youtube.track.id, "original-youtube");
-    let managed = crate::deletion::managed_path(&target, &youtube.track).unwrap();
-    assert_eq!(
-        fs::read(managed.join("video.mkv")).unwrap(),
-        b"saved-video-fixture"
-    );
+    crate::deletion::managed_path(&target, &youtube.track).unwrap();
     assert_eq!(
         fs::read(youtube.track.cover.as_ref().unwrap()).unwrap(),
         fs::read(paths.data.join("imports/youtube/VIDEO000001/cover.jpg")).unwrap()
@@ -193,44 +183,31 @@ fn archive_roundtrip_preserves_assets_overrides_rescans_and_session() {
 }
 
 #[test]
-fn archive_external_references_reconnect_only_matching_files_and_do_not_scan_siblings() {
+fn archive_always_includes_local_audio_and_never_reconnects_source_paths() {
     let (_home, paths, _store, local) = fixture();
-    let archive = paths.data.join("refs.tar.gz");
-    let report = export(&paths, &archive, false).unwrap();
-    assert_eq!((report.included, report.references), (1, 1));
+    let archive = paths.data.join("full.tar.gz");
+    assert_eq!(export(&paths, &archive).unwrap().included, 2);
+    fs::remove_file(&local).unwrap();
     let (_target, target, mut store) = empty();
-    let preview_report = preview(&target, &archive).unwrap();
-    assert_eq!((preview_report.added, preview_report.reconnected), (2, 1));
-    let report = restore(&target, &mut store, &archive);
-    assert_eq!(report.reconnected, 1);
-    assert!(store.roots().unwrap().contains(&local));
-    assert!(!store.roots().unwrap().contains(&paths.data));
-    let tracks = store.records().unwrap();
-    let linked = tracks.iter().find(|r| r.track.source.is_none()).unwrap();
-    assert_eq!(
-        linked.track.playback,
-        PlaybackSource::File {
-            path: local.clone()
-        }
+    assert_eq!(preview(&target, &archive).unwrap().added, 2);
+    assert_eq!(restore(&target, &mut store, &archive).added, 2);
+    assert!(
+        store
+            .roots()
+            .unwrap()
+            .iter()
+            .all(|p| p.starts_with(&target.data))
     );
+    let tracks = store.records().unwrap();
+    let copied = tracks.iter().find(|r| r.track.source.is_none()).unwrap();
+    assert!(copied.track.playback.file().unwrap().is_file());
+    assert_ne!(copied.track.playback.file().unwrap(), local);
     let scan = library::scan(&store.roots().unwrap(), &tracks, &target.cache);
-    assert_eq!(scan.records.len(), 2);
     store.replace_catalog(&scan.records).unwrap();
     assert_eq!(
-        store.track(&linked.track.id).unwrap().unwrap().album,
+        store.track(&copied.track.id).unwrap().unwrap().album,
         "Local album"
     );
-
-    fs::write(&local, b"changed").unwrap();
-    let (_missing, missing, mut missing_store) = empty();
-    let report = restore(&missing, &mut missing_store, &archive);
-    assert_eq!(
-        (report.added, report.missing, report.reconnected),
-        (1, 1, 0)
-    );
-    assert_eq!(report.status, "partial");
-    fs::remove_file(local).unwrap();
-    assert_eq!(preview(&missing, &archive).unwrap().missing, 1);
 }
 
 #[test]
@@ -238,14 +215,14 @@ fn archive_snapshot_reads_wal_without_starting_server_or_creating_missing_databa
     let (_home, paths, store, local) = fixture();
     assert!(paths.database().with_extension("db-wal").exists());
     let archive = paths.data.join("snapshot.tar.gz");
-    export(&paths, &archive, false).unwrap();
+    export(&paths, &archive).unwrap();
     let home = tempfile::tempdir().unwrap();
     let target = Paths {
         data: home.path().join("absent"),
         runtime: home.path().join("run"),
         cache: home.path().join("cache"),
     };
-    assert_eq!(preview(&target, &archive).unwrap().reconnected, 1);
+    assert_eq!(preview(&target, &archive).unwrap().added, 2);
     assert!(!target.data.exists());
     assert!(!target.runtime.exists());
     assert!(local.exists());
@@ -256,7 +233,7 @@ fn archive_snapshot_reads_wal_without_starting_server_or_creating_missing_databa
 fn archive_rolls_back_database_failure_and_recovers_both_commit_outcomes() {
     let (_source, paths, _store, _) = fixture();
     let archive = paths.data.join("restore.tar.gz");
-    export(&paths, &archive, true).unwrap();
+    export(&paths, &archive).unwrap();
     let (_home, target, mut store) = empty();
     let stop = AtomicBool::new(false);
     let mut publication = prepare(
@@ -374,21 +351,21 @@ fn rewrite(input: &Path, output: &Path, mutate: impl FnOnce(&mut Manifest), extr
 fn archive_rejects_corruption_versions_duplicate_paths_traversal_and_truncation() {
     let (_home, paths, _store, _) = fixture();
     let archive = paths.data.join("valid.tar.gz");
-    export(&paths, &archive, true).unwrap();
+    export(&paths, &archive).unwrap();
     let output = paths.data.join("bad.tar.gz");
     rewrite(&archive, &output, |m| m.version = 99, false);
     assert!(preview(&paths, &output).is_err());
     rewrite(
         &archive,
         &output,
-        |m| m.tracks[0].audio.as_mut().unwrap().sha256 = "0".repeat(64),
+        |m| m.tracks[0].audio.sha256 = "0".repeat(64),
         false,
     );
     assert!(preview(&paths, &output).is_err());
     rewrite(
         &archive,
         &output,
-        |m| m.tracks[0].audio.as_mut().unwrap().path = "media/../../outside.m4a".into(),
+        |m| m.tracks[0].audio.path = "media/../../outside.m4a".into(),
         false,
     );
     assert!(preview(&paths, &output).is_err());
@@ -408,24 +385,19 @@ fn archive_rejects_corruption_versions_duplicate_paths_traversal_and_truncation(
 }
 
 #[test]
-fn archive_missing_included_audio_fails_but_missing_external_reference_is_reported() {
+fn archive_missing_local_audio_fails_instead_of_exporting_a_reference() {
     let (_home, paths, _store, local) = fixture();
-    fs::remove_file(&local).unwrap();
+    fs::remove_file(local).unwrap();
     let archive = paths.data.join("missing.tar.gz");
-    let report = export(&paths, &archive, false).unwrap();
-    assert_eq!(report.references, 1);
-    assert!(report.warning_count > 0);
-    assert!(export(&paths, &paths.data.join("all.tar.gz"), true).is_err());
-    fs::remove_file(paths.data.join("imports/youtube/VIDEO000001/audio.m4a")).unwrap();
-    assert!(export(&paths, &paths.data.join("audio-missing.tar.gz"), false).is_err());
-    assert!(!paths.data.join("audio-missing.tar.gz").exists());
+    assert!(export(&paths, &archive).is_err());
+    assert!(!archive.exists());
 }
 
 #[test]
 fn archive_recovery_preserves_committed_files_after_unregistering_every_track() {
     let (_source, paths, _store, _) = fixture();
     let archive = paths.data.join("restore.tar.gz");
-    export(&paths, &archive, true).unwrap();
+    export(&paths, &archive).unwrap();
     let (_home, target, mut store) = empty();
     let stop = AtomicBool::new(false);
     let mut publication = prepare(
@@ -457,7 +429,7 @@ fn archive_recovery_preserves_committed_files_after_unregistering_every_track() 
 fn archive_rejects_links_and_missing_payloads_without_touching_external_files() {
     let (_home, paths, _store, local) = fixture();
     let valid = paths.data.join("valid.tar.gz");
-    export(&paths, &valid, true).unwrap();
+    export(&paths, &valid).unwrap();
     let stage = tempfile::tempdir().unwrap();
     let manifest = extract(
         &valid,
@@ -491,12 +463,8 @@ fn archive_rejects_links_and_missing_payloads_without_touching_external_files() 
         header.set_mode(0o600);
         header.set_link_name(&local).unwrap();
         header.set_cksum();
-        tar.append_data(
-            &mut header,
-            &manifest.tracks[0].audio.as_ref().unwrap().path,
-            io::empty(),
-        )
-        .unwrap();
+        tar.append_data(&mut header, &manifest.tracks[0].audio.path, io::empty())
+            .unwrap();
         tar.into_inner().unwrap().finish().unwrap();
         assert!(preview(&paths, &bad).is_err());
         assert_eq!(fs::read(&local).unwrap(), original);
@@ -521,7 +489,7 @@ fn archive_rejects_links_and_missing_payloads_without_touching_external_files() 
 fn archive_publication_failure_cleans_its_files_and_preserves_existing_destination() {
     let (_source, paths, _store, _) = fixture();
     let archive = paths.data.join("restore.tar.gz");
-    export(&paths, &archive, true).unwrap();
+    export(&paths, &archive).unwrap();
     let (_home, target, store) = empty();
     let stop = AtomicBool::new(false);
     let mut publication = prepare(
@@ -562,7 +530,7 @@ fn archive_progress_reports_work_before_publication_and_exact_payload_totals() {
     let (_source, paths, _store, _) = fixture();
     let archive = paths.data.join("progress.tar.gz");
     let mut events = vec![];
-    export_with_progress(&paths, &archive, true, &mut |p| {
+    export_with_progress(&paths, &archive, &mut |p| {
         if p.stage == "hashing" || p.stage == "compressing" {
             assert!(!archive.exists());
         }
@@ -580,7 +548,7 @@ fn archive_progress_reports_work_before_publication_and_exact_payload_totals() {
         .iter()
         .find(|p| p.stage == "compressing" && p.items_done == p.items_total)
         .unwrap();
-    assert!(compressed.items_total >= 4); // Audio, cover and video.
+    assert_eq!(compressed.items_total, 2); // Embedded covers need no separate assets.
     assert_eq!(Some(compressed.bytes_done), compressed.bytes_total);
     assert_eq!(events.last().unwrap().stage, "completed");
 
@@ -601,7 +569,7 @@ fn archive_progress_reports_work_before_publication_and_exact_payload_totals() {
 fn archive_names_are_readable_when_opened_with_a_standard_tar_reader() {
     let (_home, paths, _store, _) = fixture();
     let path = paths.data.join("readable.tar.gz");
-    export(&paths, &path, true).unwrap();
+    export(&paths, &path).unwrap();
     let mut tar = tar::Archive::new(GzDecoder::new(File::open(&path).unwrap()));
     let names: Vec<_> = tar
         .entries()
@@ -616,39 +584,29 @@ fn archive_names_are_readable_when_opened_with_a_standard_tar_reader() {
         })
         .collect();
     assert!(
-        names.contains(&"김동률 - 김동률 노래/김동률 - 김동률 노래.m4a".to_owned()),
+        names.contains(&"김동률 - 김동률 노래.m4a".to_owned()),
         "{names:?}"
     );
-    assert!(names.contains(&"김동률 - 김동률 노래/김동률 - 김동률 노래.video.mkv".to_owned()));
-    assert!(names.contains(&"김동률 - 김동률 노래/cover.jpg".to_owned()));
-    assert!(
-        !names
-            .iter()
-            .any(|name| name.starts_with("media/") || name.starts_with("covers/"))
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|name| name.ends_with("/audio.m4a") || name.ends_with("/video.mkv"))
-    );
+    assert!(names.iter().all(|name| !name.contains('/')));
+    assert_eq!(names.len(), 3); // Manifest and two audio files; no cover sidecars.
     let (_target, target, mut store) = empty();
     assert_eq!(restore(&target, &mut store, &path).added, 2);
     let extracted = tempfile::tempdir().unwrap();
     tar::Archive::new(GzDecoder::new(File::open(&path).unwrap()))
         .unpack(extracted.path())
         .unwrap();
-    let folder = extracted.path().join("김동률 - 김동률 노래");
-    let track = library::read_track(
-        &folder.join("김동률 - 김동률 노래.m4a"),
-        "extracted".into(),
-        &extracted.path().join("cache"),
-    )
-    .unwrap();
-    assert_eq!(track.cover, Some(folder.join("cover.jpg")));
+    let audio = extracted.path().join("김동률 - 김동률 노래.m4a");
+    let tag = mp4ameta::Tag::read_from_path(&audio).unwrap();
+    assert_eq!(tag.title(), Some("김동률 노래"));
+    assert_eq!(tag.artist(), Some("김동률"));
+    assert_eq!(tag.album(), None);
     assert_eq!(
-        fs::read(folder.join("김동률 - 김동률 노래.video.mkv")).unwrap(),
-        b"saved-video-fixture"
+        tag.artwork().unwrap().data,
+        fs::read(paths.data.join("imports/youtube/VIDEO000001/cover.jpg")).unwrap()
     );
+    let track =
+        library::read_track(&audio, "extracted".into(), &extracted.path().join("cache")).unwrap();
+    assert!(track.cover.unwrap().is_file());
 }
 
 #[test]
@@ -679,5 +637,300 @@ fn readable_names_keep_unicode_and_disambiguate_sanitized_or_duplicate_titles() 
     assert!(long.len() <= 80);
     assert!(long.starts_with("아주 긴 노래 제목"));
     let mut tar = tar::Builder::new(Vec::new());
-    append(&mut tar, &format!("{long}/{long}.video.mkv"), 1, &[0u8][..]).unwrap();
+    append(&mut tar, &format!("{long}.mkv"), 1, &[0u8][..]).unwrap();
+}
+
+fn mp4_payload(data: &[u8]) -> Vec<u8> {
+    let mut offset = 0;
+    let mut payload = vec![];
+    while offset + 8 <= data.len() {
+        let size = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+        let (size, header) = match size {
+            0 => (data.len() - offset, 8),
+            1 => (
+                u64::from_be_bytes(data[offset + 8..offset + 16].try_into().unwrap()) as usize,
+                16,
+            ),
+            n => (n as usize, 8),
+        };
+        assert!(size >= header && offset + size <= data.len());
+        if &data[offset + 4..offset + 8] == b"mdat" {
+            payload.extend_from_slice(&data[offset + header..offset + size]);
+        }
+        offset += size;
+    }
+    assert!(!payload.is_empty());
+    payload
+}
+
+#[test]
+fn archive_embeds_tags_without_changing_originals_or_aac_payload_and_deduplicates_originals() {
+    let (_home, paths, mut store, local) = fixture();
+    let records = store.records().unwrap();
+    let originals: Vec<_> = records
+        .iter()
+        .map(|r| {
+            let path = r.track.playback.file().unwrap();
+            (path.to_owned(), fs::read(path).unwrap())
+        })
+        .collect();
+    let archive = paths.data.join("tags.tar.gz");
+    export(&paths, &archive).unwrap();
+    for (path, before) in &originals {
+        assert_eq!(&fs::read(path).unwrap(), before);
+    }
+    let unpacked = tempfile::tempdir().unwrap();
+    let manifest = extract(
+        &archive,
+        unpacked.path(),
+        &AtomicBool::new(false),
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    for entry in &manifest.tracks {
+        let bytes = fs::read(unpacked.path().join(&entry.audio.path)).unwrap();
+        assert_eq!(mp4_payload(&bytes), mp4_payload(&originals[0].1));
+        assert_ne!(entry.audio.sha256, entry.original_sha256);
+    }
+    let report = restore(&paths, &mut store, &archive);
+    assert_eq!((report.added, report.duplicates), (0, 3));
+    assert_eq!(store.records().unwrap().len(), 2);
+    assert!(local.exists());
+}
+
+#[test]
+fn archive_tag_and_missing_tool_failures_never_publish_or_modify_originals() {
+    let (_home, paths, _store, local) = fixture();
+    let archive = paths.data.join("failed.tar.gz");
+    fs::write(&local, b"damaged audio").unwrap();
+    let error = export(&paths, &archive).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Cannot embed tags"),
+        "{error:#}"
+    );
+    assert!(!archive.exists());
+    assert_eq!(fs::read(&local).unwrap(), b"damaged audio");
+
+    fs::write(
+        paths.data.join("imports/youtube/VIDEO000001/video.mkv"),
+        b"video",
+    )
+    .unwrap();
+    platform::atomic_json(&paths.data.join("imports.json"), &serde_json::json!({
+        "youtube": { "ffmpeg": paths.data.join("missing-ffmpeg"), "ffprobe": paths.data.join("missing-ffprobe") }
+    })).unwrap();
+    let error = export(&paths, &archive).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("require installed FFmpeg"),
+        "{error:#}"
+    );
+    assert!(!archive.exists());
+}
+
+fn ffmpeg(args: &[&str]) -> Vec<u8> {
+    let binary = crate::subprocess::executable(None, "ffmpeg").unwrap();
+    let output = std::process::Command::new(binary)
+        .args(["-nostdin", "-v", "error"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+fn packet_hashes(path: &Path, stream: &str) -> Vec<String> {
+    let output =
+        std::process::Command::new(crate::subprocess::executable(None, "ffprobe").unwrap())
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                stream,
+                "-show_packets",
+                "-show_data_hash",
+                "sha256",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    value["packets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["data_hash"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+#[ignore = "Needs installed FFmpeg/FFprobe; uses only generated media"]
+fn archive_real_video_exports_sound_and_restores_silent_sidecar_without_reencoding() {
+    let (_home, paths, store, _) = fixture();
+    let folder = paths.data.join("imports/youtube/VIDEO000001");
+    let silent = folder.join("video.mkv");
+    ffmpeg(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:s=32x32:r=10:d=1",
+        "-an",
+        "-c:v",
+        "ffv1",
+        silent.to_str().unwrap(),
+    ]);
+    let original_audio = fs::read(folder.join("audio.m4a")).unwrap();
+    let original_video = fs::read(&silent).unwrap();
+    let archive = paths.data.join("video.tar.gz");
+    let report = export(&paths, &archive).unwrap();
+    assert_eq!((report.included, report.videos), (2, 1));
+    assert_eq!(fs::read(folder.join("audio.m4a")).unwrap(), original_audio);
+    assert_eq!(fs::read(&silent).unwrap(), original_video);
+    let unpacked = tempfile::tempdir().unwrap();
+    let manifest = extract(
+        &archive,
+        unpacked.path(),
+        &AtomicBool::new(false),
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    let entry = manifest.tracks.iter().find(|e| e.video.is_some()).unwrap();
+    let video = unpacked.path().join(&entry.video.as_ref().unwrap().path);
+    assert_eq!(video.file_name().unwrap(), "김동률 - 김동률 노래.mkv");
+    let tools = media::Tools::load(&paths).unwrap();
+    tools.probe(&video, true, &AtomicBool::new(false)).unwrap();
+    assert_eq!(packet_hashes(&video, "v:0"), packet_hashes(&silent, "v:0"));
+    assert_eq!(
+        packet_hashes(&video, "a:0"),
+        packet_hashes(&folder.join("audio.m4a"), "a:0")
+    );
+    let (_target, target, mut target_store) = empty();
+    assert_eq!(preview(&target, &archive).unwrap().added, 2);
+    restore(&target, &mut target_store, &archive);
+    let restored = target_store
+        .records()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.track.source.is_some())
+        .unwrap();
+    let restored_dir = crate::deletion::managed_path(&target, &restored.track).unwrap();
+    tools
+        .probe(
+            &restored_dir.join("video.mkv"),
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(
+        packet_hashes(&restored_dir.join("video.mkv"), "v:0"),
+        packet_hashes(&silent, "v:0")
+    );
+    assert!(restored.track.cover.unwrap().is_file());
+    assert_eq!(store.records().unwrap().len(), 2);
+}
+
+#[test]
+#[ignore = "Needs installed FFmpeg/FFprobe; uses only generated media"]
+fn archive_real_audio_formats_embed_art_and_tags_and_preserve_decoded_samples() {
+    let (_home, paths, mut store) = empty();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stereo.wav");
+    let music = paths.data.join("music");
+    fs::create_dir(&music).unwrap();
+    image::RgbImage::from_pixel(8, 8, image::Rgb([10, 50, 100]))
+        .save(music.join("cover.png"))
+        .unwrap();
+    let mut records = vec![];
+    for (index, (ext, codec)) in [
+        ("wav", "pcm_s16le"),
+        ("m4a", "aac"),
+        ("mp3", "libmp3lame"),
+        ("flac", "flac"),
+        ("ogg", "libvorbis"),
+        ("aac", "aac"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = music.join(format!("track.{ext}"));
+        ffmpeg(&[
+            "-i",
+            source.to_str().unwrap(),
+            "-c:a",
+            codec,
+            file.to_str().unwrap(),
+        ]);
+        let mut record = record(&file, &format!("format-{index}"), &paths);
+        record.track.title = format!("한글 {ext}");
+        record.track.artist = "음악가".into();
+        record.track.album = String::new();
+        records.push(record);
+    }
+    store.replace_catalog(&records).unwrap();
+    let original_bytes: Vec<_> = records
+        .iter()
+        .map(|r| fs::read(r.track.playback.file().unwrap()).unwrap())
+        .collect();
+    let archive = paths.data.join("formats.tar.gz");
+    export(&paths, &archive).unwrap();
+    let unpacked = tempfile::tempdir().unwrap();
+    let manifest = extract(
+        &archive,
+        unpacked.path(),
+        &AtomicBool::new(false),
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    for (record, original) in records.iter().zip(original_bytes) {
+        let source = record.track.playback.file().unwrap();
+        assert_eq!(fs::read(source).unwrap(), original);
+        let entry = manifest
+            .tracks
+            .iter()
+            .find(|e| e.track.title == record.track.title)
+            .unwrap();
+        let file = unpacked.path().join(&entry.audio.path);
+        let read =
+            library::read_track(&file, "probe".into(), &unpacked.path().join("cache")).unwrap();
+        assert_eq!(read.title, record.track.title);
+        assert_eq!(read.artist, record.track.artist);
+        assert_eq!(read.album, "");
+        assert!(media::embedded_cover(&file).unwrap().is_some());
+        let before = ffmpeg(&[
+            "-i",
+            source.to_str().unwrap(),
+            "-map",
+            "0:a:0",
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]);
+        let after = ffmpeg(&[
+            "-i",
+            file.to_str().unwrap(),
+            "-map",
+            "0:a:0",
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]);
+        assert_eq!(before, after, "{}", file.display());
+        let native_before: Vec<_> = crate::audio::decode_file(source).unwrap().collect();
+        let native_after: Vec<_> = crate::audio::decode_file(&file).unwrap().collect();
+        assert_eq!(
+            native_before,
+            native_after,
+            "vtamp decoder: {}",
+            file.display()
+        );
+    }
 }

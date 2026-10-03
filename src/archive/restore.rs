@@ -47,9 +47,8 @@ impl Directory {
     }
 }
 
-/// Entries selected for restoration, in manifest order. A present path reconnects
-/// an external file; None means install the included audio.
-type Selected = Vec<(usize, Option<PathBuf>)>;
+/// Entries selected for restoration, in manifest order.
+type Selected = Vec<usize>;
 
 pub(super) fn plan(
     manifest: &Manifest,
@@ -63,7 +62,6 @@ pub(super) fn plan(
         ..Default::default()
     };
     let mut hashes = HashSet::new();
-    let mut paths = HashSet::new();
     let mut videos = HashSet::new();
     progress.begin("checking_library", catalog.records.len(), None);
     for (index, record) in catalog.records.iter().enumerate() {
@@ -74,7 +72,6 @@ pub(super) fn plan(
             .playback
             .file()
             .context("Expected a file record")?;
-        paths.insert(file.to_path_buf());
         // Existing identities are preserved, including temporarily unavailable files.
         if let Some(source) = &record.track.source {
             videos.insert(source.video_id.clone());
@@ -97,47 +94,19 @@ pub(super) fn plan(
             report.note(format!("Skipped existing YouTube track: {title}"));
             continue;
         }
-        let external = if let Some(path) = &entry.external {
-            report.references += 1;
-            let verified = match &entry.external_sha256 {
-                Some(expected) => {
-                    hash_file(path, stop, progress).is_ok_and(|(_, actual)| actual == *expected)
-                }
-                None => false,
-            };
-            if !verified {
-                report.missing += 1;
-                report.note(format!(
-                    "External reference missing, changed or unverifiable: {} ({title})",
-                    path.display()
-                ));
+        if entry.track.source.is_none() {
+            if hashes.contains(&entry.original_sha256) || hashes.contains(&entry.audio.sha256) {
+                report.duplicates += 1;
+                report.note(format!("Skipped existing audio: {title}"));
                 continue;
             }
-            Some(path.canonicalize()?)
-        } else {
-            None
-        };
-        let hash = entry
-            .audio
-            .as_ref()
-            .map(|a| &a.sha256)
-            .or(entry.external_sha256.as_ref())
-            .context("Missing audio checksum")?;
-        let same_path = external.as_ref().is_some_and(|p| paths.contains(p));
-        if entry.track.source.is_none() && (same_path || !hashes.insert(hash.clone())) {
-            report.duplicates += 1;
-            report.note(format!("Skipped existing audio: {title}"));
-            continue;
+            hashes.insert(entry.original_sha256.clone());
+            hashes.insert(entry.audio.sha256.clone());
         }
-        if let Some(path) = &external {
-            paths.insert(path.clone());
-            report.reconnected += 1;
-        } else {
-            report.included += 1;
-        }
+        report.included += 1;
         report.videos += usize::from(entry.video.is_some());
         report.added += 1;
-        selected.push((index, external));
+        selected.push(index);
     }
     let mut urls: HashSet<_> = catalog.streams.iter().map(|s| s.url.clone()).collect();
     for stream in &manifest.streams {
@@ -148,9 +117,6 @@ pub(super) fn plan(
             report.duplicates += 1;
             report.note(format!("Skipped existing radio: {}", stream.name));
         }
-    }
-    if report.missing > 0 {
-        report.status = "partial".into();
     }
     progress.end();
     Ok((report, selected))
@@ -172,12 +138,13 @@ pub(crate) fn prepare(
     let extracted = temp.path().join("extracted");
     fs::create_dir(&extracted)?;
     let manifest = extract(archive, &extracted, stop, progress)?;
+    let tools = media::video_tools(paths, &manifest, &extracted, stop, progress)?;
     let (report, selected) = plan(&manifest, &catalog, stop, progress)?;
     let mut records = vec![];
     let mut directories = vec![];
     let mut roots = vec![];
     progress.begin("preparing", selected.len(), None);
-    for (done, (index, external)) in selected.into_iter().enumerate() {
+    for (done, index) in selected.into_iter().enumerate() {
         check_stop(stop)?;
         let entry = &manifest.tracks[index];
         progress.item(done, &entry.track.title);
@@ -194,45 +161,40 @@ pub(crate) fn prepare(
             "Restore destination already exists: {}",
             destination.display()
         );
-        let audio_path = if let Some(external) = external {
-            roots.push(external.clone()); // Internal file root; never scan its siblings.
-            external
+        let extension = Path::new(&entry.audio.path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .context("Missing audio extension")?;
+        let name = if entry.track.source.is_some() {
+            "audio.m4a".to_owned()
         } else {
-            let audio = entry.audio.as_ref().context("Missing audio")?;
-            let extension = Path::new(&audio.path)
-                .extension()
-                .and_then(|s| s.to_str())
-                .context("Missing audio extension")?;
-            let name = if entry.track.source.is_some() {
-                "audio.m4a".to_owned()
-            } else {
-                format!("audio.{extension}")
-            };
-            fs::rename(extracted.join(&audio.path), staged.join(&name))?;
-            roots.push(destination.clone());
-            destination.join(name)
+            format!("audio.{extension}")
         };
+        fs::rename(extracted.join(&entry.audio.path), staged.join(&name))?;
+        roots.push(destination.clone());
+        let actual_audio = staged.join(&name);
         let mut track = entry.track.clone();
         track.id = id.clone();
         track.playback = PlaybackSource::File {
-            path: audio_path.clone(),
+            path: destination.join(&name),
         };
         track.cover = None;
-        if let Some(cover) = &entry.cover {
-            let name = if dir.video_id.is_some() {
-                "cover.jpg".to_owned()
-            } else {
-                let ext = Path::new(&cover.path)
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("jpg");
-                format!("cover.{ext}")
-            };
-            fs::rename(extracted.join(&cover.path), staged.join(&name))?;
+        if let Some(cover) = media::embedded_cover(&actual_audio)? {
+            let name = cover.save(&staged, track.source.is_some())?;
             track.cover = Some(destination.join(name));
         }
         if let Some(video) = &entry.video {
-            fs::rename(extracted.join(&video.path), staged.join("video.mkv"))?;
+            progress.begin("restoring_video", 1, None);
+            progress.item(0, &track.title);
+            tools.as_ref().context("Video tools unavailable")?.silent(
+                &extracted.join(&video.path),
+                &staged.join("video.mkv"),
+                stop,
+                progress,
+            )?;
+            progress.end();
+            progress.begin("preparing", report.added, None);
+            progress.item(done, &track.title);
         }
         if let Some(source) = &track.source {
             let manifest = crate::imports::Manifest {
@@ -247,19 +209,6 @@ pub(crate) fn prepare(
             crate::imports::read_manifest(&staged)?;
         } else {
             platform::atomic_json(&staged.join(".archive-owner.json"), &id)?;
-        }
-        let actual_audio = if entry.audio.is_some() {
-            staged.join(audio_path.file_name().context("Missing audio filename")?)
-        } else {
-            audio_path.clone()
-        };
-        // Decode tags off the server loop; malformed audio never enters the catalog.
-        if entry.audio.is_none() {
-            let _ = crate::library::read_track(
-                &actual_audio,
-                id.clone(),
-                &temp.path().join("probe-covers"),
-            )?;
         }
         let metadata = actual_audio.metadata()?;
         records.push(RestoredRecord {

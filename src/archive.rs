@@ -1,4 +1,5 @@
-//! Portable library archives. No download tools or network access are involved.
+//! Portable library archives. Video remuxing uses installed FFmpeg; no network access.
+mod media;
 mod progress;
 mod restore;
 pub use progress::Progress;
@@ -73,11 +74,9 @@ struct Entry {
     // Paths and IDs are archive-relative here, never trusted destination paths.
     track: Track,
     metadata: SavedMetadata,
-    audio: Option<Asset>,
-    cover: Option<Asset>,
+    audio: Asset,
+    original_sha256: String,
     video: Option<Asset>,
-    external: Option<PathBuf>,
-    external_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,12 +95,9 @@ pub struct Report {
     pub job_id: Option<String>,
     pub included: usize,
     pub videos: usize,
-    pub references: usize,
     pub radios: usize,
     pub added: usize,
     pub duplicates: usize,
-    pub reconnected: usize,
-    pub missing: usize,
     pub warning_count: usize,
     pub reports: Vec<String>,
     pub error: Option<String>,
@@ -183,26 +179,57 @@ fn asset(
     })
 }
 
+fn copy_audio(
+    source: &Path,
+    destination: &Path,
+    stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
+) -> Result<String> {
+    let mut input =
+        File::open(source).with_context(|| format!("Cannot read {}", source.display()))?;
+    let before = input.metadata()?;
+    ensure!(before.is_file(), "Audio must be a regular file");
+    let mut output = File::options()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    let mut hash = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0; 128 * 1024];
+    loop {
+        check_stop(stop)?;
+        let n = input.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+        output.write_all(&buffer[..n])?;
+        count += n as u64;
+        progress.advance(n);
+    }
+    let after = input.metadata()?;
+    ensure!(
+        before.len() == count && after.len() == count && before.modified()? == after.modified()?,
+        "Audio changed while copying: {}",
+        source.display()
+    );
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 /// Snapshot all metadata first, then stream bounded chunks of the actual assets.
-pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Report> {
-    export_tracked(paths, output, include_local, &mut Tracker::silent())
+pub fn export(paths: &Paths, output: &Path) -> Result<Report> {
+    export_tracked(paths, output, &mut Tracker::silent())
 }
 
 pub fn export_with_progress(
     paths: &Paths,
     output: &Path,
-    include_local: bool,
     sink: &mut dyn FnMut(&Progress),
 ) -> Result<Report> {
-    export_tracked(paths, output, include_local, &mut Tracker::new(sink))
+    export_tracked(paths, output, &mut Tracker::new(sink))
 }
 
-fn export_tracked(
-    paths: &Paths,
-    output: &Path,
-    include_local: bool,
-    progress: &mut Tracker<'_>,
-) -> Result<Report> {
+fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> Result<Report> {
     progress.begin("snapshot", 0, None);
     let stop = AtomicBool::new(false);
     ensure!(
@@ -229,87 +256,116 @@ fn export_tracked(
         radios: manifest.streams.len(),
         ..Default::default()
     };
-    let managed = paths.data.join("imports").canonicalize().ok();
-    progress.begin("hashing", catalog.records.len(), None);
-    for (index, record) in catalog.records.into_iter().enumerate() {
+    let stage = tempfile::tempdir()?;
+    let mut originals = Vec::new();
+    let mut videos = Vec::new();
+    for record in &catalog.records {
+        let video = if record.track.source.is_some() {
+            let dir = crate::deletion::managed_path(paths, &record.track)?;
+            let path = dir.join("video.mkv");
+            path.try_exists()?.then_some(path)
+        } else {
+            None
+        };
+        videos.push(video);
+    }
+    let tools = if videos.iter().any(Option::is_some) {
+        Some(media::Tools::load(paths)?)
+    } else {
+        None
+    };
+    progress.begin("copying", catalog.records.len(), None);
+    for (index, record) in catalog.records.iter().enumerate() {
         progress.item(index, &record.track.title);
         let name = readable_name(&record.track, &mut names);
-        let file = record
+        let source = record
             .track
             .playback
             .file()
-            .context("Expected file track")?
-            .to_path_buf();
-        let internal = managed.as_ref().is_some_and(|root| file.starts_with(root));
-        let youtube = record.track.source.is_some();
-        if youtube {
-            crate::deletion::managed_path(paths, &record.track)?;
-        }
-        let mut entry = Entry {
-            metadata: catalog
-                .metadata
-                .get(&record.track.id)
-                .cloned()
-                .unwrap_or_else(|| SavedMetadata::effective(&record.track)),
-            track: record.track,
-            audio: None,
-            cover: None,
-            video: None,
-            external: None,
-            external_sha256: None,
+            .context("Expected a file track")?;
+        let extension = source
+            .extension()
+            .and_then(|s| s.to_str())
+            .context("Audio has no extension")?;
+        let audio_name = format!("{name}.{extension}");
+        let copied = stage.path().join(&audio_name);
+        let original_sha256 = copy_audio(source, &copied, &stop, progress)?;
+        originals.push((name, audio_name, copied, original_sha256));
+    }
+    progress.end();
+    progress.begin("tagging", catalog.records.len(), None);
+    for (index, record) in catalog.records.iter().enumerate() {
+        check_stop(&stop)?;
+        progress.item(index, &record.track.title);
+        let cover = match &record.track.cover {
+            Some(path) if path.try_exists()? => Some(media::Cover::read(path)?),
+            Some(path) => {
+                report.note(format!("Cover is missing: {}", path.display()));
+                None
+            }
+            None => None,
         };
-        if internal || include_local || youtube {
-            let extension = file
-                .extension()
-                .and_then(|s| s.to_str())
-                .context("Audio has no extension")?;
-            let a = asset(&file, format!("{name}/{name}.{extension}"), &stop, progress)?;
-            inputs.insert(a.path.clone(), file.clone());
-            entry.audio = Some(a);
-            report.included += 1;
+        media::tag_audio(&originals[index].2, &record.track, cover.as_ref())
+            .with_context(|| format!("Cannot embed tags and artwork: {}", record.track.title))?;
+        media::embedded_cover(&originals[index].2)
+            .with_context(|| format!("Cannot read embedded artwork: {}", record.track.title))?;
+    }
+    progress.end();
+    if let Some(tools) = &tools {
+        progress.begin("muxing", videos.iter().flatten().count(), None);
+        let mut done = 0;
+        for (index, video) in videos.iter().enumerate() {
+            if let Some(video) = video {
+                let (name, _, audio, _) = &originals[index];
+                progress.item(done, &catalog.records[index].track.title);
+                tools.mux(
+                    video,
+                    audio,
+                    &stage.path().join(format!("{name}.mkv")),
+                    &stop,
+                    progress,
+                )?;
+                done += 1;
+            }
+        }
+        progress.end();
+    }
+    progress.begin("hashing", catalog.records.len(), None);
+    for (index, (record, (name, audio_name, audio_path, original_sha256))) in
+        catalog.records.into_iter().zip(originals).enumerate()
+    {
+        progress.item(index, &record.track.title);
+        let audio = asset(&audio_path, audio_name, &stop, progress)?;
+        inputs.insert(audio.path.clone(), audio_path);
+        let video = if videos[index].is_some() {
+            let video_name = format!("{name}.mkv");
+            let video_path = stage.path().join(&video_name);
+            let asset = asset(&video_path, video_name, &stop, progress)?;
+            inputs.insert(asset.path.clone(), video_path);
+            report.videos += 1;
+            Some(asset)
         } else {
-            entry.external = Some(file.clone());
-            match hash_file(&file, &stop, progress) {
-                Ok((_, hash)) => entry.external_sha256 = Some(hash),
-                Err(error) => report.note(format!(
-                    "External reference cannot be verified: {}: {error:#}",
-                    file.display()
-                )),
-            }
-            report.references += 1;
-        }
-        if let Some(cover) = entry.track.cover.as_ref() {
-            if cover.try_exists()? {
-                let ext = cover.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
-                let a = asset(cover, format!("{name}/cover.{ext}"), &stop, progress)?;
-                inputs.insert(a.path.clone(), cover.clone());
-                entry.cover = Some(a);
-            } else {
-                report.note(format!("Cover is missing: {}", cover.display()));
-            }
-        }
-        if youtube {
-            let video = file
-                .parent()
-                .context("Missing audio directory")?
-                .join("video.mkv");
-            if video.try_exists()? {
-                let a = asset(&video, format!("{name}/{name}.video.mkv"), &stop, progress)?;
-                inputs.insert(a.path.clone(), video);
-                entry.video = Some(a);
-                report.videos += 1;
-            }
-        }
-        entry.track.id = index.to_string();
-        entry.track.playback = crate::model::PlaybackSource::File {
-            path: entry
-                .audio
-                .as_ref()
-                .map(|a| PathBuf::from(&a.path))
-                .unwrap_or_default(),
+            None
         };
-        entry.track.cover = entry.cover.as_ref().map(|a| PathBuf::from(&a.path));
-        manifest.tracks.push(entry);
+        let mut track = record.track;
+        let metadata = catalog
+            .metadata
+            .get(&track.id)
+            .cloned()
+            .unwrap_or_else(|| SavedMetadata::effective(&track));
+        track.id = index.to_string();
+        track.playback = crate::model::PlaybackSource::File {
+            path: audio.path.clone().into(),
+        };
+        track.cover = None;
+        manifest.tracks.push(Entry {
+            track,
+            metadata,
+            audio,
+            original_sha256,
+            video,
+        });
+        report.included += 1;
     }
     progress.end();
     validate(&manifest)?;
@@ -400,11 +456,11 @@ fn append<W: Write>(
 }
 
 fn assets(entry: &Entry) -> impl Iterator<Item = &Asset> {
-    entry.audio.iter().chain(&entry.cover).chain(&entry.video)
+    std::iter::once(&entry.audio).chain(&entry.video)
 }
 
 /// Keep directly extracted files useful, including on case-insensitive filesystems.
-/// Leave room for a collision suffix and ".video.mkv" within a ustar name field.
+/// Leave room for a collision suffix and a media extension within a ustar name field.
 fn readable_name(track: &Track, used: &mut HashSet<String>) -> String {
     let artist = track.artist.trim();
     let title = track.title.trim();
@@ -464,7 +520,8 @@ fn safe_asset_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() < 256
         && !path.contains('\\')
-        && parts.len() == 2
+        && !path.contains('/')
+        && parts.len() == 1
         && parts.iter().all(|c| matches!(c, Component::Normal(_)))
         && !path.starts_with('.')
         && crate::library::normalized(&parts[0].as_os_str().to_string_lossy()) != "manifest.json"
@@ -490,20 +547,12 @@ fn validate(manifest: &Manifest) -> Result<BTreeMap<String, Asset>> {
     let mut videos = HashSet::new();
     for entry in &manifest.tracks {
         ensure!(
-            entry.audio.is_some() != entry.external.is_some(),
-            "Track must contain audio or an external reference"
-        );
-        ensure!(
             entry.track.playback.file().is_some(),
             "Expected a file track"
         );
         ensure!(
-            entry.external.as_ref().is_none_or(|p| p.is_absolute()),
-            "External reference must be absolute"
-        );
-        ensure!(
-            entry.external_sha256.as_ref().is_none_or(|h| valid_hash(h)),
-            "Invalid external checksum"
+            valid_hash(&entry.original_sha256),
+            "Invalid original audio checksum"
         );
         for text in [
             &entry.track.title,
@@ -536,9 +585,9 @@ fn validate(manifest: &Manifest) -> Result<BTreeMap<String, Asset>> {
                 "Invalid or duplicate YouTube identity"
             );
             ensure!(
-                entry.audio.as_ref().is_some_and(|a| Path::new(&a.path)
+                Path::new(&entry.audio.path)
                     .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("m4a"))),
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("m4a")),
                 "YouTube audio must be included as m4a"
             );
             let source_manifest = crate::imports::Manifest {
@@ -555,16 +604,16 @@ fn validate(manifest: &Manifest) -> Result<BTreeMap<String, Asset>> {
         } else {
             ensure!(entry.video.is_none(), "Video requires a YouTube source");
         }
-        if let Some(audio) = &entry.audio {
+        ensure!(
+            crate::library::supported(Path::new(&entry.audio.path)),
+            "Unsupported archive audio"
+        );
+        if let Some(video) = &entry.video {
             ensure!(
-                crate::library::supported(Path::new(&audio.path)),
-                "Unsupported archive audio"
-            );
-        }
-        if let Some(cover) = &entry.cover {
-            ensure!(
-                cover.bytes <= 16 * 1024 * 1024,
-                "Archive cover exceeds 16 MiB"
+                Path::new(&video.path)
+                    .extension()
+                    .is_some_and(|ext| ext == "mkv"),
+                "Archive video must be MKV"
             );
         }
         for a in assets(entry) {
@@ -673,18 +722,13 @@ fn extract(
     for (index, entry) in manifest.tracks.iter().enumerate() {
         progress.item(index, &entry.track.title);
         check_stop(stop)?;
-        if let Some(audio) = &entry.audio {
-            crate::library::read_track(
-                &destination.join(&audio.path),
-                index.to_string(),
-                &destination.join(".probe-covers"),
-            )
-            .context("Invalid archived audio")?;
-        }
-        if let Some(cover) = &entry.cover {
-            crate::library::decode_image(&fs::read(destination.join(&cover.path))?)
-                .context("Invalid archived cover")?;
-        }
+        crate::library::read_track(
+            &destination.join(&entry.audio.path),
+            index.to_string(),
+            &destination.join(".probe-covers"),
+        )
+        .context("Invalid archived audio")?;
+        media::embedded_cover(&destination.join(&entry.audio.path))?;
     }
     progress.end();
     Ok(manifest)
@@ -708,6 +752,7 @@ fn preview_tracked(paths: &Paths, archive: &Path, progress: &mut Tracker<'_>) ->
     let stage = tempfile::tempdir()?;
     let stop = AtomicBool::new(false);
     let manifest = extract(archive, stage.path(), &stop, progress)?;
+    media::video_tools(paths, &manifest, stage.path(), &stop, progress)?;
     let (mut report, _) = restore::plan(&manifest, &snapshot, &stop, progress)?;
     report.operation = "dry_run".into();
     progress.begin("completed", 0, None);

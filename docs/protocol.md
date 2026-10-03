@@ -340,8 +340,8 @@ reject the new database version. The response error object may include optional
 
 ## Portable Library archives (version 10)
 
-Archive operations are local and independent of optional download tools. The CLI
-performs `library export FILE [--include-local]` and `library import FILE --dry-run`
+Archive operations are local and do not require yt-dlp or an LLM. Video archives
+require FFmpeg and FFprobe as described below. The CLI performs `library export FILE` and `library import FILE --dry-run`
 using SQLite's backup API from a read-only connection into a temporary snapshot.
 They never create/migrate the live DB or start a server. An absent DB is an empty
 Library; existing databases must be version 6.
@@ -352,13 +352,13 @@ Library; existing databases must be version 6.
 | `archive_status` | `id` | Current or terminal archive report |
 
 Reports contain `operation`, `status`, nullable `job_id`, `included`, `videos`,
-`references`, `radios`, `added`, `duplicates`, `reconnected`, `missing`,
-`warning_count`, bounded `reports` strings, and nullable `error`. Export's
+`radios`, `added`, `duplicates`, `warning_count`, bounded `reports` strings,
+and nullable `error`. Export's
 `included` counts audio files and `radios` counts registrations. Restore's `added`
-counts file tracks (including `reconnected`), `radios` counts new channels, and
+counts file tracks, `radios` counts new channels, and
 `duplicates` includes tracks and channels. Restore counts describe the plan until
-the transaction succeeds. `partial` means external references were skipped;
-`failed` means the restore did not commit or its outcome awaits startup recovery.
+the transaction succeeds. `failed` means the restore did not commit or its
+outcome awaits startup recovery.
 Dry-run uses `operation: dry_run`.
 Reports retain at most 1,000 details of 2,048 characters; `warning_count` includes
 omitted details and informational skip reasons.
@@ -373,10 +373,11 @@ Progress is updated during chunked reads, throttled to 100 ms, with immediate
 stage boundaries. The server retains only the latest update; progress does not
 write SQLite, emit playback events, or advance revisions.
 
-Stages are `snapshot`, `starting`, `hashing`, `compressing`, `finalizing`,
-`reading_manifest`, `extracting`, `validating`, `checking_library`, `planning`,
-`preparing`, `publishing`, `committing`, `cleaning_up`, `rolling_back`, and terminal
-`completed`/`partial`/`failed`. Fast stages may finish between status polls.
+Stages are `snapshot`, `starting`, `copying`, `tagging`, `muxing`, `hashing`,
+`compressing`, `finalizing`, `reading_manifest`, `extracting`, `validating`,
+`validating_video`, `checking_library`, `planning`, `preparing`, `restoring_video`,
+`publishing`, `committing`, `cleaning_up`, `rolling_back`, and terminal
+`completed`/`failed`. Fast stages may finish between status polls.
 CLI progress goes to stderr even with `--json`, preserving the single final
 stdout response. Terminal output refreshes one bounded line; redirected output
 records stage changes/completions and at most one intermediate update every five
@@ -394,34 +395,49 @@ reports return `archive_job_not_found`. Relays reject these wire commands with
 `archive_local_only`; the CLI also rejects export and dry-run through a relay.
 
 The independent archive format is version 1: a gzip-compressed tar begins with
-`manifest.json`, then allowlisted regular files grouped in one `ARTIST - TITLE/`
-folder per track. Audio is `ARTIST - TITLE/ARTIST - TITLE.ext`, video is
-`ARTIST - TITLE/ARTIST - TITLE.video.mkv`, and artwork is
-`ARTIST - TITLE/cover.ext`, preserving its image extension.
-Unknown/empty artists are omitted. Names use NFC Unicode, replace unsafe
-characters, bound the stem to 80 UTF-8 bytes, and append a numeric suffix to
-avoid case-insensitive or normalized collisions. Import resolves assets through
-manifest paths and stores YouTube audio as `audio.m4a` in its managed directory.
-The root manifest name is reserved when choosing folder names. Asset paths have
-exactly two normal components and cannot use hidden or manifest-named folders.
-Manifest entries describe effective track metadata, automatic metadata and
-nullable overrides, YouTube provenance, asset sizes and SHA-256 checksums, or
-absolute external paths and optional checksums. Radio entries hold registered
-names/URLs only. There are at most 100,000 tracks and 100,000 radio entries;
-the manifest is limited to 64 MiB and individual cover images to 16 MiB.
+`manifest.json`, followed by allowlisted regular files at its root. Audio is
+`ARTIST - TITLE.ext` and video is `ARTIST - TITLE.mkv`. Unknown/empty artists are
+omitted. Names use NFC Unicode, sanitize unsafe characters, bound the stem to
+80 UTF-8 bytes, and append numeric suffixes for collisions. Asset paths have one
+normal component and cannot be hidden or named `manifest.json`.
+
+Every file track has a required `audio` asset, `original_sha256`, and an optional
+`video` asset, plus its effective track metadata, automatic metadata and nullable
+overrides, and YouTube provenance. Assets contain `path`, `bytes`, and `sha256`.
+All local audio is included; there are no external paths, reconnection operations,
+or separately archived cover assets. Radio entries hold registered names/URLs.
+There are at most 100,000 tracks and 100,000 channels; the manifest is limited to
+64 MiB and covers decoded for embedding/restoration to 16 MiB.
+
+Export copies every source before editing. It embeds title/artist/album and
+available cover artwork using mp4ameta for M4A/MP4 and Lofty for other supported
+audio formats. Audio encoding is unchanged, including extended-size MP4 mdat
+payloads. Source hashes are calculated during the copy; asset hashes cover the
+finished tagged copies. Temporary copies survive until compression finishes and
+are cleaned up on error. Missing audio and tag-write failures reject the export.
+
+When video exists, installed FFmpeg and FFprobe are resolved from YouTube tool
+settings or PATH, without loading LLM settings. Export copies the original video
+and audio streams into an independently playable MKV without re-encoding or
+shortening either stream. Import and dry-run verify a picture and audio stream;
+import remuxes only the picture stream into the existing silent `video.mkv`.
+Audio-only operations never require these tools. Missing tools or media failures
+are errors, not silent fallbacks; nothing is installed automatically. Child
+processes use the existing bounded, cancellable subprocess runner off the server
+owner loop, and expose remux progress.
+
 The reader rejects unsupported versions, duplicate/unexpected files, links,
 special entries, path traversal, absent assets, size/checksum mismatches, and
 truncated gzip data before publishing. No resolved stream URL, session, settings,
 credentials, or import history is archived.
 
-Restore allocates new IDs, rewrites all included paths, and regenerates managed
-YouTube `source.json`. YouTube identity, local content hashes, and normalized
-radio URLs deduplicate entries while preserving destination metadata. External
-files reconnect only after checksum validation; new internal single-file scan
-roots retain those references without scanning sibling files. File copies live
+Restore allocates new IDs, rewrites included paths, regenerates managed YouTube
+`source.json`, and extracts embedded covers into durable managed files. YouTube
+identity, original or exported audio hashes, and normalized radio URLs deduplicate
+entries while preserving destination metadata. Original hashes prevent tagging
+from creating duplicates when restoring into the source Library. File copies live
 under `imports/archive/UUID`; YouTube resources retain
-`imports/youtube/VIDEO_ID`. Restored local copies keep the existing local-file
-deletion protection.
+`imports/youtube/VIDEO_ID`. Restored local copies keep local-file deletion protection.
 
 Workers handle hashing, decompression, file validation and publication outside
 the playback owner loop. New directories are staged under
