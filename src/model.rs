@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Untagged to retain the existing on-disk and wire representation of files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

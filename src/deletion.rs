@@ -36,7 +36,7 @@ fn validate_files(path: &Path) -> Result<imports::Manifest> {
             entry.file_type()?.is_file()
                 && matches!(
                     entry.file_name().to_str(),
-                    Some("audio.m4a" | "cover.jpg" | "source.json")
+                    Some("audio.m4a" | "cover.jpg" | "source.json" | "video.mkv")
                 ),
             "Import contains an unexpected file; refusing deletion"
         );
@@ -49,7 +49,7 @@ fn validate_files(path: &Path) -> Result<imports::Manifest> {
     Ok(manifest)
 }
 
-fn managed_path(paths: &Paths, track: &Track) -> Result<PathBuf> {
+pub(crate) fn managed_path(paths: &Paths, track: &Track) -> Result<PathBuf> {
     let source = track.source.as_ref().ok_or_else(|| {
         ApiError::new(
             "not_managed",
@@ -75,7 +75,7 @@ fn managed_path(paths: &Paths, track: &Track) -> Result<PathBuf> {
 
 fn cleanup(path: &Path) -> Result<()> {
     // Leave the identity manifest until last so interrupted cleanup is recoverable.
-    for name in ["audio.m4a", "cover.jpg", "source.json"] {
+    for name in ["audio.m4a", "cover.jpg", "video.mkv", "source.json"] {
         match fs::remove_file(path.join(name)) {
             Ok(()) => (),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),

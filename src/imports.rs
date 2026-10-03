@@ -21,6 +21,7 @@ use std::{
 pub struct ImportRequest {
     pub url: String,
     pub playlist: bool,
+    pub video: bool,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub video_ids: Option<Vec<String>>,
@@ -65,6 +66,10 @@ pub struct ImportJob {
     pub stage: String,
     pub total: Option<usize>,
     pub added: usize,
+    #[serde(default)]
+    pub updated: usize,
+    #[serde(default)]
+    pub video_failed: usize,
     /// First successfully published track, in playlist order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_added_track_id: Option<String>,
@@ -88,6 +93,8 @@ impl ImportJob {
             stage: "queued".into(),
             total: None,
             added: 0,
+            updated: 0,
+            video_failed: 0,
             first_added_track_id: None,
             skipped: 0,
             failed: 0,
@@ -142,8 +149,8 @@ impl ImportJob {
             .saturating_sub(self.started_at_ms)
             / 1000;
         format!(
-            "{}/{} · {} · {}{}{}{}{} · {elapsed}s · Added {} · Skipped {} · Failed {}",
-            self.added + self.skipped + self.failed,
+            "{}/{} · {} · {}{}{}{}{} · {elapsed}s · Added {} · Updated {} · Skipped {} · Failed {} · Video failed {}",
+            self.added + self.updated + self.skipped + self.failed,
             self.total
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "?".into()),
@@ -154,8 +161,10 @@ impl ImportJob {
             speed,
             eta,
             self.added,
+            self.updated,
             self.skipped,
-            self.failed
+            self.failed,
+            self.video_failed
         )
     }
 }
@@ -168,6 +177,10 @@ pub struct ImportItem {
     pub track_id: Option<String>,
     pub error: Option<String>,
     pub metadata: Option<Metadata>,
+    #[serde(default)]
+    pub video_status: Option<String>,
+    #[serde(default)]
+    pub video_error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -184,12 +197,18 @@ pub struct Publication {
     pub stage: PathBuf,
     pub record: Record,
 }
+pub struct VideoPublication {
+    pub job: ImportJob,
+    pub item: ImportItem,
+    pub stage: PathBuf,
+}
 pub enum Message {
     Plan(ImportJob, Vec<ImportItem>),
     Progress(ImportJob),
-    Item(ImportJob, ImportItem),
+    Item(ImportJob, Box<ImportItem>),
     Lookup(String, mpsc::SyncSender<Option<Record>>),
     Publish(Box<Publication>, mpsc::SyncSender<Result<(), String>>),
+    Video(Box<VideoPublication>, mpsc::SyncSender<Result<(), String>>),
     Done(ImportJob),
 }
 pub struct Running {
@@ -232,9 +251,9 @@ pub fn spawn(
             job.error = Some(format!("{e:#}"));
             job.finish("failed");
         } else {
-            job.finish(if job.failed == 0 {
+            job.finish(if job.failed == 0 && job.video_failed == 0 {
                 "completed"
-            } else if job.added + job.skipped > 0 {
+            } else if job.added + job.updated + job.skipped > 0 {
                 "partial"
             } else {
                 "failed"
@@ -298,6 +317,8 @@ fn work(
             track_id: None,
             error: None,
             metadata: None,
+            video_status: request.video.then(|| "queued".into()),
+            video_error: None,
         })
         .collect();
     if !send(Message::Plan(job.clone(), items.clone())) {
@@ -351,6 +372,12 @@ fn work(
                 if final_dir.join("cover.jpg").is_file() {
                     std::fs::copy(final_dir.join("cover.jpg"), stage.join("cover.jpg"))?;
                 }
+                if final_dir.join(crate::video::FILE).is_file() {
+                    std::fs::copy(
+                        final_dir.join(crate::video::FILE),
+                        stage.join(crate::video::FILE),
+                    )?;
+                }
                 manifest
             } else {
                 update(job, "resolving", send);
@@ -390,6 +417,16 @@ fn work(
                     artist_override: request.artist.clone(),
                 }
             };
+            // Repairing missing audio must not discard a previously downloaded video.
+            let old_video = final_dir.join(crate::video::FILE);
+            if !stage.join(crate::video::FILE).exists()
+                && old_video.symlink_metadata().is_ok_and(|m| m.is_file())
+                && read_manifest(&final_dir).is_ok_and(|m| {
+                    m.track_id == manifest.track_id && m.source.video_id == manifest.source.video_id
+                })
+            {
+                std::fs::copy(old_video, stage.join(crate::video::FILE))?;
+            }
             crate::platform::atomic_json(&stage.join("source.json"), &manifest)?;
             let audio = stage.join("audio.m4a");
             let mut track = library::read_track(&audio, manifest.track_id.clone(), &paths.cache)?;
@@ -439,6 +476,14 @@ fn work(
             *job = committed;
             Ok(())
         })();
+        if outcome.is_ok() && request.video && !stop.load(Ordering::Relaxed) {
+            // Audio is already published. Video failure never rolls it back.
+            if let Err(error) = add_video(paths, job, &mut item, config, stop, send) {
+                item.video_status = Some("failed".into());
+                item.video_error = Some(format!("{error:#}"));
+                job.video_failed += 1;
+            }
+        }
         if stop.load(Ordering::Relaxed) {
             return Err(anyhow::anyhow!("Import cancelled"));
         }
@@ -448,7 +493,7 @@ fn work(
             job.failed += 1;
         }
         job.revision += 1;
-        if !send(Message::Item(job.clone(), item)) {
+        if !send(Message::Item(job.clone(), Box::new(item))) {
             bail!("Server stopped");
         }
     }
@@ -495,7 +540,7 @@ pub fn publish(paths: &Paths, publication: &mut Publication) -> Result<()> {
         let p = entry?.path();
         if !matches!(
             p.file_name().and_then(|s| s.to_str()),
-            Some("audio.m4a" | "cover.jpg" | "source.json")
+            Some("audio.m4a" | "cover.jpg" | "source.json" | "video.mkv")
         ) {
             if p.is_dir() {
                 let _ = std::fs::remove_dir_all(p);
@@ -511,5 +556,86 @@ pub fn publish(paths: &Paths, publication: &mut Publication) -> Result<()> {
         .join("cover.jpg")
         .is_file()
         .then(|| destination.join("cover.jpg"));
+    Ok(())
+}
+
+fn add_video(
+    paths: &Paths,
+    job: &mut ImportJob,
+    item: &mut ImportItem,
+    config: &Config,
+    stop: &Cancel,
+    send: &impl Fn(Message) -> bool,
+) -> Result<()> {
+    let dir = paths.data.join("imports/youtube").join(&item.video_id);
+    let manifest = read_manifest(&dir)?;
+    if manifest.source.video_id != item.video_id
+        || item.track_id.as_ref() != Some(&manifest.track_id)
+    {
+        bail!("Managed video identity mismatch");
+    }
+    let existing = dir.join(crate::video::FILE);
+    if existing.symlink_metadata().is_ok_and(|m| m.is_file())
+        && crate::video::probe(&existing, config, stop).is_ok()
+    {
+        item.video_status = Some("ready".into());
+        return Ok(());
+    }
+    item.video_status = Some("downloading".into());
+    job.progress = Default::default();
+    update(job, "downloading_video", send);
+    if !send(Message::Item(job.clone(), Box::new(item.clone()))) {
+        bail!("Server stopped");
+    }
+    let root = paths.data.join("imports/.staging");
+    crate::platform::private_dir(&root)?;
+    let stage = tempfile::Builder::new().prefix("video-").tempdir_in(root)?;
+    let mut last = Instant::now() - Duration::from_secs(1);
+    youtube::download_video(&manifest.source, stage.path(), config, stop, |progress| {
+        job.progress = progress;
+        if last.elapsed() >= Duration::from_millis(250) {
+            job.revision += 1;
+            send(Message::Progress(job.clone()));
+            last = Instant::now();
+        }
+    })?;
+    let mut committed = job.clone();
+    let mut result = item.clone();
+    result.video_status = Some("ready".into());
+    if item.status == "skipped" {
+        committed.skipped -= 1;
+        committed.updated += 1;
+        result.status = "updated".into();
+    }
+    committed.revision += 1;
+    let (tx, rx) = mpsc::sync_channel(1);
+    if !send(Message::Video(
+        Box::new(VideoPublication {
+            job: committed.clone(),
+            item: result.clone(),
+            stage: stage.path().into(),
+        }),
+        tx,
+    )) {
+        bail!("Server stopped");
+    }
+    wait(rx, stop)?.map_err(anyhow::Error::msg)?;
+    *job = committed;
+    *item = result;
+    Ok(())
+}
+
+pub fn publish_video(paths: &Paths, p: &VideoPublication, record: &Record) -> Result<()> {
+    let dir = crate::deletion::managed_path(paths, &record.track)?;
+    let expected = paths.data.join("imports/youtube").join(&p.item.video_id);
+    if dir.canonicalize()? != expected.canonicalize()?
+        || p.item.track_id.as_ref() != Some(&record.track.id)
+    {
+        bail!("Managed video identity mismatch");
+    }
+    std::fs::rename(
+        p.stage.join(crate::video::FILE),
+        dir.join(crate::video::FILE),
+    )?;
     Ok(())
 }

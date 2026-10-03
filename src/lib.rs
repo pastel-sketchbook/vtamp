@@ -28,5 +28,6 @@ mod subprocess;
 pub mod theme;
 mod tmux;
 pub mod tui;
+mod video;
 pub mod wire;
 pub mod youtube;

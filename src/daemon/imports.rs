@@ -4,6 +4,10 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::atomic::{AtomicBool, Ordering},
 };
+type PendingVideo = (
+    Box<jobs::VideoPublication>,
+    mpsc::SyncSender<Result<(), String>>,
+);
 type PendingPublication = (Box<Publication>, mpsc::SyncSender<Result<(), String>>);
 pub(super) struct Runtime {
     tasks: Vec<(crate::subprocess::Cancel, std::thread::JoinHandle<()>)>,
@@ -12,6 +16,7 @@ pub(super) struct Runtime {
     queue: VecDeque<String>,
     configs: HashMap<String, crate::import_config::Config>,
     pending: Vec<PendingPublication>,
+    videos: Vec<PendingVideo>,
     stopping: Arc<AtomicBool>,
 }
 impl Runtime {
@@ -27,6 +32,7 @@ impl Runtime {
             configs: HashMap::new(),
             queue: VecDeque::new(),
             pending: vec![],
+            videos: vec![],
             stopping: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -38,6 +44,7 @@ impl Runtime {
             || !self.queue.is_empty()
             || !self.tasks.is_empty()
             || !self.pending.is_empty()
+            || !self.videos.is_empty()
     }
     pub fn spawn_task(&mut self, task: impl FnOnce(crate::subprocess::Cancel) + Send + 'static) {
         let stop = crate::subprocess::cancel();
@@ -162,6 +169,7 @@ impl Runtime {
                 let _ = answer.send(store.video_record(&id)?);
             }
             jobs::Message::Publish(p, answer) => self.pending.push((p, answer)),
+            jobs::Message::Video(p, answer) => self.videos.push((p, answer)),
             jobs::Message::Plan(job, items) => {
                 store.import_plan(&job, &items)?;
                 self.changed(job, events);
@@ -208,6 +216,25 @@ impl Runtime {
             .as_ref()
             .is_some_and(|r| r.cancel.load(Ordering::Relaxed));
         if !scanning || cancelled {
+            for (p, answer) in std::mem::take(&mut self.videos) {
+                let result = (|| -> Result<()> {
+                    if cancelled {
+                        anyhow::bail!("Import cancelled");
+                    }
+                    let record = store
+                        .video_record(&p.item.video_id)?
+                        .context("Imported track disappeared")?;
+                    jobs::publish_video(paths, &p, &record)?;
+                    store.save_import(&p.job, Some(&p.item))?;
+                    Ok(())
+                })();
+                if result.is_ok() {
+                    self.changed(p.job, events);
+                    let _ = events.send(Event::LibraryChanged);
+                }
+                let _ = answer.send(result.map_err(|e| format!("{e:#}")));
+            }
+
             for (mut p, answer) in std::mem::take(&mut self.pending) {
                 let result = (|| -> Result<()> {
                     if cancelled {
@@ -298,6 +325,7 @@ impl Drop for Runtime {
         if let Some(r) = self.running.take() {
             r.stop();
             self.pending.clear();
+            self.videos.clear();
             let _ = r.thread.join();
         }
     }

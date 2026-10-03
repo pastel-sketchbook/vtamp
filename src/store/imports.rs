@@ -84,7 +84,10 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()?;
             for s in pending {
                 let mut item: ImportItem = serde_json::from_str(&s)?;
-                if !matches!(item.status.as_str(), "completed" | "skipped" | "failed") {
+                if !matches!(
+                    item.status.as_str(),
+                    "completed" | "updated" | "skipped" | "failed"
+                ) {
                     item.status = job.status.clone();
                     save_item(&tx, &job.job_id, &item)?;
                 }
@@ -119,7 +122,8 @@ impl Store {
             let mut ids = Vec::new();
             for s in strings {
                 let item: ImportItem = serde_json::from_str(&s)?;
-                if !matches!(item.status.as_str(), "completed" | "skipped")
+                if (!matches!(item.status.as_str(), "completed" | "updated" | "skipped")
+                    || (request.video && item.video_status.as_deref() != Some("ready")))
                     && crate::youtube::valid_id(&item.video_id)
                 {
                     ids.push(item.video_id);

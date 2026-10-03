@@ -1,5 +1,6 @@
 mod imports;
 mod streams;
+mod video;
 use crate::{
     artwork::Artwork,
     cli::Art,
@@ -242,6 +243,7 @@ struct App {
     library_reveal: Option<imports::LibraryReveal>,
     stream_dialog: Option<streams::Dialog>,
     spectrum: SpectrumView,
+    video: video::View,
     viewport: Rect,
     theme: Theme,
     theme_picker: Option<ThemePicker>,
@@ -361,6 +363,7 @@ pub async fn run(
         library_reveal: None,
         stream_dialog: None,
         spectrum: SpectrumView::new(saved_spectrum, saved_style),
+        video: video::View::default(),
         viewport: Rect::new(0, 0, size.width, size.height),
         theme,
         theme_picker: None,
@@ -400,6 +403,12 @@ pub async fn run(
         show_art: !matches!(art, Art::None),
         caret: None,
     };
+    app.video.enabled = Settings::load(&app.settings_path)
+        .map(|s| s.video)
+        .unwrap_or(true);
+    app.video
+        .start(client.paths.clone(), app.artwork.video_graphics());
+    let video_mailbox = app.video.mailbox();
     let watch_client = client.clone();
     let watch_messages = messages.clone();
     let watch_task = tokio::spawn(async move {
@@ -547,6 +556,10 @@ pub async fn run(
                     // Keep its 20 Hz deadline independent of stream arrival times.
                     continue;
                 },
+                _ = video_mailbox.notify.notified() => {
+                    if let Some(notice) = app.video.accept() { app.notice(notice); }
+                    None
+                },
                 Some(message) = incoming.recv() => {
                     app.message(message, &messages, &commands);
                     None
@@ -567,10 +580,11 @@ pub async fn run(
                         let cover_hidden = app.cover_hidden();
                         let theme = app.theme;
                         let spectrum = app.spectrum.enabled;
+                        let video = app.video.enabled;
                         if app.key(key, &commands)? {
                             return Ok::<_, anyhow::Error>(());
                         }
-                        if cover_hidden != app.cover_hidden() || theme != app.theme || spectrum != app.spectrum.enabled {
+                        if cover_hidden != app.cover_hidden() || theme != app.theme || spectrum != app.spectrum.enabled || video != app.video.enabled {
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
                             terminal.clear()?;
@@ -594,10 +608,12 @@ pub async fn run(
                 presentation.invalidate();
             }
             app.flush_search(&commands);
+            app.sync_video();
             presentation.draw(&mut terminal, |frame| {
                 app.draw(frame);
                 app.caret
             })?;
+            app.sync_video();
             last_draw = Instant::now();
             let wanted = app.spectrum_visible() && app.connected && !app.state.current().is_some_and(|item| item.track.is_live());
             spectrum_enabled.send_if_modified(|value| {
@@ -696,7 +712,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video (pauses playback) / channel")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video (pauses playback) / channel\nw   Toggle saved video / cover")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -782,6 +798,20 @@ impl App {
         }
     }
 
+    fn sync_video(&mut self) {
+        self.video.sync(
+            self.state.current(),
+            self.state.status,
+            self.connected,
+            self.show_art
+                && !self.cover_hidden()
+                && self.viewport.width >= 40
+                && self.viewport.height >= 12,
+            self.position(),
+            cover_background(self.theme.palette()),
+        );
+    }
+
     fn cover_hidden(&self) -> bool {
         // The theme picker stays in the browser area, away from album art.
         // Help and import dialogs can overlap the player and must hide pixels.
@@ -798,10 +828,11 @@ impl App {
     fn cover_shape(&self) -> CoverShape {
         let font = self.artwork.font_size();
         CoverShape {
-            aspect: self
-                .cover_image
-                .as_ref()
-                .map_or(1.0, |image| image.width() as f32 / image.height() as f32),
+            aspect: self.video.aspect.unwrap_or_else(|| {
+                self.cover_image
+                    .as_ref()
+                    .map_or(1.0, |image| image.width() as f32 / image.height() as f32)
+            }),
             cell: (font.width, font.height),
         }
     }
@@ -1410,7 +1441,10 @@ impl App {
                 self.state.position_ms = position_ms;
                 self.last_progress = Instant::now();
             }
-            Message::Event(Event::LibraryChanged) => self.refresh(commands),
+            Message::Event(Event::LibraryChanged) => {
+                self.video.epoch = self.video.epoch.wrapping_add(1);
+                self.refresh(commands);
+            }
             Message::Event(Event::Imports(jobs)) => {
                 self.import_snapshot(jobs);
                 if matches!(self.import_ui.modal, Some(imports::Modal::Jobs)) {
@@ -1671,7 +1705,11 @@ impl App {
                                         });
                                         self.send(commands, Command::ImportPreview { request });
                                     }
-                                    Ok(()) => self.send(commands, Command::ImportStart { request }),
+                                    Ok(()) => {
+                                        self.import_ui.scroll = 0;
+                                        self.import_ui.modal =
+                                            Some(imports::Modal::Download { request });
+                                    }
                                     Err(e) => self.notice(e.to_string()),
                                 }
                                 return Ok(false);
@@ -1771,6 +1809,20 @@ impl App {
                 self.help_scroll = HelpScroll::default();
             }
             KeyCode::Char('t') => self.open_theme_picker(),
+            KeyCode::Char('w') if key.modifiers.is_empty() => {
+                self.video.enabled = !self.video.enabled;
+                self.video.retry();
+                match Settings::set_video(&self.settings_path, self.video.enabled) {
+                    Ok(()) => self.notice(if self.video.enabled {
+                        "Video on · w shows cover"
+                    } else {
+                        "Video off · w shows video"
+                    }),
+                    Err(error) => self.notice(format!(
+                        "Video changed for this session; could not save: {error:#}"
+                    )),
+                }
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = if self.focus == Focus::Library {
                     Focus::Queue
@@ -2206,6 +2258,16 @@ impl App {
         } else if area.width >= 48 {
             groups.push("Tab list");
         }
+        if area.width >= 80
+            && self.import_ui.enabled
+            && (self.video.has_frame() || !self.video.enabled)
+        {
+            groups.push(if self.video.enabled {
+                "w cover"
+            } else {
+                "w video"
+            });
+        }
         groups.extend(["? help", "q detach"]);
         // Prefer the roomy spacing; tighten it rather than clip the last hint.
         let mut keys = format!(" {}", groups.join("  "));
@@ -2275,7 +2337,7 @@ impl App {
             Confirm::DeleteDownload { title, .. } => (
                 " Delete download ",
                 format!("Delete {title}?"),
-                "Deletes downloaded audio and cover.\nCannot be undone.\nRemove queued copies first.",
+                "Deletes downloaded audio, video and cover.\nCannot be undone.\nRemove queued copies first.",
                 " Enter delete · Esc cancel ",
             ),
         };
@@ -2341,6 +2403,19 @@ impl App {
         } else {
             now_playing_regions(inner, self.show_art, shape)
         };
+        let cover = cover.map(|mut rect| {
+            if self.video.aspect.is_some() {
+                let font = self.artwork.font_size();
+                let width = rect.width.min(854 / font.width.max(1));
+                let height = rect.height.min(480 / font.height.max(1));
+                rect.x += (rect.width - width) / 2;
+                rect.y += (rect.height - height) / 2;
+                rect.width = width;
+                rect.height = height;
+            }
+            rect
+        });
+        self.video.area = cover.unwrap_or_default();
         let item = self.state.current();
         // Streams carry no artwork to load; never report them as missing art.
         let placeholder = if item.is_some_and(|q| q.track.is_live()) {
@@ -2352,7 +2427,9 @@ impl App {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide for help/themes, and redraw when they close.
             if !self.cover_hidden() {
-                if self.cover.has_image() {
+                if self.video.render(frame, cover) {
+                    // The frame was already encoded on the video worker.
+                } else if self.cover.has_image() {
                     frame.render_stateful_widget(
                         StatefulImage::new().resize(crate::cover::COVER_RESIZE.clone()),
                         cover,
@@ -5066,6 +5143,7 @@ mod tests {
             library_reveal: None,
             stream_dialog: None,
             spectrum: SpectrumView::new(false, SpectrumStyle::default()),
+            video: video::View::default(),
             viewport: Rect::default(),
             theme: Theme::default(),
             theme_picker: None,
@@ -5454,6 +5532,8 @@ mod tests {
                     .collect();
                 assert!(text.contains("Enter add all"), "{text}");
                 assert!(text.contains("Esc cancel"), "{text}");
+                app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &commands)
+                    .unwrap();
                 app.key(
                     KeyEvent::new(
                         if confirm {
@@ -5472,6 +5552,7 @@ mod tests {
                         panic!("expected confirmed import");
                     };
                     assert!(request.playlist);
+                    assert!(request.video);
                     assert_eq!(request.video_ids.unwrap(), ["0OeEx5SiRI0", "lO3lG-qXU14"]);
                 }
                 assert!(requests.try_recv().is_err());
@@ -5490,8 +5571,14 @@ mod tests {
             let (commands, mut requests) = mpsc::channel(8);
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
                 .unwrap();
-            assert!(app.import_ui.modal.is_none());
             if suffix.is_empty() {
+                assert!(matches!(
+                    app.import_ui.modal,
+                    Some(imports::Modal::Download { .. })
+                ));
+                assert!(requests.try_recv().is_err());
+                app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &commands)
+                    .unwrap();
                 let Command::ImportStart { request } = requests.try_recv().unwrap() else {
                     panic!("expected single-video import");
                 };
@@ -5501,6 +5588,55 @@ mod tests {
                 assert!(app.notice.contains("Invalid playlist ID"), "{}", app.notice);
             }
             assert!(requests.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn download_choice_defaults_to_audio_and_cancel_never_imports() {
+        use ratatui::backend::TestBackend;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        for video in [false, true] {
+            for confirm in [false, true] {
+                let mut app = app();
+                app.import_ui.enabled = true;
+                app.input = Some(Input::Folder("https://youtu.be/lO3lG-qXU14".into()));
+                let (commands, mut requests) = mpsc::channel(8);
+                app.key(key(KeyCode::Enter), &commands).unwrap();
+                assert!(requests.try_recv().is_err());
+                if video {
+                    app.key(key(KeyCode::Tab), &commands).unwrap();
+                }
+                for (width, height) in [(40, 12), (100, 24)] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    terminal.draw(|frame| app.draw(frame)).unwrap();
+                    let text = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect::<String>();
+                    assert!(text.contains("Download video too?"));
+                    assert!(text.contains("Esc cancel"));
+                }
+                app.key(
+                    key(if confirm {
+                        KeyCode::Enter
+                    } else {
+                        KeyCode::Esc
+                    }),
+                    &commands,
+                )
+                .unwrap();
+                if confirm {
+                    let Command::ImportStart { request } = requests.try_recv().unwrap() else {
+                        panic!("import expected");
+                    };
+                    assert_eq!(request.video, video);
+                }
+                assert!(requests.try_recv().is_err());
+                assert!(app.import_ui.modal.is_none());
+            }
         }
     }
 

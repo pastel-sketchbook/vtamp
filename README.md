@@ -438,6 +438,12 @@ Halfblocks need no graphics passthrough. Use `--art halfblocks` if graphics are 
 
 Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Artwork is cached at up to 512 pixels on the long side and keeps its own shape, as imported YouTube thumbnails do; the player sizes the cover area to the image and scales the artwork to fill it, so a wide thumbnail is drawn in full without bars or losing pixels. Missing or undecodable art uses a built-in image. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
 
+YouTube imports can optionally save video up to 480p (`library add URL --video`).
+The TUI asks before downloading video and automatically plays saved video in the
+cover area on macOS with Kitty/Sixel graphics. Press `w` to switch video/cover;
+this display preference is saved. Audio remains in the server and keeps playing
+when the TUI exits. See [video imports and playback](docs/imports.md#terminal-video-macos).
+
 ## tmux status bar
 
 Keep the current track visible after detaching the TUI:
@@ -733,7 +739,7 @@ and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds)
 
 ### Updating from older protocol versions
 
-This build uses **protocol 8** and migrates the library to **database version 6**
+This build uses **protocol 9** and migrates the library to **database version 6**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,
@@ -926,3 +932,14 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 Small, focused changes are welcome. Include the behavior you changed, a reproducible example for bugs, and relevant validation. Avoid bundling personal music, private paths, cache files, or standalone album artwork. Changes to the curated website captures should follow the screenshot workflow above. Keep platform-specific work behind the existing boundaries.
 
 vtamp is [MIT licensed](LICENSE). Its Rust dependencies retain their own licenses. The bundled Space Grotesk and Pretendard fonts are distributed under the SIL Open Font License ([Space Grotesk](site/fonts/OFL.txt), [Pretendard](site/fonts/OFL-Pretendard.txt)). vtamp is an independent project inspired by the experience of classic desktop players, not an affiliation with Winamp.
+
+### Optional terminal-video check
+
+After `cargo build --locked --release`, run `python3 scripts/check-video.py` on
+macOS with Ghostty and installed FFmpeg/FFprobe/tmux/Swift. It generates synthetic
+media, uses a fake downloader with real FFmpeg, and runs muted isolated servers
+and private tmux sockets. No network, browser cookies, LLM, or personal library is
+used. It compares 8/12/15 fps, records Kitty uploads, input response times and RSS,
+and captures real pixels for manual inspection under `/tmp`. Use `--fps 12` for a
+single rate or `--output /tmp/vtamp-video-check` to choose the evidence directory.
+The default suite does not prove terminal pixels or audible playback.

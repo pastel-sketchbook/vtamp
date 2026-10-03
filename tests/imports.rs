@@ -45,6 +45,11 @@ if '--skip-download' in args:
  if not (base/'nothumb').exists():
   shutil.copyfile(base/'art.png',pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','png')))
  sys.exit(0)
+if '-f' in args and args[args.index('-f')+1]=='bestvideo[height<=480]/best[height<=480]':
+ if (base/'slow_video').exists(): time.sleep(60)
+ if (base/'fail_video').exists(): print('Video download failed',file=sys.stderr);sys.exit(1)
+ pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','webm')).write_bytes(b'SILENT VIDEO')
+ sys.exit(0)
 assert '-f' in args and args[args.index('-f')+1]=='bestaudio[ext=m4a]/bestaudio'
 assert '--cookies-from-browser' not in args
 out=pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','m4a'))
@@ -58,7 +63,7 @@ print('VTAMP_FILE '+json.dumps(str(out)))
             fixture = serde_json::to_string(&fixture).unwrap()
         );
         fs::write(bin.join("yt-dlp"), script).unwrap();
-        fs::write(bin.join("ffmpeg"),"#!/usr/bin/python3\nimport sys,shutil\na=sys.argv[1:]\nif '-i' in a: shutil.copyfile(a[a.index('-i')+1],a[-1])\nelse: print('fake 1')\n").unwrap();
+        fs::write(bin.join("ffmpeg"),"#!/usr/bin/python3\nimport sys,shutil,json,pathlib\na=sys.argv[1:]\nif '-show_streams' in a:\n if pathlib.Path(a[-1]).read_bytes()!=b'SILENT VIDEO': sys.exit(1)\n print(json.dumps({'streams':[{'codec_type':'video','width':854,'height':480}],'format':{'duration':'60'}}));sys.exit(0)\nif '-i' in a: shutil.copyfile(a[a.index('-i')+1],a[-1])\nelse: print('fake 1')\n").unwrap();
         for name in ["yt-dlp", "ffmpeg"] {
             fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o700)).unwrap();
         }
@@ -602,4 +607,161 @@ fn queued_jobs_use_the_configuration_captured_when_submitted() {
         h.ok(&["library", "list"])["tracks"][0]["title"],
         "Captured settings"
     );
+}
+
+#[test]
+fn video_opt_in_preserves_music_and_is_not_scanned_as_a_track() {
+    let h = Harness::new();
+    let result = h.ok(&["library", "add", URL, "--video", "--wait"]);
+    assert_eq!(result["job"]["added"], 1);
+    assert_eq!(result["items"][0]["video_status"], "ready");
+    let folder = h.home.path().join("imports/youtube/lO3lG-qXU14");
+    assert_eq!(fs::read(folder.join("video.mkv")).unwrap(), b"SILENT VIDEO");
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert!(calls.contains("bestvideo[height<=480]/best[height<=480]"));
+    h.ok(&["library", "scan", "--wait"]);
+    assert_eq!(h.ok(&["library", "list"])["total"], 1);
+    let again = h.ok(&["library", "add", URL, "--video", "--wait"]);
+    assert_eq!(again["job"]["skipped"], 1);
+    assert_eq!(again["job"]["updated"], 0);
+    let id = result["items"][0]["track_id"].as_str().unwrap();
+    h.ok(&["library", "delete", id]);
+    assert!(!folder.exists());
+}
+
+#[test]
+fn adding_video_to_existing_audio_preserves_identity_overrides_and_queue() {
+    use std::os::unix::fs::MetadataExt;
+    let h = Harness::new();
+    let first = h.ok(&["library", "add", URL, "--audio-only", "--wait"]);
+    let id = first["items"][0]["track_id"].as_str().unwrap();
+    h.ok(&[
+        "library", "edit", id, "--title", "My title", "--album", "My album",
+    ]);
+    h.ok(&["queue", "add", "--track", id]);
+    let before = h.ok(&["status"]);
+    let folder = h.home.path().join("imports/youtube/lO3lG-qXU14");
+    let audio = folder.join("audio.m4a");
+    let inode = audio.metadata().unwrap().ino();
+    let bytes = fs::read(&audio).unwrap();
+    let result = h.ok(&["library", "add", URL, "--video", "--wait"]);
+    assert_eq!(result["job"]["added"], 0);
+    assert_eq!(result["job"]["updated"], 1);
+    assert_eq!(result["items"][0]["track_id"], id);
+    assert_eq!(result["items"][0]["status"], "updated");
+    assert_eq!(h.ok(&["status"]), before);
+    assert_eq!(audio.metadata().unwrap().ino(), inode);
+    assert_eq!(fs::read(&audio).unwrap(), bytes);
+    let track = h.ok(&["library", "track", id]);
+    assert_eq!(track["title"], "My title");
+    assert_eq!(track["album"], "My album");
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert_eq!(calls.matches("bestaudio[ext=m4a]/bestaudio").count(), 1);
+}
+
+#[test]
+fn failed_video_keeps_audio_and_retry_only_downloads_video() {
+    let h = Harness::new();
+    let fail = h.home.path().join("bin/fail_video");
+    fs::write(&fail, b"").unwrap();
+    let job = h.ok(&["library", "add", URL, "--video"]);
+    let result = h.wait(job["job_id"].as_str().unwrap());
+    assert_eq!(result["job"]["status"], "partial");
+    assert_eq!(result["job"]["added"], 1);
+    assert_eq!(result["job"]["failed"], 0);
+    assert_eq!(result["job"]["video_failed"], 1);
+    assert_eq!(result["items"][0]["video_status"], "failed");
+    assert_eq!(h.ok(&["library", "list"])["total"], 1);
+    fs::remove_file(fail).unwrap();
+    let retry = h.ok(&["library", "import-retry", job["job_id"].as_str().unwrap()]);
+    let done = h.wait(retry["job_id"].as_str().unwrap());
+    assert_eq!(done["job"]["status"], "completed");
+    assert_eq!(done["job"]["updated"], 1);
+    assert_eq!(done["items"][0]["track_id"], result["items"][0]["track_id"]);
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert_eq!(calls.matches("bestaudio[ext=m4a]/bestaudio").count(), 1);
+}
+
+#[test]
+fn cancelling_video_leaves_registered_audio_and_can_be_retried() {
+    let h = Harness::new();
+    let slow = h.home.path().join("bin/slow_video");
+    fs::write(&slow, b"").unwrap();
+    let job = h.ok(&["library", "add", URL, "--video"]);
+    let id = job["job_id"].as_str().unwrap();
+    let started = Instant::now();
+    loop {
+        let result = h.ok(&["library", "import-status", id]);
+        if result["job"]["stage"] == "downloading_video" && result["job"]["added"] == 1 {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(15), "{result}");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    h.ok(&["library", "import-cancel", id]);
+    assert_eq!(h.wait(id)["job"]["status"], "cancelled");
+    assert_eq!(h.ok(&["library", "list"])["total"], 1);
+    fs::remove_file(slow).unwrap();
+    let retry = h.ok(&["library", "import-retry", id]);
+    assert_eq!(
+        h.wait(retry["job_id"].as_str().unwrap())["job"]["updated"],
+        1
+    );
+}
+
+#[test]
+fn video_preview_is_read_only_and_flags_are_exclusive() {
+    let h = Harness::new();
+    h.ok(&["library", "add", URL, "--video", "--preview"]);
+    assert!(!h.home.path().join("state.db").exists());
+    assert!(!h.home.path().join("imports").exists());
+    assert!(
+        !h.cmd(&["library", "add", URL, "--video", "--audio-only"])
+            .status
+            .success()
+    );
+    let audio = h.ok(&["library", "add", URL, "--wait"]);
+    assert!(audio["items"][0]["video_status"].is_null());
+    assert!(
+        !h.home
+            .path()
+            .join("imports/youtube/lO3lG-qXU14/video.mkv")
+            .exists()
+    );
+}
+
+#[test]
+fn published_video_survives_report_failure_and_audio_repair() {
+    let h = Harness::new();
+    let audio = h.ok(&["library", "add", URL, "--audio-only", "--wait"]);
+    let track = audio["items"][0]["track_id"].clone();
+    let db = rusqlite::Connection::open(h.home.path().join("state.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_video_report BEFORE UPDATE ON import_items WHEN json_extract(NEW.json, '$.video_status') = 'ready' BEGIN SELECT RAISE(FAIL, 'injected video report failure'); END;").unwrap();
+    let job = h.ok(&["library", "add", URL, "--video"]);
+    let failed = h.wait(job["job_id"].as_str().unwrap());
+    assert_eq!(failed["job"]["status"], "partial");
+    let folder = h.home.path().join("imports/youtube/lO3lG-qXU14");
+    assert!(folder.join("video.mkv").exists());
+    db.execute_batch("DROP TRIGGER fail_video_report").unwrap();
+    let retry = h.ok(&["library", "import-retry", job["job_id"].as_str().unwrap()]);
+    let done = h.wait(retry["job_id"].as_str().unwrap());
+    assert_eq!(done["job"]["status"], "completed");
+    assert_eq!(done["items"][0]["video_status"], "ready");
+    assert_eq!(done["items"][0]["track_id"], track);
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert_eq!(
+        calls
+            .matches("bestvideo[height<=480]/best[height<=480]")
+            .count(),
+        1
+    );
+    fs::remove_file(folder.join("audio.m4a")).unwrap();
+    let repaired = h.ok(&["library", "add", URL, "--audio-only", "--wait"]);
+    assert_eq!(repaired["items"][0]["track_id"], track);
+    assert_eq!(fs::read(folder.join("video.mkv")).unwrap(), b"SILENT VIDEO");
+    // Corrupt sidecars are replaceable, without a second audio download.
+    fs::write(folder.join("video.mkv"), b"damaged").unwrap();
+    let replaced = h.ok(&["library", "add", URL, "--video", "--wait"]);
+    assert_eq!(replaced["job"]["updated"], 1);
+    assert_eq!(fs::read(folder.join("video.mkv")).unwrap(), b"SILENT VIDEO");
 }

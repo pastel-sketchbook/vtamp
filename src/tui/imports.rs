@@ -36,6 +36,9 @@ enum ImportTarget {
 }
 pub(super) enum Modal {
     Jobs,
+    Download {
+        request: ImportRequest,
+    },
     Preview {
         request: ImportRequest,
         result: Option<Preview>,
@@ -322,6 +325,21 @@ impl App {
             _ => (),
         }
         match modal {
+            Modal::Download { request } => match key.code {
+                KeyCode::Tab
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Char(' ') => request.video = !request.video,
+                KeyCode::Enter => {
+                    let request = request.clone();
+                    self.import_ui.modal = None;
+                    self.send(commands, Command::ImportStart { request });
+                }
+                KeyCode::Char('q') => self.import_ui.modal = None,
+                _ => (),
+            },
             Modal::Preview { request, result } => {
                 if key.code == KeyCode::Enter
                     && let Some(preview) = result
@@ -331,6 +349,8 @@ impl App {
                         Some(preview.items.iter().map(|i| i.video_id.clone()).collect());
                     self.import_ui.modal = None;
                     self.send(commands, Command::ImportStart { request });
+                } else if matches!(key.code, KeyCode::Tab | KeyCode::Char(' ')) {
+                    request.video = !request.video;
                 } else if key.code == KeyCode::Char('q') {
                     self.import_ui.modal = None;
                 }
@@ -778,6 +798,7 @@ impl App {
                 }
                 for (field, label) in [
                     (&item["error"], "Error"),
+                    (&item["video_error"], "Video"),
                     (&item["metadata"]["warning"], "Note"),
                 ] {
                     if let Some(text) = field.as_str() {
@@ -838,6 +859,7 @@ impl App {
             p,
             match modal {
                 Modal::Jobs => " IMPORTS ",
+                Modal::Download { .. } => " IMPORT YOUTUBE ",
                 Modal::Preview { .. } => " IMPORT YOUTUBE PLAYLIST ",
                 Modal::Edit { .. } => " EDIT TRACK ",
             },
@@ -854,7 +876,24 @@ impl App {
         let mut focused_rows = None;
         let mut caret_column = 0;
         let hint = match modal {
-            Modal::Preview { result, .. } => {
+            Modal::Download { request } => {
+                lines.push(Line::from("Download video too?"));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    format!("{} Audio only", if request.video { " " } else { "›" }),
+                    Style::default().fg(if request.video { p.text } else { p.accent }),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "{} Audio + video · up to 480p",
+                        if request.video { "›" } else { " " }
+                    ),
+                    Style::default().fg(if request.video { p.accent } else { p.text }),
+                ));
+                "Tab/↑/↓ choose · Enter add
+Esc cancel"
+            }
+            Modal::Preview { request, result } => {
                 if let Some(v) = result {
                     lines.push(
                         Line::from(v.title.clone())
@@ -867,11 +906,19 @@ impl App {
                             .map(|n| n.to_string())
                             .unwrap_or_else(|| "unknown".into())
                     )));
+                    lines.push(Line::styled(
+                        if request.video {
+                            "› Audio + video · up to 480p"
+                        } else {
+                            "› Audio only"
+                        },
+                        Style::default().fg(p.accent),
+                    ));
                     lines.push(Line::from(""));
                     for item in &v.items {
                         lines.push(Line::from(item.title.clone()));
                     }
-                    "Enter add all · Esc cancel\nPgUp/Dn scroll"
+                    "Tab video/audio · Enter add all\nEsc cancel · PgUp/Dn scroll"
                 } else {
                     lines.push(Line::from("Looking up playlist…"));
                     "Esc cancel"
@@ -970,6 +1017,7 @@ fn import_stage(stage: &str) -> &str {
         "resolving" => "Looking up",
         "metadata" => "Reading metadata",
         "downloading" => "Downloading",
+        "downloading_video" => "Downloading video",
         "processing" => "Processing",
         "indexing" => "Saving",
         "cancelling" => "Cancelling",
@@ -996,6 +1044,7 @@ fn import_outcomes(job: &ImportJob) -> Vec<String> {
             "resolving" => "Looking up the YouTube source…".into(),
             "metadata" => "Preparing track details…".into(),
             "downloading" => "Downloading audio…".into(),
+            "downloading_video" => "Downloading video (up to 480p)…".into(),
             "processing" => "Preparing audio and artwork…".into(),
             "indexing" => "Adding to Library…".into(),
             "cancelling" => "Cancelling this import…".into(),
@@ -1012,13 +1061,22 @@ fn import_outcomes(job: &ImportJob) -> Vec<String> {
     if job.added > 0 {
         lines.push(format!("Added {} to Library.", tracks(job.added)));
     }
+    if job.updated > 0 {
+        lines.push(format!("Added video to {}.", tracks(job.updated)));
+    }
+    if job.video_failed > 0 {
+        lines.push(format!(
+            "Video failed for {}; audio is available. Retry to add video.",
+            tracks(job.video_failed)
+        ));
+    }
     if job.skipped > 0 {
         lines.push(format!("{} already in Library.", tracks(job.skipped)));
     }
     if job.failed > 0 {
         lines.push(format!("Could not import {}.", tracks(job.failed)));
     }
-    if job.added + job.skipped + job.failed == 0 {
+    if job.added + job.updated + job.skipped + job.failed == 0 {
         lines.push(
             if job.status == "completed" {
                 "Import completed."
@@ -1034,6 +1092,7 @@ fn import_outcomes(job: &ImportJob) -> Vec<String> {
 fn import_item_status(status: &str) -> &str {
     match status {
         "completed" => "Added",
+        "updated" => "Video added",
         "skipped" => "Already in library",
         _ => import_stage(status),
     }

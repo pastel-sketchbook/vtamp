@@ -1,4 +1,4 @@
-# Local protocol, version 8
+# Local protocol, version 9
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":8,"request":{"command":"pause"}}
+{"version":9,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":8,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":9,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -47,14 +47,14 @@ At most four direct imports and one catalog scan run at a time. There are bounde
 
 ## Watch
 
-Send `{"version":8,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":9,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":8,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
+{"version":9,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
 ```
 
 ```json
-{"version":8,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":9,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -63,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":8,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":9,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -241,11 +241,11 @@ rules: one per track start, seek, and resume, silence while paused or after a
 track ends, an end-of-stream page on stop. Radio playback is not cast. Without
 `--cast` a device server has no cast at all.
 
-Send `{"version":8,"request":{"command":"cast_watch"}}` on a separate connection.
+Send `{"version":9,"request":{"command":"cast_watch"}}` on a separate connection.
 The first reply is a success envelope whose `data` is a `CastInfo`:
 
 ```json
-{"version":8,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
+{"version":9,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
 ```
 
 After that reply the connection carries raw Ogg pages without length prefixes,
@@ -320,7 +320,10 @@ instead of rewinding it.
 
 ## Compatibility and storage
 
-All envelopes advertise protocol 8. Protocol 8 adds `library_delete` for managed YouTube downloads; the database version stays 6. Protocol 7 added `cast_watch` and `cast_info`. Clients must report `version_mismatch` when
+All envelopes advertise protocol 9. Protocol 9 adds opt-in video imports and video
+outcomes in import reports; the database version stays 6. Protocol 8 added
+`library_delete` for managed YouTube downloads. Protocol 7 added `cast_watch` and
+`cast_info`. Clients must report `version_mismatch` when
 connected to older versions; restart with matching binaries and reattach clients.
 Database version 5 protects saved direct-playback items and queue cursors from
 older binaries; previous sessions load with both fields null. Direct playback also
@@ -387,7 +390,7 @@ counters. Only the last handful of reports is retained, they are not persisted,
 and an unknown or restarted job returns `cover_job_not_found`. A second refresh
 while one runs returns `cover_refresh_in_progress` with its `job_id`.
 
-An import request has `url`, `playlist` (default false), optional single-video
+An import request has `url`, `playlist` and `video` (both default false), optional single-video
 `title`/`artist`, and optional `video_ids` to freeze a preview or retry subset.
 An empty ID in a playlist represents an unavailable entry and is reported as a
 failure. Other IDs must be valid 11-character video IDs. A single video's frozen
@@ -399,7 +402,18 @@ Jobs carry `job_id`, normalized source URL, title, status/stage, nullable total
 and current item, added/skipped/failed counts, bytes/total/speed/ETA, timestamps,
 error, and a monotonically increasing revision. Terminal statuses are completed,
 partial, failed, cancelled, and interrupted. Items carry an index, video ID,
-title, status, optional track ID, metadata result/warning, and error. Job history
+title, status, optional track ID, metadata result/warning, and error. Video-enabled
+requests additionally report `video_status` (`queued`, `downloading`, `ready`, or
+`failed`) and `video_error`; audio-only items leave these null. Cancelled or
+interrupted reports can retain a pending video status, indicating unfinished work.
+Jobs add `updated` (video added to existing audio) and `video_failed` counts,
+defaulting to zero in old reports. `added + updated + skipped + failed` counts
+processed items; `video_failed` is an independent count, never added to that sum.
+An audio success plus video failure leaves the item completed/skipped, records the
+video failure, and makes the job partial. `import_retry` includes items whose
+requested video is not ready, preserving the video option. Successful video-only
+additions have item status `updated`; already complete imports remain skipped.
+Job history
 retains 100 terminal jobs. On startup all unfinished jobs become interrupted;
 only an explicit retry starts them again. Jobs optionally carry
 `first_added_track_id`, committed with the first successful publication and
@@ -417,7 +431,12 @@ renames the completed directory and commits the track, source/overrides, and
 successful item report together. A failed DB commit leaves a recoverable directory;
 retry or a later scan can adopt it. Scans never enumerate staging directories.
 Deduplication is by source video ID and existing file, independently of queue
-entry identity. Metadata edits update queued copies without changing queue order,
+entry identity. With `video: true`, an existing audio file without a valid silent
+`video.mkv` is upgraded without replacing audio or changing track/queue identity.
+Video download, remux, and probe run on the import worker after audio publication;
+the owner atomically renames the verified sidecar and saves the item report. A
+failed report commit leaves a recoverable sidecar, recognized on retry. Scans do
+not index MKV sidecars as tracks. Managed deletion includes the sidecar. Metadata edits update queued copies without changing queue order,
 current entry, playback position, or queue revision. Audio files are not rewritten.
 
 The Track's optional `source` contains `provider: youtube`, `video_id`, canonical

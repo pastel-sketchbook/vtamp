@@ -38,7 +38,10 @@ It is not an equalizer and does not modify audio.
 
 The macOS server integrates with media keys and Now Playing, including track metadata and artwork in Control Center. Controls remain available after the TUI detaches; macOS chooses the active media player.
 
-An installed `yt-dlp` enables optional audio imports. Without it, the interface,
+An installed `yt-dlp` enables optional audio imports with per-job consent to save
+video up to 480p. On macOS, saved video plays in the cover area through Kitty or
+Sixel and follows the server audio; `w` switches video/cover. Existing audio-only
+imports can gain video without changing their identity or queue. Without it, the interface,
 help, and diagnostics show no integration controls or prompts. Imports run in the
 server with visible progress, per-item failures, cancellation, and retry. Metadata
 uses deterministic rules by default; users can opt into an API or installed CLI

@@ -1,0 +1,847 @@
+//! A client-owned picture stream, synchronized to the server's audio clock.
+//! One worker, one replaceable output slot, at most one frame being encoded.
+use crate::{
+    artwork::VideoGraphics,
+    import_config::Config,
+    model::{PlaybackStatus, QueueItem, Track},
+    platform::Paths,
+    subprocess::{self, Cancel},
+    video,
+};
+use anyhow::{Context, Result, bail};
+use image::{DynamicImage, RgbImage, Rgba};
+use ratatui::{Frame, layout::Rect};
+use ratatui_image::{ResizeEncodeRender, protocol::StatefulProtocol};
+use std::{
+    io::{Read, Write},
+    os::{fd::AsRawFd, unix::process::CommandExt},
+    path::PathBuf,
+    process::{Child, ChildStderr, ChildStdout, Command, Stdio},
+    sync::{Arc, Mutex, atomic::Ordering},
+    thread,
+    time::{Duration, Instant},
+};
+use tokio::sync::{Notify, watch};
+
+const DEFAULT_FPS: u32 = 15;
+const DRIFT_MS: u64 = 500;
+
+#[derive(Clone, Copy)]
+struct Clock {
+    position: u64,
+    at: Instant,
+    playing: bool,
+}
+impl Clock {
+    fn position(self) -> u64 {
+        self.position_at(Instant::now())
+    }
+    fn position_at(self, now: Instant) -> u64 {
+        self.position.saturating_add(if self.playing {
+            now.saturating_duration_since(self.at).as_millis() as u64
+        } else {
+            0
+        })
+    }
+}
+#[derive(Clone, PartialEq)]
+struct Key {
+    entry: String,
+    path: Option<PathBuf>,
+    area: Rect,
+    playing: bool,
+    background: [u8; 4],
+    epoch: u64,
+}
+#[derive(Clone)]
+struct Request {
+    key: Key,
+    track: Track,
+    generation: u64,
+    clock: Clock,
+    cancel: Cancel,
+}
+struct Packet {
+    generation: u64,
+    result: Result<Option<Picture>, String>,
+}
+struct Picture {
+    protocol: StatefulProtocol,
+    aspect: f32,
+    position: u64,
+}
+#[derive(Default)]
+pub(super) struct Mailbox {
+    packet: Mutex<Option<Packet>>,
+    pub notify: Notify,
+}
+impl Mailbox {
+    fn put(&self, packet: Packet) {
+        *self.packet.lock().unwrap() = Some(packet);
+        self.notify.notify_one();
+    }
+}
+struct Runtime {
+    stop: Cancel,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
+
+pub(super) struct View {
+    pub enabled: bool,
+    pub aspect: Option<f32>,
+    pub area: Rect,
+    pub epoch: u64,
+    frame: Option<Picture>,
+    generation: u64,
+    request: Option<Request>,
+    sender: Option<watch::Sender<Option<Request>>>,
+    mailbox: Arc<Mailbox>,
+    graphics: Option<VideoGraphics>,
+    ids: [u32; 2],
+    runtime: Option<Runtime>,
+    notice_key: Option<String>,
+}
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            aspect: None,
+            area: Rect::default(),
+            epoch: 0,
+            frame: None,
+            generation: 0,
+            request: None,
+            sender: None,
+            mailbox: Arc::default(),
+            graphics: None,
+            ids: [0, 0],
+            runtime: None,
+            notice_key: None,
+        }
+    }
+}
+impl View {
+    pub fn start(&mut self, paths: Paths, graphics: Option<VideoGraphics>) {
+        let Some(graphics) = graphics else {
+            return;
+        };
+        self.graphics = Some(graphics);
+        let first = rand::random::<u32>().max(1);
+        self.ids = [first, first.wrapping_add(1).max(1)];
+        let (sender, requests) = watch::channel(None);
+        self.sender = Some(sender);
+        let mailbox = self.mailbox.clone();
+        let stop = subprocess::cancel();
+        let worker_stop = stop.clone();
+        let ids = self.ids;
+        self.runtime = Some(Runtime {
+            stop,
+            thread: Some(thread::spawn(move || {
+                worker(paths, graphics, ids, requests, mailbox, worker_stop)
+            })),
+        });
+    }
+    pub fn retry(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.notice_key = None;
+    }
+    pub fn has_frame(&self) -> bool {
+        self.frame.is_some()
+    }
+    pub fn mailbox(&self) -> Arc<Mailbox> {
+        self.mailbox.clone()
+    }
+    pub fn sync(
+        &mut self,
+        item: Option<&QueueItem>,
+        status: PlaybackStatus,
+        connected: bool,
+        visible: bool,
+        position: u64,
+        background: Rgba<u8>,
+    ) {
+        if self.sender.is_none() {
+            return;
+        }
+        let item = item.filter(|i| i.track.source.is_some() && i.track.playback.file().is_some());
+        let active = self.enabled
+            && connected
+            && visible
+            && !self.area.is_empty()
+            && status != PlaybackStatus::Stopped;
+        let clock = Clock {
+            position,
+            at: Instant::now(),
+            playing: status == PlaybackStatus::Playing,
+        };
+        let key = item.filter(|_| active).map(|i| Key {
+            entry: i.id.clone(),
+            path: i.track.playback.file().map(PathBuf::from),
+            area: self.area,
+            playing: clock.playing,
+            background: background.0,
+            epoch: self.epoch,
+        });
+        let changed = key.as_ref() != self.request.as_ref().map(|r| &r.key)
+            || self
+                .request
+                .as_ref()
+                .is_some_and(|r| r.clock.position().abs_diff(position) > DRIFT_MS);
+        if changed {
+            let previous = self.request.take();
+            if let Some(request) = &previous {
+                request.cancel.store(true, Ordering::Relaxed);
+            }
+            // Freeze a paused frame, but never show the old song or seek target.
+            let retain = previous
+                .as_ref()
+                .zip(key.as_ref())
+                .is_some_and(|(old, new)| {
+                    old.key.entry == new.entry
+                        && old.key.area == new.area
+                        && old.key.epoch == new.epoch
+                        && old.key.background == new.background
+                        && old.clock.position().abs_diff(position) <= DRIFT_MS
+                });
+            if !retain {
+                self.frame = None;
+            }
+            if previous
+                .as_ref()
+                .zip(key.as_ref())
+                .is_none_or(|(old, new)| {
+                    old.key.entry != new.entry
+                        || old.key.path != new.path
+                        || old.key.epoch != new.epoch
+                })
+            {
+                self.aspect = None;
+            }
+            self.generation = self.generation.wrapping_add(1);
+            if let Some(key) = key {
+                if self
+                    .notice_key
+                    .as_ref()
+                    .is_some_and(|entry| *entry != key.entry)
+                {
+                    self.notice_key = None;
+                }
+                self.request = Some(Request {
+                    key,
+                    track: item.unwrap().track.clone(),
+                    generation: self.generation,
+                    clock,
+                    cancel: subprocess::cancel(),
+                });
+            }
+            if self.request.is_none() {
+                self.clear_images();
+            }
+        } else if let Some(request) = &mut self.request {
+            request.clock = clock;
+        }
+        if let Some(sender) = &self.sender {
+            sender.send_replace(self.request.clone());
+            if let Some(runtime) = &self.runtime
+                && let Some(thread) = &runtime.thread
+            {
+                thread.thread().unpark();
+            }
+        }
+    }
+    pub fn accept(&mut self) -> Option<String> {
+        let packet = self.mailbox.packet.lock().unwrap().take()?;
+        if packet.generation != self.generation || self.request.is_none() {
+            return None;
+        }
+        match packet.result {
+            Ok(Some(picture)) => {
+                if self
+                    .request
+                    .as_ref()
+                    .unwrap()
+                    .clock
+                    .position()
+                    .abs_diff(picture.position)
+                    > DRIFT_MS
+                {
+                    return None;
+                }
+                self.aspect = Some(picture.aspect);
+                self.frame = Some(picture);
+            }
+            Ok(None) => {
+                self.frame = None;
+                self.aspect = None;
+            }
+            Err(error) => {
+                self.frame = None;
+                self.aspect = None;
+                let key = self.request.as_ref().unwrap().key.entry.clone();
+                if self.notice_key.as_ref() != Some(&key) {
+                    self.notice_key = Some(key);
+                    return Some(format!(
+                        "Video unavailable: {error}. Showing cover; w retries."
+                    ));
+                }
+            }
+        }
+        None
+    }
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) -> bool {
+        self.area = area;
+        if let Some(picture) = &mut self.frame {
+            if picture
+                .protocol
+                .needs_resize(&crate::cover::COVER_RESIZE, area.into())
+                .is_some()
+            {
+                return false;
+            }
+            picture.protocol.render(area, frame.buffer_mut());
+            true
+        } else {
+            false
+        }
+    }
+    fn clear_images(&self) {
+        if let Some(graphics) = self.graphics {
+            let sequence = graphics.delete(self.ids);
+            if !sequence.is_empty() {
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(sequence.as_bytes());
+                let _ = out.flush();
+            }
+        }
+    }
+}
+impl Drop for View {
+    fn drop(&mut self) {
+        if let Some(request) = &self.request {
+            request.cancel.store(true, Ordering::Relaxed);
+        }
+        self.runtime.take();
+        self.clear_images();
+    }
+}
+
+struct Decoder {
+    child: Child,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    bytes: Vec<u8>,
+    filled: usize,
+    index: u64,
+    start: u64,
+    width: u32,
+    height: u32,
+    diagnostic: Vec<u8>,
+    last_data: Instant,
+    eof: bool,
+}
+impl Decoder {
+    fn start(
+        path: &std::path::Path,
+        info: video::Info,
+        config: &Config,
+        r: &Request,
+        graphics: VideoGraphics,
+        fps: u32,
+    ) -> Result<Self> {
+        let max_w = u32::from(r.key.area.width) * u32::from(graphics.font.width);
+        let max_h = u32::from(r.key.area.height) * u32::from(graphics.font.height);
+        let scale = (max_w as f64 / info.width as f64)
+            .min(max_h as f64 / info.height as f64)
+            .min(1.0);
+        let width = (info.width as f64 * scale).round().max(1.0) as u32;
+        let height = (info.height as f64 * scale).round().max(1.0) as u32;
+        let start = r.clock.position();
+        let mut child = Command::new(subprocess::executable(
+            config.youtube.ffmpeg.as_deref(),
+            "ffmpeg",
+        )?)
+        .args(["-nostdin", "-v", "error", "-threads", "1", "-ss"])
+        .arg(format!("{:.3}", start as f64 / 1000.0))
+        .arg("-noautorotate")
+        .arg("-i")
+        .arg(path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-filter_threads",
+            "1",
+            "-vf",
+        ])
+        .arg(format!(
+            "setpts=PTS-STARTPTS,fps={fps},scale={width}:{height}"
+        ))
+        .args(["-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .context("Cannot start video decoder")?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let mut decoder = Self {
+            child,
+            stdout,
+            stderr,
+            bytes: vec![0; width as usize * height as usize * 3],
+            filled: 0,
+            index: 0,
+            start,
+            width,
+            height,
+            diagnostic: vec![],
+            last_data: Instant::now(),
+            eof: false,
+        };
+        for fd in [decoder.stdout.as_raw_fd(), decoder.stderr.as_raw_fd()] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                bail!("Cannot configure video pipe");
+            }
+        }
+        decoder.drain_stderr();
+        Ok(decoder)
+    }
+    fn drain_stderr(&mut self) {
+        let mut bytes = [0; 1024];
+        while let Ok(n) = self.stderr.read(&mut bytes) {
+            if n == 0 {
+                break;
+            }
+            self.diagnostic.extend_from_slice(&bytes[..n]);
+            if self.diagnostic.len() > 8192 {
+                self.diagnostic.drain(..self.diagnostic.len() - 8192);
+            }
+        }
+    }
+    fn read_frame(&mut self) -> Result<Option<DynamicImage>> {
+        self.drain_stderr();
+        loop {
+            match self.stdout.read(&mut self.bytes[self.filled..]) {
+                Ok(0) => {
+                    if self.filled > 0 {
+                        bail!("Incomplete video frame");
+                    }
+                    if let Some(status) = self.child.try_wait()? {
+                        self.eof = true;
+                        if !status.success() {
+                            bail!(
+                                "Decoder failed: {}",
+                                String::from_utf8_lossy(&self.diagnostic).trim()
+                            );
+                        }
+                    }
+                    return Ok(None);
+                }
+                Ok(n) => {
+                    self.filled += n;
+                    self.last_data = Instant::now();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if self.last_data.elapsed() > Duration::from_secs(10) {
+                        bail!("Video decoder timed out");
+                    }
+                    return Ok(None);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+            if self.filled == self.bytes.len() {
+                self.filled = 0;
+                self.index += 1;
+                return Ok(Some(DynamicImage::ImageRgb8(
+                    RgbImage::from_raw(self.width, self.height, self.bytes.clone()).unwrap(),
+                )));
+            }
+        }
+    }
+}
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
+        let _ = self.child.wait();
+    }
+}
+
+fn worker(
+    paths: Paths,
+    graphics: VideoGraphics,
+    ids: [u32; 2],
+    mut requests: watch::Receiver<Option<Request>>,
+    mailbox: Arc<Mailbox>,
+    stop: Cancel,
+) {
+    let config = Config {
+        youtube: crate::import_config::YoutubeConfig::load(&paths).unwrap_or_default(),
+        ..Default::default()
+    };
+    let fps = std::env::var("VTAMP_VIDEO_FPS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| (1..=30).contains(n))
+        .unwrap_or(DEFAULT_FPS);
+    let pane = std::env::var("TMUX_PANE").ok();
+    let mut pane_visible = true;
+    let mut visibility_at = Instant::now() - Duration::from_secs(1);
+    let mut active: Option<Request> = None;
+    let mut decoder: Option<Decoder> = None;
+    let mut asset: Option<(PathBuf, video::Info)> = None;
+    let mut attempted = false;
+    let mut slot = 0;
+    while !stop.load(Ordering::Relaxed) && requests.has_changed().is_ok() {
+        let request = requests.borrow_and_update().clone();
+        let changed =
+            request.as_ref().map(|r| r.generation) != active.as_ref().map(|r| r.generation);
+        if changed {
+            decoder = None;
+            asset = None;
+            attempted = false;
+        }
+        active = request;
+        let Some(r) = &active else {
+            thread::park();
+            continue;
+        };
+        if r.cancel.load(Ordering::Relaxed) {
+            decoder = None;
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+        if let Some(pane) = &pane
+            && visibility_at.elapsed() >= Duration::from_secs(1)
+        {
+            // Never wait for tmux on the TUI thread; a hung query is cancellable.
+            let visible = subprocess::run(
+                Command::new("tmux").args([
+                    "display-message",
+                    "-p",
+                    "-t",
+                    pane,
+                    "#{session_attached} #{window_active} #{window_zoomed_flag} #{pane_active}",
+                ]),
+                None,
+                &r.cancel,
+                Duration::from_millis(250),
+                |_| {},
+            )
+            .ok()
+            .is_some_and(|b| {
+                let text = String::from_utf8_lossy(&b);
+                let fields: Vec<_> = text.split_whitespace().collect();
+                fields.len() == 4
+                    && fields[0] != "0"
+                    && fields[1] == "1"
+                    && (fields[2] == "0" || fields[3] == "1")
+            });
+            if visible != pane_visible {
+                decoder = None;
+                attempted = false;
+                mailbox.put(Packet {
+                    generation: r.generation,
+                    result: Ok(None),
+                });
+            }
+            pane_visible = visible;
+            visibility_at = Instant::now();
+        }
+        if !pane_visible {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        let result = (|| -> Result<Option<Picture>> {
+            if !attempted {
+                attempted = true;
+                if asset.is_none()
+                    && let Some(path) = video::sidecar(&r.track)
+                {
+                    let info = video::probe(&path, &config, &r.cancel)?;
+                    asset = Some((path, info));
+                }
+                if let Some((path, info)) = &asset
+                    && r.clock.position() < (info.duration * 1000.0) as u64
+                {
+                    decoder = Some(Decoder::start(path, *info, &config, r, graphics, fps)?);
+                }
+            }
+            let Some(d) = &mut decoder else {
+                return Ok(None);
+            };
+            let position = r.clock.position();
+            let target = position.saturating_sub(d.start) * u64::from(fps) / 1000;
+            if d.index > target {
+                return Ok(None);
+            }
+            // Catch up without retaining old frames; bound each pass for cancellation.
+            for _ in 0..16 {
+                if r.cancel.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                let Some(image) = d.read_frame()? else {
+                    return Ok(None);
+                };
+                let timestamp = d.start + (d.index - 1) * 1000 / u64::from(fps);
+                if d.index <= target {
+                    continue;
+                }
+                let mut protocol = graphics.protocol(image, Rgba(r.key.background), ids[slot]);
+                slot ^= 1;
+                protocol.resize_encode(&crate::cover::COVER_RESIZE, r.key.area.into());
+                if let Some(Err(error)) = protocol.last_encoding_result() {
+                    bail!("{error}");
+                }
+                let info = asset.as_ref().unwrap().1;
+                return Ok(Some(Picture {
+                    protocol,
+                    aspect: info.width as f32 / info.height as f32,
+                    position: timestamp,
+                }));
+            }
+            Ok(None)
+        })();
+        match result {
+            Ok(Some(picture)) => {
+                if !r.cancel.load(Ordering::Relaxed) {
+                    mailbox.put(Packet {
+                        generation: r.generation,
+                        result: Ok(Some(picture)),
+                    });
+                }
+                if !r.clock.playing {
+                    decoder = None;
+                }
+            }
+            Ok(None) => (),
+            Err(error) => {
+                decoder = None;
+                if !r.cancel.load(Ordering::Relaxed) {
+                    mailbox.put(Packet {
+                        generation: r.generation,
+                        result: Err(format!("{error:#}")),
+                    });
+                }
+            }
+        }
+        if decoder.as_ref().is_some_and(|d| d.eof) {
+            decoder = None;
+            mailbox.put(Packet {
+                generation: r.generation,
+                result: Ok(None),
+            });
+        }
+        if decoder.is_some() {
+            thread::park_timeout(Duration::from_millis(5));
+        } else {
+            // No decoder means missing video, paused output, EOF, or an error.
+            // New clock/state requests wake this worker; idle clients stay idle.
+            thread::park_timeout(Duration::from_secs(1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{model::PlaybackSource, youtube::Source};
+    fn item() -> QueueItem {
+        QueueItem::new(Track {
+            id: "track".into(),
+            title: "Video".into(),
+            artist: String::new(),
+            album: String::new(),
+            duration_ms: Some(60_000),
+            track_number: 0,
+            cover: None,
+            playback: PlaybackSource::File {
+                path: "/tmp/imports/youtube/lO3lG-qXU14/audio.m4a".into(),
+            },
+            source: Some(Source {
+                video_id: "lO3lG-qXU14".into(),
+                ..Default::default()
+            }),
+        })
+    }
+    #[test]
+    fn audio_clock_extrapolates_only_while_playing() {
+        let at = Instant::now();
+        let clock = Clock {
+            position: 1000,
+            at,
+            playing: true,
+        };
+        assert_eq!(clock.position_at(at + Duration::from_millis(125)), 1125);
+        assert_eq!(
+            Clock {
+                playing: false,
+                ..clock
+            }
+            .position_at(at + Duration::from_secs(20)),
+            1000
+        );
+        assert_eq!(clock.position_at(at - Duration::from_secs(1)), 1000);
+    }
+    #[test]
+    fn seeks_tracks_visibility_and_resize_cancel_obsolete_frames() {
+        let (sender, _rx) = watch::channel(None);
+        let mut view = View::default();
+        view.sender = Some(sender);
+        view.area = Rect::new(0, 0, 20, 8);
+        let mut track = item();
+        let bg = Rgba([0, 0, 0, 255]);
+        view.sync(Some(&track), PlaybackStatus::Playing, true, true, 0, bg);
+        let first = view.request.clone().unwrap();
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Playing,
+            true,
+            true,
+            10_000,
+            bg,
+        );
+        assert!(first.cancel.load(Ordering::Relaxed));
+        assert_ne!(view.generation, first.generation);
+        view.mailbox.put(Packet {
+            generation: first.generation,
+            result: Err("stale".into()),
+        });
+        assert!(view.accept().is_none());
+        let seek = view.request.clone().unwrap();
+        track.id = "another queue entry for same track".into();
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Playing,
+            true,
+            true,
+            10_000,
+            bg,
+        );
+        assert!(seek.cancel.load(Ordering::Relaxed));
+        let changed = view.request.clone().unwrap();
+        view.area.width = 18;
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Playing,
+            true,
+            true,
+            10_000,
+            bg,
+        );
+        assert!(changed.cancel.load(Ordering::Relaxed));
+        let resized = view.request.clone().unwrap();
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Playing,
+            true,
+            false,
+            10_000,
+            bg,
+        );
+        assert!(resized.cancel.load(Ordering::Relaxed));
+        assert!(view.request.is_none());
+        view.sync(Some(&track), PlaybackStatus::Paused, true, true, 10_000, bg);
+        assert!(!view.request.as_ref().unwrap().clock.playing);
+        let paused = view.request.clone().unwrap();
+        drop(view);
+        assert!(paused.cancel.load(Ordering::Relaxed));
+    }
+    #[test]
+    fn mailbox_replaces_old_work_instead_of_growing_a_queue() {
+        let mailbox = Mailbox::default();
+        for generation in 0..1000 {
+            mailbox.put(Packet {
+                generation,
+                result: Ok(None),
+            });
+        }
+        assert_eq!(
+            mailbox.packet.lock().unwrap().take().unwrap().generation,
+            999
+        );
+        assert!(mailbox.packet.lock().unwrap().is_none());
+    }
+    #[test]
+    fn decoder_streams_beyond_eight_mib_and_drop_reaps_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("decoder");
+        std::fs::write(&executable, "#!/usr/bin/python3\nimport sys,time\nfor i in range(1100): sys.stdout.buffer.write(bytes([i%256])*9216)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config {
+            youtube: crate::import_config::YoutubeConfig {
+                ffmpeg: Some(executable),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let track = item();
+        let request = Request {
+            key: Key {
+                entry: track.id,
+                path: None,
+                area: Rect::new(0, 0, 20, 8),
+                playing: true,
+                background: [0; 4],
+                epoch: 0,
+            },
+            track: track.track,
+            generation: 1,
+            clock: Clock {
+                position: 0,
+                at: Instant::now(),
+                playing: true,
+            },
+            cancel: subprocess::cancel(),
+        };
+        let graphics = VideoGraphics {
+            kind: ratatui_image::picker::ProtocolType::Kitty,
+            font: ratatui_image::FontSize::new(10, 20),
+            tmux: false,
+        };
+        let mut decoder = Decoder::start(
+            dir.path(),
+            video::Info {
+                width: 64,
+                height: 48,
+                duration: 60.0,
+            },
+            &config,
+            &request,
+            graphics,
+            12,
+        )
+        .unwrap();
+        let pid = decoder.child.id() as i32;
+        let start = Instant::now();
+        for index in 0..1024 {
+            loop {
+                if let Some(frame) = decoder.read_frame().unwrap() {
+                    assert_eq!(frame.as_rgb8().unwrap().get_pixel(0, 0).0, [index as u8; 3]);
+                    break;
+                }
+                assert!(start.elapsed() < Duration::from_secs(10));
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        drop(decoder);
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "decoder was not reaped");
+    }
+}

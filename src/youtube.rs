@@ -329,6 +329,76 @@ pub fn download(
     }
     Ok(audio)
 }
+/// Download a bounded-resolution picture stream separately from the music file.
+pub fn download_video(
+    source: &Source,
+    stage: &Path,
+    config: &Config,
+    stop: &Cancel,
+    mut progress: impl FnMut(DownloadProgress),
+) -> Result<PathBuf> {
+    let raw = stage.join("picture.%(ext)s");
+    subprocess::run(
+        command(config)?
+            .args([
+                "--no-playlist",
+                "-f",
+                "bestvideo[height<=480]/best[height<=480]",
+                "--newline",
+                "--progress",
+                "--progress-delta",
+                "0.25",
+                "--progress-template",
+                "download:VTAMP_PROGRESS %(progress)j",
+            ])
+            .arg("-o")
+            .arg(&raw)
+            .arg("--")
+            .arg(&source.video_url),
+        None,
+        stop,
+        Duration::from_secs(6 * 3600),
+        |line| {
+            if let Some(json) = line.strip_prefix("VTAMP_PROGRESS ")
+                && let Ok(v) = serde_json::from_str::<Value>(json)
+            {
+                progress(DownloadProgress {
+                    bytes: v["downloaded_bytes"].as_u64(),
+                    total: v["total_bytes"]
+                        .as_u64()
+                        .or_else(|| v["total_bytes_estimate"].as_u64()),
+                    speed: v["speed"].as_f64(),
+                    eta: v["eta"].as_f64(),
+                });
+            }
+        },
+    )?;
+    let input = std::fs::read_dir(stage)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.is_file()
+                && p.file_stem().is_some_and(|s| s == "picture")
+                && p.extension().is_none_or(|s| s != "part")
+        })
+        .context("yt-dlp did not produce a video")?;
+    let output = stage.join(crate::video::FILE);
+    let ffmpeg = subprocess::executable(config.youtube.ffmpeg.as_deref(), "ffmpeg")?;
+    subprocess::run(
+        Command::new(ffmpeg)
+            .args(["-nostdin", "-v", "error", "-y", "-i"])
+            .arg(input)
+            .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-c:v", "copy"])
+            .arg(&output),
+        None,
+        stop,
+        Duration::from_secs(600),
+        |_| {},
+    )?;
+    crate::video::probe(&output, config, stop)?;
+    Ok(output)
+}
+
 /// Fetch the thumbnail for an already imported video; `cover` converts it.
 pub fn thumbnail(video_id: &str, stage: &Path, config: &Config, stop: &Cancel) -> Result<()> {
     std::fs::create_dir_all(stage)?;

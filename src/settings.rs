@@ -46,8 +46,10 @@ impl SpectrumStyle {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "video_enabled")]
+    pub video: bool,
     #[serde(default)]
     pub theme: Theme,
     #[serde(default)]
@@ -56,7 +58,26 @@ pub struct Settings {
     pub spectrum_style: SpectrumStyle,
 }
 
+fn video_enabled() -> bool {
+    true
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::default(),
+            spectrum: false,
+            spectrum_style: SpectrumStyle::default(),
+            video: true,
+        }
+    }
+}
 impl Settings {
+    pub fn set_video(path: &Path, enabled: bool) -> Result<()> {
+        let mut settings = Self::load(path)?;
+        settings.video = enabled;
+        settings.save(path)
+    }
+
     pub fn set_theme(path: &Path, theme: Theme) -> Result<()> {
         // Explicit theme saves retain the existing repair behavior for invalid files.
         let mut settings = Self::load(path).unwrap_or_default();

@@ -332,6 +332,12 @@ pub enum Library {
         /// Read one YouTube URL from the macOS clipboard.
         #[arg(long)]
         clipboard: bool,
+        /// Also download a silent video up to 480p.
+        #[arg(long, conflicts_with = "audio_only")]
+        video: bool,
+        /// Download audio only without asking.
+        #[arg(long)]
+        audio_only: bool,
         /// Import the whole playlist from a watch URL that also contains a list.
         #[arg(long,conflicts_with_all=["title","artist"])]
         playlist: bool,
@@ -557,6 +563,8 @@ pub async fn run(args: Args) -> Result<()> {
                 Library::Add {
                     path,
                     clipboard,
+                    video,
+                    audio_only,
                     playlist,
                     preview,
                     title,
@@ -584,11 +592,32 @@ pub async fn run(args: Args) -> Result<()> {
                     title,
                     artist,
                     video_ids: None,
+                    video,
                 };
                 request.validate()?;
                 if preview {
                     let result = preview_import(&client, request).await?;
                     return output(Reply::success(result), args.json);
+                }
+                if !video
+                    && !audio_only
+                    && !args.json
+                    && io::stdin().is_terminal()
+                    && io::stdout().is_terminal()
+                {
+                    loop {
+                        let answer =
+                            prompt("Download video too? Up to 480p (y/n, q cancels)", "n")?;
+                        match answer.to_ascii_lowercase().as_str() {
+                            "y" | "yes" => {
+                                request.video = true;
+                                break;
+                            }
+                            "n" | "no" => break,
+                            "q" | "cancel" => return Ok(()),
+                            _ => eprintln!("Choose y, n, or q."),
+                        }
+                    }
                 }
                 client.ensure().await?;
                 let reply = client.request(Command::ImportStart { request }).await?;
@@ -610,7 +639,14 @@ pub async fn run(args: Args) -> Result<()> {
                 }
                 return output(reply, true);
             }
-            if clipboard || playlist || preview || title.is_some() || artist.is_some() {
+            if clipboard
+                || video
+                || audio_only
+                || playlist
+                || preview
+                || title.is_some()
+                || artist.is_some()
+            {
                 return Err(ApiError::new(
                     "invalid_arguments",
                     "YouTube options require a YouTube URL",
@@ -1621,7 +1657,15 @@ pub fn command_with_features(available: bool) -> clap::Command {
                     c = c.mut_subcommand(name, |s| s.hide(true));
                 }
                 c.mut_subcommand("add", |mut a| {
-                    for name in ["clipboard", "playlist", "preview", "title", "artist"] {
+                    for name in [
+                        "clipboard",
+                        "video",
+                        "audio_only",
+                        "playlist",
+                        "preview",
+                        "title",
+                        "artist",
+                    ] {
                         a = a.mut_arg(name, |arg| arg.hide(true));
                     }
                     a

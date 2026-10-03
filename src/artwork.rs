@@ -94,6 +94,22 @@ impl Artwork {
         }
     }
 
+    pub fn video_graphics(&self) -> Option<VideoGraphics> {
+        let (kind, font, tmux) = match self {
+            Self::Detected(p) => (p.protocol_type(), p.font_size(), p.tmux_detected()),
+            Self::Native {
+                protocol,
+                font_size,
+                tmux,
+            } => (*protocol, *font_size, *tmux),
+        };
+        matches!(kind, ProtocolType::Kitty | ProtocolType::Sixel).then_some(VideoGraphics {
+            kind,
+            font,
+            tmux,
+        })
+    }
+
     /// Cell size of the terminal, as understood by the graphics protocol.
     pub fn font_size(&self) -> FontSize {
         match self {
@@ -131,6 +147,39 @@ impl Artwork {
                 StatefulProtocol::new(image, *font_size, Some(background), protocol)
             }
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VideoGraphics {
+    pub kind: ProtocolType,
+    pub font: FontSize,
+    pub tmux: bool,
+}
+impl VideoGraphics {
+    pub fn protocol(self, image: DynamicImage, background: Rgba<u8>, id: u32) -> StatefulProtocol {
+        let protocol = match self.kind {
+            ProtocolType::Kitty => {
+                StatefulProtocolType::Kitty(StatefulKitty::new(id, self.tmux, false))
+            }
+            _ => StatefulProtocolType::Sixel(Sixel::default()),
+        };
+        StatefulProtocol::new(image, self.font, Some(background), protocol)
+    }
+    pub fn delete(self, ids: [u32; 2]) -> String {
+        if self.kind != ProtocolType::Kitty {
+            return String::new();
+        }
+        ids.into_iter()
+            .map(|id| {
+                let sequence = format!("\x1b_Ga=d,d=I,i={id},q=2;\x1b\\");
+                if self.tmux {
+                    format!("\x1bPtmux;{}\x1b\\", sequence.replace('\x1b', "\x1b\x1b"))
+                } else {
+                    sequence
+                }
+            })
+            .collect()
     }
 }
 

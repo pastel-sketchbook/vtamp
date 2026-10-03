@@ -231,3 +231,18 @@ channel, or the first existing channel when all inputs were duplicates. Locate
 its page by ID, preserve matching filters, and clear only filters that hide it.
 Reuse deferred Library selection for prompts/overlays and explicit navigation;
 registration must not start playback or change Queue.
+
+## Saved YouTube video
+
+The existing import overlay offers Audio only (default) or Audio + video · up to
+480p. Single videos ask before starting; playlist previews use one choice for all
+entries, changed with Tab/Space. Enter confirms; Esc cancels. Downloads never
+remember consent for the next job. Keep controls reachable at 40×12.
+
+Saved video automatically occupies the existing cover area with its own aspect
+ratio. `w` toggles video/cover and saves the display preference; `v`/`V` retain
+spectrum behavior. Audio belongs to the server. Pause freezes the picture;
+covering overlays suspend decoding and hide pixels, and close/resize/reattach
+resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
+Video failure uses a single notice and the existing cover, without interrupting
+music. Import details distinguish audio added, video added, and video failure.

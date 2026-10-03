@@ -1,7 +1,7 @@
 # Optional installed-tool imports
 
 vtamp remains a local music player. If an executable `yt-dlp` is available on
-PATH (or at a configured absolute path), it also offers YouTube audio imports.
+PATH (or at a configured absolute path), it also offers YouTube audio imports with optional video.
 Without it, related CLI help, TUI controls, and diagnostic messages are hidden.
 vtamp never installs tools, enables cookies, or selects an LLM automatically.
 There is no separate Cargo feature or special build.
@@ -16,7 +16,8 @@ absolute paths when the playback server's PATH differs from your shell.
 
 ```sh
 vtamp library add 'https://www.youtube.com/watch?v=VIDEO_ID' --preview
-vtamp library add 'https://www.youtube.com/watch?v=VIDEO_ID' --wait
+vtamp library add 'https://www.youtube.com/watch?v=VIDEO_ID' --audio-only --wait
+vtamp library add 'https://www.youtube.com/watch?v=VIDEO_ID' --video --wait
 vtamp library add --clipboard
 vtamp library add 'https://www.youtube.com/playlist?list=PLAYLIST_ID'
 ```
@@ -28,7 +29,14 @@ shell, especially when they contain `&`. In the CLI, a watch URL with a `list`
 parameter imports only that video; add `--playlist` to import the whole list.
 A playlist URL imports the list. Lists are limited to 10,000 entries.
 Unavailable videos produce item failures; other videos continue. Live/upcoming broadcasts are
-rejected. Existing source video IDs with present audio files are skipped.
+rejected. Existing source video IDs with present audio files are skipped unless
+`--video` can add a missing or damaged video. That upgrade preserves the audio,
+track ID, metadata overrides, and Queue.
+
+Interactive CLI imports ask **Download video too?**, defaulting to no. `--video`
+and `--audio-only` bypass the question and are mutually exclusive. JSON and
+noninteractive imports default to audio only; `--preview` never asks or downloads.
+The choice applies to the whole job and is not saved as an import preference.
 
 `--preview` extracts metadata and checks existing entries if a server is already
 running. It does not download audio, create jobs, persist settings, or start the
@@ -54,7 +62,10 @@ vtamp library cover status JOB_ID
 All commands support the global `--json` flag. A waited partial/failed/cancelled
 job returns a nonzero exit status with its report in the JSON error's `details`.
 Status queries never auto-start a server. A retry creates a new job containing
-unfinished retryable videos only. There is one download worker, at most 32
+unfinished retryable entries only, including requested video that failed after
+the audio was successfully added. Video-only upgrades count as Updated, while
+video failures are reported separately from failed audio imports. A video failure
+leaves the audio playable and gives the job a partial result. There is one download worker, at most 32
 queued/running jobs, and 100 retained terminal reports. Restart marks unfinished
 jobs interrupted; explicit retry is required. Completed tracks remain available.
 
@@ -73,7 +84,7 @@ restarting the server loses it, and re-running the command is safe.
 ## Delete a downloaded track
 
 In Library, select a YouTube download and press `d` or `x`. The confirmation
-names the track and explains that its downloaded audio and cover will be deleted
+names the track and explains that its downloaded audio, video, and cover will be deleted
 from disk. Enter deletes; Esc cancels. The equivalent CLI command is
 `vtamp library delete TRACK_ID` and deletes without an interactive prompt.
 
@@ -99,8 +110,10 @@ existing database schema.
 
 In the TUI, press `a` and paste a URL into the existing add prompt. YouTube URLs
 with a `list` parameter automatically open a preview of the whole playlist,
-including watch and short links. Enter confirms all entries; Esc closes it
-without starting an import. URLs without a playlist keep the single-video flow.
+including watch and short links. Tab or Space switches between **Audio only** and **Audio + video · up to 480p**;
+Enter confirms that choice for all entries, and Esc cancels without starting an
+import. A single-video URL opens **Download video too?** with Audio only selected;
+Tab/arrow keys choose, Enter imports, and Esc cancels.
 Press `i` for the import history: each row shows a source title and its status,
 with the selected import's results and full title below. Use `j`/`k` to select a
 job, `[`/`]` to select a track within a playlist, PgUp/PgDn to scroll the details,
@@ -159,16 +172,39 @@ page starts playing by itself, so `o` pauses a playing track once the browser
 launches; `O` leaves playback alone, and neither key resumes anything. Track JSON
 contains this information in `source` (`provider: youtube`).
 
-Downloads select audio only, preferring m4a; FFmpeg extracts/converts to m4a when
-needed. Thumbnails are stored at up to 512 pixels on the long side, keeping the
+Audio downloads prefer m4a; FFmpeg extracts/converts to m4a when needed. Opt-in
+video downloads choose the best stream at or below 480 pixels high, without a
+higher-resolution fallback or upscaling. FFmpeg remuxes the picture stream into
+silent `video.mkv` without re-encoding; FFprobe validates its dimensions and timing.
+Audio is registered first. Video failure or cancellation never removes that audio. Thumbnails are stored at up to 512 pixels on the long side, keeping the
 image's own shape like album art: nothing is cropped or padded on disk, and the
 player sizes its cover area to the image so a wide thumbnail is drawn in full.
 Missing/failed artwork does not fail the audio import.
 Completed files live under the data directory's `imports/youtube/VIDEO_ID/` with
-`audio.m4a`, optional `cover.jpg`, and `source.json`. Temporary files stay under
+`audio.m4a`, optional `cover.jpg` and `video.mkv`, and `source.json`. Temporary files stay under
 `imports/.staging/` and are excluded from scans. Publication waits for scans and
 catalog changes; retry can recover a completed directory after a failed database
 commit. Library deduplication does not remove intentional queue duplicates.
+
+## Terminal video (macOS)
+
+Saved video plays automatically in the cover area through Kitty or Sixel graphics.
+Ghostty + tmux uses Kitty. Press `w` to switch between video and cover; this display
+preference is saved in `ui.json` independently of the per-import download choice.
+Halfblock and `--art none` sessions retain their existing artwork behavior.
+
+The server remains the sole audio player. Each TUI decodes its locally accessible
+managed sidecar with installed FFmpeg and follows the server's playback position.
+Pause freezes the frame; seek, repeat, and reattach synchronize to the audio.
+Dialogs that cover the image, hidden tmux windows, and detach suspend or end video
+work. Resize and track changes discard obsolete frames. Missing video uses the cover. Missing tools or failed decoding show one notice
+and fall back to the cover; toggle video off/on to retry.
+Remote video streaming and general video-file imports are not supported.
+
+Video buffers and terminal image IDs are bounded; delayed frames are dropped.
+The default frame rate is 15 fps. `VTAMP_VIDEO_FPS=8`, `12`, or `15` allows local
+comparisons (accepted range 1–30; invalid values use the default). This changes
+rendering only, not the downloaded file or music playback.
 
 ## Optional LLM inference
 
