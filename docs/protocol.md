@@ -394,13 +394,16 @@ reports return `archive_job_not_found`. Relays reject these wire commands with
 `archive_local_only`; the CLI also rejects export and dry-run through a relay.
 
 The independent archive format is version 1: a gzip-compressed tar begins with
-`manifest.json`, then the allowlisted regular files in `media/` and `covers/`.
-Export names audio `media/ARTIST - TITLE.ext`, video
-`media/ARTIST - TITLE.video.mkv` and artwork `covers/ARTIST - TITLE.ext`.
+`manifest.json`, then allowlisted regular files grouped in one `ARTIST - TITLE/`
+folder per track. Audio is `ARTIST - TITLE/ARTIST - TITLE.ext`, video is
+`ARTIST - TITLE/ARTIST - TITLE.video.mkv`, and artwork is
+`ARTIST - TITLE/cover.ext`, preserving its image extension.
 Unknown/empty artists are omitted. Names use NFC Unicode, replace unsafe
 characters, bound the stem to 80 UTF-8 bytes, and append a numeric suffix to
 avoid case-insensitive or normalized collisions. Import resolves assets through
 manifest paths and stores YouTube audio as `audio.m4a` in its managed directory.
+The root manifest name is reserved when choosing folder names. Asset paths have
+exactly two normal components and cannot use hidden or manifest-named folders.
 Manifest entries describe effective track metadata, automatic metadata and
 nullable overrides, YouTube provenance, asset sizes and SHA-256 checksums, or
 absolute external paths and optional checksums. Radio entries hold registered

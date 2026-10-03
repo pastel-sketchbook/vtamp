@@ -222,7 +222,7 @@ fn export_tracked(
         streams: catalog.streams,
     };
     let mut inputs = BTreeMap::new();
-    let mut names = HashSet::new();
+    let mut names = HashSet::from(["manifest.json".to_owned()]);
     let mut report = Report {
         operation: "export".into(),
         status: "completed".into(),
@@ -263,7 +263,7 @@ fn export_tracked(
                 .extension()
                 .and_then(|s| s.to_str())
                 .context("Audio has no extension")?;
-            let a = asset(&file, format!("media/{name}.{extension}"), &stop, progress)?;
+            let a = asset(&file, format!("{name}/{name}.{extension}"), &stop, progress)?;
             inputs.insert(a.path.clone(), file.clone());
             entry.audio = Some(a);
             report.included += 1;
@@ -281,7 +281,7 @@ fn export_tracked(
         if let Some(cover) = entry.track.cover.as_ref() {
             if cover.try_exists()? {
                 let ext = cover.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
-                let a = asset(cover, format!("covers/{name}.{ext}"), &stop, progress)?;
+                let a = asset(cover, format!("{name}/cover.{ext}"), &stop, progress)?;
                 inputs.insert(a.path.clone(), cover.clone());
                 entry.cover = Some(a);
             } else {
@@ -294,7 +294,7 @@ fn export_tracked(
                 .context("Missing audio directory")?
                 .join("video.mkv");
             if video.try_exists()? {
-                let a = asset(&video, format!("media/{name}.video.mkv"), &stop, progress)?;
+                let a = asset(&video, format!("{name}/{name}.video.mkv"), &stop, progress)?;
                 inputs.insert(a.path.clone(), video);
                 entry.video = Some(a);
                 report.videos += 1;
@@ -460,13 +460,14 @@ fn readable_name(track: &Track, used: &mut HashSet<String>) -> String {
 }
 
 fn safe_asset_path(path: &str) -> bool {
+    let parts: Vec<_> = Path::new(path).components().collect();
     !path.is_empty()
         && path.len() < 256
         && !path.contains('\\')
-        && Path::new(path)
-            .components()
-            .all(|c| matches!(c, Component::Normal(_)))
-        && (path.starts_with("media/") || path.starts_with("covers/"))
+        && parts.len() == 2
+        && parts.iter().all(|c| matches!(c, Component::Normal(_)))
+        && !path.starts_with('.')
+        && crate::library::normalized(&parts[0].as_os_str().to_string_lossy()) != "manifest.json"
 }
 
 fn valid_hash(hash: &str) -> bool {

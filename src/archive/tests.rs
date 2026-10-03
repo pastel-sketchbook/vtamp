@@ -616,11 +616,16 @@ fn archive_names_are_readable_when_opened_with_a_standard_tar_reader() {
         })
         .collect();
     assert!(
-        names.contains(&"media/김동률 - 김동률 노래.m4a".to_owned()),
+        names.contains(&"김동률 - 김동률 노래/김동률 - 김동률 노래.m4a".to_owned()),
         "{names:?}"
     );
-    assert!(names.contains(&"media/김동률 - 김동률 노래.video.mkv".to_owned()));
-    assert!(names.contains(&"covers/김동률 - 김동률 노래.jpg".to_owned()));
+    assert!(names.contains(&"김동률 - 김동률 노래/김동률 - 김동률 노래.video.mkv".to_owned()));
+    assert!(names.contains(&"김동률 - 김동률 노래/cover.jpg".to_owned()));
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.starts_with("media/") || name.starts_with("covers/"))
+    );
     assert!(
         !names
             .iter()
@@ -628,6 +633,22 @@ fn archive_names_are_readable_when_opened_with_a_standard_tar_reader() {
     );
     let (_target, target, mut store) = empty();
     assert_eq!(restore(&target, &mut store, &path).added, 2);
+    let extracted = tempfile::tempdir().unwrap();
+    tar::Archive::new(GzDecoder::new(File::open(&path).unwrap()))
+        .unpack(extracted.path())
+        .unwrap();
+    let folder = extracted.path().join("김동률 - 김동률 노래");
+    let track = library::read_track(
+        &folder.join("김동률 - 김동률 노래.m4a"),
+        "extracted".into(),
+        &extracted.path().join("cache"),
+    )
+    .unwrap();
+    assert_eq!(track.cover, Some(folder.join("cover.jpg")));
+    assert_eq!(
+        fs::read(folder.join("김동률 - 김동률 노래.video.mkv")).unwrap(),
+        b"saved-video-fixture"
+    );
 }
 
 #[test]
@@ -658,5 +679,5 @@ fn readable_names_keep_unicode_and_disambiguate_sanitized_or_duplicate_titles() 
     assert!(long.len() <= 80);
     assert!(long.starts_with("아주 긴 노래 제목"));
     let mut tar = tar::Builder::new(Vec::new());
-    append(&mut tar, &format!("media/{long}.video.mkv"), 1, &[0u8][..]).unwrap();
+    append(&mut tar, &format!("{long}/{long}.video.mkv"), 1, &[0u8][..]).unwrap();
 }

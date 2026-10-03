@@ -588,9 +588,19 @@ registrations. Existing output files are never overwritten. Missing included
 audio fails export; unreadable external references are reported without a checksum.
 Queue, playback position, settings, credentials, and download history are excluded.
 
-Files inside the tarball have readable artist/title names, such as
-`media/김동률 - 감사.m4a`, `media/김동률 - 감사.video.mkv` and
-`covers/김동률 - 감사.jpg`. They can be extracted and used without vtamp.
+Included media are grouped in one readable artist/title folder per track,
+keeping audio, optional video, and cover together:
+
+```text
+김동률 - 감사/
+  김동률 - 감사.m4a
+  김동률 - 감사.video.mkv
+  cover.jpg
+```
+
+The tarball also contains `manifest.json` at its root. Track folders can be
+extracted and moved independently of vtamp; sibling `cover.jpg` or `cover.png`
+files work with players that discover local artwork.
 Names preserve Unicode, replace filesystem-unsafe characters, shorten very long
 names, and append `(2)`, `(3)`, etc. for collisions. The manifest keeps the full
 metadata. Import maps these archive names to vtamp's managed paths.
