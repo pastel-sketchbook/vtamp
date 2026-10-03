@@ -2539,7 +2539,7 @@ impl App {
             Confirm::DeleteDownload { title, .. } => (
                 " Delete download ",
                 format!("Delete {title}?"),
-                "Deletes downloaded audio, video and cover.\nCannot be undone.\nRemove queued copies first.",
+                "Deletes audio, video and cover.\nRemoves all queued copies.\nStops this track if current.\nCannot be undone.",
                 " Enter delete · Esc cancel ",
             ),
         };
@@ -4091,6 +4091,8 @@ mod tests {
                 assert!(text.contains("Enter delete"), "{text}");
                 assert!(text.contains("Esc cancel"), "{text}");
                 assert!(text.contains("Cannot be undone"), "{text}");
+                assert!(text.contains("Removes all queued copies"), "{text}");
+                assert!(text.contains("Stops this track if current"), "{text}");
             }
             app.key(key(KeyCode::Char('n')), &commands).unwrap();
             assert!(requests.try_recv().is_err());

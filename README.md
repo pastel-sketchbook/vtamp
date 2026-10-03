@@ -38,7 +38,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Embedded album covers, sidecar covers, and a built-in fallback image.
 - Optional YouTube audio imports, with a per-import choice to download video up to 480p.
 - Terminal video on macOS with installed FFmpeg/FFprobe and Kitty or Sixel graphics: `w` switches video/cover, and `F` fills the current pane with elapsed / total time below. Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
-- Managed YouTube download deletion with confirmation; local originals and tracks in Queue or playback are protected.
+- Managed YouTube download deletion with confirmation; queued copies are removed together, and local originals are protected.
 - Read-only audio spectrum with six rendering styles (bars, gradient, mono, mirror, dots, waterfall); press `v` to toggle and `V` to change the style.
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
@@ -319,7 +319,7 @@ the desktop integration cannot initialize.
 | `Ctrl+Enter` | Play the selected Library track without adding it to Queue |
 | `e` | Append a library track without interrupting playback; duplicates allowed |
 | `A` | Queue every track the Library view shows — the active `/` search results, or the whole library — in one atomic append that skips tracks Queue already holds; stops at the remaining queue room (10,000 entries) |
-| `x` / `d` | Remove a queue entry; in Library, confirm deletion of a YouTube download or unregister a stream |
+| `x` / `d` | Remove a queue entry; in Library, confirm deletion of a YouTube download and all queued copies, or unregister a stream |
 | `X` | Empty the Queue after a confirmation dialog; playback stops unless a direct track plays outside it |
 | `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |
@@ -542,7 +542,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `queue move ID INDEX` | Move an entry to a **zero-based** destination index |
 | `queue clear` | Stop playback and empty the queue |
 | `library add PATH`, `library remove PATH` | Register/unregister a directory; never delete music files |
-| `library delete TRACK_ID` | Permanently delete a managed YouTube download; refuses local originals and tracks still in use |
+| `library delete TRACK_ID` | Permanently delete a managed YouTube download and all queued copies; stops that track if current and refuses local originals |
 | `library scan [--wait] [--timeout 60s]` | Rescan and optionally await a report; add/remove also accept wait options |
 | `library scan-status JOB_ID` | Inspect a running or recent scan |
 | `library cover refresh [TRACK_ID\|all] [--wait]` | Re-fetch thumbnails and rebuild square covers; every managed YouTube import unless a track ID is given |

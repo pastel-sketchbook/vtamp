@@ -175,10 +175,11 @@ Keyboard focus is explicit; reduced motion removes web transitions. The public s
 In Library, `d`/`x` opens a confirmation for deleting a managed YouTube download
 from disk. Show the track title, permanent-file-deletion consequence, and
 Enter/Esc actions even at 40×12; long titles must not displace the warning.
-Local originals are kept and get an explanatory notice. Streams keep their
-unregister confirmation. Downloads still in Queue or direct playback cannot be
-deleted; the server reports that without changing playback. Removing the last
-track on a Library page returns to the last remaining page with the filter kept.
+The confirmation also explains that all queued copies are removed and playback
+stops if this is the current track, including direct playback. Other playback
+continues. Local originals are kept and get an explanatory notice. Streams keep
+their unregister confirmation. Removing the last track on a Library page returns
+to the last remaining page with the filter kept.
 
 Show import controls only after server-side detection of an installed yt-dlp;
 deleting an existing download does not require yt-dlp. The existing

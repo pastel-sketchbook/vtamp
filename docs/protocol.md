@@ -340,18 +340,24 @@ reject the new database version. The response error object may include optional
 
 `library_delete` takes a Library track `id` and returns
 `{"deleted":"TRACK_ID","warning":null}` after deleting a managed YouTube
-download's audio, cover, source metadata, and catalog entry. The source manifest,
-canonical managed path, and regular files must match; symlinks, extra files, and
+download's audio, optional video, cover, source metadata, and catalog entry. The
+source manifest, canonical managed path, and regular files must match; symlinks, extra files, and
 local originals are refused. The operation emits `library_changed` only on
-success. It never changes playback or Queue. A missing ID returns
-`track_not_found`, a local original returns `not_managed`, an in-use track returns
-`track_in_use`, and active scans/imports/cover updates return `library_busy`.
-In-use checks include queue copies and direct playback, matching both ID and
-file path. No database migration is needed. Files move into the reserved
-`imports/.staging/delete-UUID` area before the catalog transaction; failures
-restore them and startup recovers interrupted operations according to whether
-the catalog entry still exists. A non-null `warning` means the catalog deletion
-committed but staged-file cleanup awaits retry on startup. Historical import
+success. It removes all matching Queue entries and play-next reservations,
+matching both the Library track ID and canonical file path. A removed queue
+cursor moves to the preceding retained entry. If the deleted track is current
+in Queue or direct playback, output stops, position resets, and the current
+selection and stop reservation are cleared. Other playback, queue order, shuffle,
+repeat, volume, and stop reservations are preserved. Catalog removal and the
+updated session commit in one transaction before the engine changes output;
+state changes increment `revision`, queue changes increment `queue_revision`,
+and a changed session emits `state` before `library_changed`. A missing ID returns
+`track_not_found`, a local original returns `not_managed`, and active
+scans/imports/cover updates return `library_busy`. No database migration is needed.
+Files move into the reserved `imports/.staging/delete-UUID` area before the
+transaction; failures restore them. Startup recovers interrupted operations
+according to whether the catalog entry still exists. A non-null `warning` means
+the catalog deletion committed but staged-file cleanup awaits retry on startup. Historical import
 reports are retained. A timeout still has an unknown outcome: inspect Library
 before retrying. A later explicit import downloads a fresh copy.
 

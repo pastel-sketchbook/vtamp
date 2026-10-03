@@ -386,7 +386,7 @@ pub enum Library {
         #[command(flatten)]
         wait: ScanWait,
     },
-    /// Permanently delete one managed download and its Library entry.
+    /// Permanently delete a managed download, its Library entry and all queued copies.
     Delete {
         id: String,
     },

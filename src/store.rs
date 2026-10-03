@@ -134,12 +134,13 @@ impl Store {
         )?;
         Ok(())
     }
-    pub(crate) fn delete_import(&mut self, id: &str) -> Result<()> {
+    pub(crate) fn delete_import(&mut self, id: &str, state: &State) -> Result<()> {
         let tx = self.db.transaction()?;
         if tx.execute("DELETE FROM tracks WHERE id=?1", [id])? == 0 {
             return Err(ApiError::new("track_not_found", "Library track not found").into());
         }
         tx.execute("DELETE FROM track_metadata WHERE id=?1", [id])?;
+        tx.execute("INSERT INTO session(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", [serde_json::to_string(state)?])?;
         tx.commit()?;
         Ok(())
     }

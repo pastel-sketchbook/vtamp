@@ -113,9 +113,11 @@ impl Drop for Harness {
     }
 }
 const URL: &str = "https://www.youtube.com/watch?v=lO3lG-qXU14";
-#[test]
-fn managed_download_deletion_preserves_queue_and_can_be_reimported() {
+#[tokio::test]
+async fn managed_download_deletion_removes_queued_copies_and_can_be_reimported() {
     let h = Harness::new();
+    h.ok(&["server", "start", "--headless"]);
+    h.ok(&["volume", "0"]);
     h.ok(&["library", "add", URL, "--wait", "--timeout", "15s"]);
     let listed = h.ok(&["library", "list"]);
     let track = &listed["tracks"][0];
@@ -124,20 +126,41 @@ fn managed_download_deletion_preserves_queue_and_can_be_reimported() {
         .parent()
         .unwrap();
     h.ok(&["queue", "add", "--track", id]);
+    h.ok(&["queue", "add", "--track", id]);
     let before = h.ok(&["status"]);
-    let rejected = h.cmd(&["library", "delete", id]);
-    assert!(!rejected.status.success());
-    assert_eq!(
-        serde_json::from_slice::<Value>(&rejected.stdout).unwrap()["error"]["code"],
-        "track_in_use"
-    );
-    assert_eq!(h.ok(&["status"]), before);
-    assert!(folder.join("audio.m4a").exists());
-    let queue_id = before["queue"][0]["id"].as_str().unwrap();
-    h.ok(&["queue", "remove", queue_id]);
+    let paths = vtamp::platform::Paths {
+        data: h.home.path().into(),
+        runtime: h.home.path().join("run"),
+        cache: h.home.path().join("covers"),
+    };
+    let (_, mut stream) = vtamp::client::Client::new(paths).watch().await.unwrap();
     let deleted = h.ok(&["library", "delete", id]);
     assert_eq!(deleted["deleted"], id);
     assert!(!folder.exists());
+    let after = h.ok(&["status"]);
+    assert_eq!(after["queue"], json!([]));
+    assert_eq!(
+        after["queue_revision"],
+        before["queue_revision"].as_u64().unwrap() + 1
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut state_seen = false;
+        let mut library_seen = false;
+        while !state_seen || !library_seen {
+            let reply: vtamp::model::Reply = vtamp::wire::read(&mut stream).await.unwrap();
+            let event = reply.into_data().unwrap();
+            if event["event"] == "state" && event["data"]["revision"] == after["revision"] {
+                assert_eq!(event["data"]["queue"], json!([]));
+                state_seen = true;
+            }
+            library_seen |= event["event"] == "library_changed";
+        }
+    })
+    .await
+    .unwrap();
+    h.ok(&["server", "stop"]);
+    h.ok(&["server", "start", "--headless"]);
+    assert_eq!(h.ok(&["status"])["queue"], json!([]));
     h.ok(&["library", "scan", "--wait"]);
     assert_eq!(h.ok(&["library", "list"])["total"], 0);
     let reimported = h.ok(&["library", "add", URL, "--wait", "--timeout", "15s"]);

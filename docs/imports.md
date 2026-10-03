@@ -84,9 +84,10 @@ restarting the server loses it, and re-running the command is safe.
 ## Delete a downloaded track
 
 In Library, select a YouTube download and press `d` or `x`. The confirmation
-names the track and explains that its downloaded audio, video, and cover will be deleted
-from disk. Enter deletes; Esc cancels. The equivalent CLI command is
-`vtamp library delete TRACK_ID` and deletes without an interactive prompt.
+names the track and explains that its downloaded audio, video, and cover will be
+deleted from disk, all queued copies will be removed, and playback will stop if
+this is the current track. Enter deletes; Esc cancels. The equivalent CLI command
+is `vtamp library delete TRACK_ID` and deletes without an interactive prompt.
 
 Deletion is limited to vtamp's own `imports/youtube/VIDEO_ID` directories with
 matching source records. Files registered through `library add FOLDER` are
@@ -94,17 +95,20 @@ original files, not copies, and cannot be deleted this way. Remove a folder
 registration with `library remove FOLDER` instead. Radio entries are unregistered
 without deleting files.
 
-Remove all queued copies first, and switch away from direct playback of the
-track before deleting. Deletion never stops playback or edits Queue for you.
+Deletion removes all queued copies automatically, including copies with a
+different track ID that point to the same file. If the track is current in Queue
+or direct playback, deletion stops it and clears its selection. Other playback
+continues with its position and settings preserved.
 Wait for scans, imports, and cover updates to finish. A successful deletion
 removes the source metadata and Library entry, so a rescan does not bring it
 back. Importing the URL again downloads a new copy. Historical import reports
 remain historical and may refer to the deleted track ID.
 
-Files are staged before the catalog transaction. A failed transaction restores
-them; server startup recovers an interrupted deletion. If final cleanup fails,
-the command returns a warning and startup retries that cleanup. This uses the
-existing database schema.
+Files are staged before the catalog and session transaction. Library removal and
+Queue changes commit together before playback changes. A failed transaction
+restores the files and keeps Queue and playback unchanged; server startup
+recovers an interrupted deletion. If final cleanup fails, the command returns a
+warning and startup retries that cleanup. This uses the existing database schema.
 
 ## TUI imports
 

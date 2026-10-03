@@ -565,6 +565,7 @@ fn worker(
                             let _ = answer.send(result.unwrap_or_else(failure));
                         }
                         Command::LibraryDelete { id } => {
+                            let revision = engine.state.revision;
                             let result = (|| -> Result<Reply> {
                                 if engine.state.scanning
                                     || imports > 0
@@ -573,15 +574,14 @@ fn worker(
                                 {
                                     return Err(ApiError::new("library_busy", "Wait for scans, imports and cover updates to finish before deleting").into());
                                 }
-                                let result = crate::deletion::delete(
-                                    &paths,
-                                    &mut store,
-                                    &engine.state,
-                                    &id,
-                                )?;
+                                let result =
+                                    crate::deletion::delete(&paths, &mut store, &mut engine, &id)?;
                                 Ok(Reply::success(result))
                             })();
                             if result.is_ok() {
+                                if engine.state.revision != revision {
+                                    let _ = events.send(Event::State(engine.state.clone()));
+                                }
                                 let _ = events.send(Event::LibraryChanged);
                             }
                             let _ = answer.send(result.unwrap_or_else(failure));

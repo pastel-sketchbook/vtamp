@@ -191,6 +191,13 @@ impl<B: PlaybackBackend> Engine<B> {
         self.queue_snapshot = QueueSnapshot::new(&state);
         self.state = state;
     }
+    /// Publish a committed download deletion, stopping only its current output.
+    pub(crate) fn accept_library_delete(&mut self, state: State) {
+        if self.state.current_id != state.current_id {
+            self.stop();
+        }
+        self.accept_queue_edit(state);
+    }
     pub fn apply(&mut self, command: &Command) -> Result<()> {
         let result = self.apply_inner(command);
         self.note_queue_change();
