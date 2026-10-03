@@ -23,9 +23,9 @@ BINARY = ROOT / "target/release/vtamp"
 GHOSTTY = Path("/Applications/Ghostty.app")
 
 
-def run(args, *, env=None, timeout=30):
+def run(args, *, env=None, timeout=30, cwd=None):
     result = subprocess.run(list(map(str, args)), env=env, capture_output=True,
-                            text=True, timeout=timeout)
+                            text=True, timeout=timeout, cwd=cwd)
     if result.returncode:
         raise RuntimeError(f"{shlex.join(list(map(str, args)))}: {result.stderr or result.stdout}")
     return result.stdout.strip()
@@ -57,7 +57,39 @@ def sample_cpu(pids, seconds=5):
     return {name: round(100 * (after[name] - before[name]) / elapsed, 1) for name in pids}
 
 
-def check(output, rates):
+def cursor_trace(data, start=0, end=None):
+    """Inspect the actual client stream, skipping Kitty image payloads."""
+    visible = synchronized = False
+    position = None
+    moves = []
+    releases = []
+    tokens = rb'\x1b_G[^\x1b]*\x1b\\|\x1b\[[0-?]*[ -/]*[@-~]'
+    for match in re.finditer(tokens, data):
+        token = match[0]
+        measured = start <= match.start() and (end is None or match.start() < end)
+        move = re.fullmatch(rb'\x1b\[(\d*)(?:;(\d*))?[Hf]', token)
+        if token == b'\x1b[?25h':
+            visible = True
+        elif token == b'\x1b[?25l':
+            visible = False
+        elif token == b'\x1b[?2026h':
+            synchronized = True
+        elif token == b'\x1b[?2026l':
+            synchronized = False
+            if measured and visible:
+                releases.append(position)
+        elif move:
+            position = [int(move[2] or 1) - 1, int(move[1] or 1) - 1]
+            if measured and visible and not synchronized:
+                moves.append({'offset': match.start(), 'move': token.decode('ascii')})
+    return {'exposed_moves': moves, 'released_cursors': releases}
+
+
+def exposed_cursor_moves(data, start=0, end=None):
+    return cursor_trace(data, start, end)['exposed_moves']
+
+
+def check(output, rates, trace_terminal=False):
     for name in ("ffmpeg", "ffprobe", "tmux", "swiftc", "screencapture"):
         if not shutil.which(name):
             raise RuntimeError(f"Install {name} before this optional live check")
@@ -120,11 +152,20 @@ else:
         logger.write_text('''import sys,os,re,time,json
 f=open(sys.argv[1],'w',buffering=1)
 tail=b''
+visible=False
+synchronized=False
 while True:
  data=os.read(0,65536)
  if not data: break
  f.write(json.dumps({'at':time.monotonic(),'bytes':len(data)})+'\\n')
  buf=tail+data
+ for m in re.finditer(rb'\\x1b\\[(?:\\?(25|2026)([hl])|(\\d+);(\\d+)H)',buf):
+  if m.end()<=len(tail): continue
+  mode,enabled,row,column=m.groups()
+  if mode==b'25': visible=enabled==b'h'
+  elif mode==b'2026': synchronized=enabled==b'h'
+  elif visible and not synchronized:
+   f.write(json.dumps({'at':time.monotonic(),'visible_cursor_move':[int(column)-1,int(row)-1]})+'\\n')
  for m in re.finditer(rb'_G([^;\\x1b]*);',buf):
   if m.end()<=len(tail): continue
   h=m[1]
@@ -155,7 +196,7 @@ while True:
                 tmux = [shutil.which("tmux"), "-S", work / f"{fps}.sock", "-f", config]
                 ready = work / f"{fps}.ready"
                 start = shlex.join([sys.executable, str(bootstrap), str(ready), str(BINARY)])
-                run([*tmux, "new-session", "-d", "-s", "video", "-x", 100, "-y", 24, start], env=env)
+                run([*tmux, *(['-vv'] if trace_terminal else []), "new-session", "-d", "-s", "video", "-x", 100, "-y", 24, start], env=env, cwd=work)
                 timings = output / f"frames-{fps}.jsonl"
                 run([*tmux, "pipe-pane", "-t", "video:0.0", "-O",
                      shlex.join([sys.executable, str(logger), str(timings)])], env=env)
@@ -182,6 +223,7 @@ while True:
                 rss = lambda: int(run(["ps", "-o", "rss=", "-p", pane_pid]))
                 rss_before = rss()
                 tmux_pid = run([*tmux, "display-message", "-p", "#{pid}"], env=env)
+                outer_log = work / f'tmux-out-{tmux_pid}.log'
                 cpu = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid})
                 started = time.monotonic()
                 time.sleep(3)
@@ -211,6 +253,57 @@ while True:
                 assert summaries[-1]['input_p95_ms'] <= 100, summaries[-1]
                 assert abs(summaries[-1]['observed_upload_fps'] - fps) < 2, summaries[-1]
                 assert len(counts) <= 2, "Video image IDs keep growing"
+                # Exercise a real input caret while video/progress redraws.
+                # Record cursor moves emitted while visible outside a frame
+                # transaction; these cause the caret to flash across the pane.
+                cursor_checks = []
+                for key, name in [('a', 'add'), ('/', 'search'), ('m', 'edit')]:
+                    labels = {'add': (' Add folder',), 'search': ('Filter queue:', 'Search library:'), 'edit': (' EDIT TRACK ',)}[name]
+                    run([*tmux, 'send-keys', '-t', 'video:0.0', key], env=env)
+                    wait_for(lambda: any(label in capture() for label in labels), f'{name} input overlay')
+                    cursor = lambda: run([*tmux, 'display-message', '-p', '-t', 'video:0.0', '#{cursor_flag} #{cursor_x} #{cursor_y}'], env=env)
+                    wait_for(lambda: cursor().startswith('1 '), f'{name} input cursor')
+                    run([*tmux, 'send-keys', '-t', 'video:0.0', 'C-u'], env=env)
+                    run([*tmux, 'send-keys', '-t', 'video:0.0', '-l', '사랑'], env=env)
+                    wait_for(lambda: '사랑' in capture(), 'Korean field text')
+                    time.sleep(.2)
+                    at = time.monotonic()
+                    outer_start = outer_log.stat().st_size if trace_terminal else 0
+                    visible_positions = set()
+                    for _ in range(60):
+                        state = cursor().split()
+                        if state[0] == '1':
+                            visible_positions.add(tuple(map(int, state[1:])))
+                        time.sleep(.015)
+                    escaped = [e for e in events() if e['at'] > at and 'visible_cursor_move' in e]
+                    cursor_checks.append({'input': name, 'visible_moves_during_redraw': len(escaped),
+                                          'visible_positions': sorted(visible_positions)})
+                    if trace_terminal:
+                        outer_end = outer_log.stat().st_size
+                        cursor_checks[-1]['outer_range'] = [outer_start, outer_end]
+                        cursor_checks[-1]['outer'] = cursor_trace(
+                            outer_log.read_bytes(), outer_start, outer_end)
+                    run(['screencapture', '-x', '-o', '-l', window['id'], output / f'cursor-{name}-{fps}.png'])
+                    run([*tmux, 'send-keys', '-t', 'video:0.0', 'Escape'], env=env)
+                    # Drawing temporarily hides the cursor too; a hidden cursor
+                    # alone cannot prove Escape was consumed before the next key.
+                    wait_for(lambda: not any(label in capture() for label in labels), f'{name} overlay closed')
+                    wait_for(lambda: cursor().startswith('0 '), 'cursor hidden after closing input')
+                (output / f'cursor-{fps}.json').write_text(json.dumps(cursor_checks, indent=2))
+                assert all(c['visible_moves_during_redraw'] == 0 for c in cursor_checks), cursor_checks
+                assert all(len(c['visible_positions']) == 1 for c in cursor_checks), cursor_checks
+                if trace_terminal:
+                    assert all(not c['outer']['exposed_moves'] for c in cursor_checks), cursor_checks
+                    for check_cursor in cursor_checks:
+                        expected = list(check_cursor['visible_positions'][0])
+                        assert all(position == expected for position in check_cursor['outer']['released_cursors']), check_cursor
+                summaries[-1]['input_cursors'] = cursor_checks
+                run([*tmux, 'send-keys', '-t', 'video:0.0', 'i'], env=env)
+                wait_for(lambda: 'IMPORTS' in capture(), 'import overlay')
+                assert cursor().startswith('0 '), 'Imports list shows an input cursor'
+                start_frames = len(frames())
+                run([*tmux, 'send-keys', '-t', 'video:0.0', 'Escape'], env=env)
+                wait_for(lambda: len(frames()) > start_frames + 2, 'video after input overlays')
                 # Fullscreen fills this pane, keeps playback keys, and scales
                 # the saved 480p picture even when the terminal is larger.
                 run([*tmux, "send-keys", "-t", "video:0.0", "F"], env=env)
@@ -269,12 +362,14 @@ while True:
                 wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen after natural ending')
                 run([*tmux, "send-keys", "-t", "video:0.0", "Escape"], env=env)
                 wait_for(lambda: 'vtamp' in capture() and 'F/Esc back' not in capture(), 'return from fullscreen')
-                time.sleep(.3)
+                start_frames = len(frames())
+                wait_for(lambda: len(frames()) > start_frames + 2, 'normal video before fullscreen toggle')
                 run([*tmux, "send-keys", "-t", "video:0.0", "F"], env=env)
                 wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen before Ctrl-B')
                 run([*tmux, "send-keys", "-t", "video:0.0", "C-b"], env=env)
                 wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'visible list after Ctrl-B')
-                time.sleep(.3)
+                start_frames = len(frames())
+                wait_for(lambda: len(frames()) > start_frames + 2, 'normal video after Ctrl-B')
                 run(["screencapture", "-x", "-o", "-l", window['id'], output / f"normal-after-ctrl-b-{fps}.png"])
                 run([*tmux, "send-keys", "-t", "video:0.0", "F", "?"], env=env)
                 wait_for(lambda: 'ATTACH / DETACH' in capture(), 'help from fullscreen')
@@ -334,6 +429,17 @@ while True:
             (output / "report.json").write_text(json.dumps(summaries, indent=2) + "\n")
             print(json.dumps(summaries, indent=2), flush=True)
         finally:
+            if trace_terminal:
+                for trace in work.glob('tmux-out-*.log'):
+                    shutil.copyfile(trace, output / trace.name)
+                if sys.exc_info()[0] is not None:
+                    for trace in work.glob('tmux-server-*.log'):
+                        shutil.copyfile(trace, output / trace.name)
+            if sys.exc_info()[0] is not None and tmux:
+                try:
+                    (output / 'failure-pane.txt').write_text(run([*tmux, 'capture-pane', '-p', '-t', 'video:0.0'], env=env))
+                except Exception:
+                    pass
             if ghostty:
                 try: os.kill(ghostty, signal.SIGTERM)
                 except ProcessLookupError: pass
@@ -349,7 +455,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--fps', nargs='+', type=int, choices=(8, 12, 15), default=[8, 12, 15])
+    parser.add_argument('--trace-terminal', action='store_true', help='Check the actual tmux-to-terminal cursor stream and retain raw traces')
     args = parser.parse_args()
     destination = args.output or Path(tempfile.mkdtemp(prefix='vtamp-video-evidence-', dir='/tmp'))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))
-    check(destination, args.fps)
+    check(destination, args.fps, args.trace_terminal)

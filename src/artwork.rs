@@ -258,6 +258,19 @@ pub(crate) struct TmuxPassthrough {
 }
 
 impl TmuxPassthrough {
+    /// An outer update is released by tmux's final redraw, so every attached
+    /// client must have tmux's synchronized-output capability enabled.
+    pub fn synchronized_updates(&self) -> bool {
+        tmux_client_features().is_some_and(|clients| {
+            !clients.trim().is_empty()
+                && clients.lines().all(|client| {
+                    client.split('\t').next().is_some_and(|features| {
+                        features.split(',').any(|feature| feature == "sync")
+                    })
+                })
+        })
+    }
+
     fn enable() -> Option<Self> {
         let pane = std::env::var("TMUX_PANE").ok()?;
         let local = tmux_query(&["show-options", "-p", "-v", "-t", &pane, "allow-passthrough"])?;

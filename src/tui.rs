@@ -68,7 +68,44 @@ struct HelpScroll {
 struct Presentation {
     previous: Option<Buffer>,
     caret: Option<Position>,
+    tmux_passthrough: bool,
 }
+
+/// Keep text, graphics and the input caret in a single visible update.
+trait PresentationBackend: Backend {
+    fn begin_update(&mut self, tmux_passthrough: bool) -> Result<(), Self::Error>;
+    fn end_update(&mut self) -> Result<(), Self::Error>;
+}
+
+impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBackend<W> {
+    fn begin_update(&mut self, tmux_passthrough: bool) -> Result<(), Self::Error> {
+        if tmux_passthrough {
+            // tmux forwards graphics immediately, outside its pane update, and
+            // resets the outer cursor to visible at (0, 0) after every chunk.
+            // Hold the outer display too; tmux's final synchronized redraw
+            // releases it after restoring the actual pane cursor.
+            crossterm::execute!(
+                self,
+                crossterm::style::Print("\x1bPtmux;\x1b\x1b[?2026h\x1b\\")
+            )?;
+        }
+        crossterm::execute!(self, crossterm::terminal::BeginSynchronizedUpdate)
+    }
+    fn end_update(&mut self) -> Result<(), Self::Error> {
+        crossterm::execute!(self, crossterm::terminal::EndSynchronizedUpdate)
+    }
+}
+
+#[cfg(test)]
+impl PresentationBackend for ratatui::backend::TestBackend {
+    fn begin_update(&mut self, _tmux_passthrough: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn end_update(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 impl Presentation {
     fn invalidate(&mut self) {
         self.previous = None;
@@ -78,6 +115,7 @@ impl Presentation {
     /// every draw. Ratatui's `Terminal::clear` queries the cursor to preserve it;
     /// that synchronous reply can time out while EventStream owns terminal input.
     fn clear<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+        terminal.hide_cursor()?;
         terminal.backend_mut().clear()?;
         // Each swap resets the buffer it enters. Reset both without changing
         // which buffer is current so the next frame redraws the cleared screen.
@@ -89,7 +127,7 @@ impl Presentation {
 
     /// `render` returns the text caret, if any. The terminal cursor is shown
     /// only there, so input methods draw their composition inside the field.
-    fn draw<B: Backend>(
+    fn draw<B: PresentationBackend>(
         &mut self,
         terminal: &mut Terminal<B>,
         render: impl FnOnce(&mut Frame) -> Option<Position>,
@@ -110,7 +148,23 @@ impl Presentation {
             None => self.previous = Some(next.clone()),
         }
         self.caret = caret;
-        terminal.apply_buffer_with_cursor(caret)?;
+        terminal.backend_mut().begin_update(self.tmux_passthrough)?;
+        let result = (|| {
+            // Also hide during drawing on terminals that ignore synchronized
+            // updates. Never show the cursor at the last painted cell.
+            terminal.hide_cursor()?;
+            terminal.flush()?;
+            if let Some(position) = caret {
+                terminal.set_cursor_position(position)?;
+                terminal.show_cursor()?;
+            }
+            terminal.swap_buffers();
+            terminal.backend_mut().flush()
+        })();
+        // Release the terminal's pending update even if drawing failed.
+        let end = terminal.backend_mut().end_update();
+        result?;
+        end?;
         Ok(true)
     }
 }
@@ -305,9 +359,22 @@ struct App {
     caret: Option<Position>,
 }
 
-struct TerminalGuard;
+struct TerminalGuard {
+    tmux_passthrough: bool,
+    _passthrough: Option<crate::artwork::TmuxPassthrough>,
+}
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate
+        );
+        if self.tmux_passthrough {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::style::Print("\x1bPtmux;\x1b\x1b[?2026l\x1b\\")
+            );
+        }
         let _ = crossterm::execute!(std::io::stdout(), event::DisableBracketedPaste);
         if std::env::var_os("TMUX").is_some() {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[>4;0m"));
@@ -341,9 +408,16 @@ pub async fn run(
 ) -> Result<()> {
     let (theme, settings_warning) = attachment_theme(&settings_path, override_theme);
     let mut terminal = ratatui::try_init()?;
-    let _guard = TerminalGuard;
+    let mut guard = TerminalGuard {
+        tmux_passthrough: false,
+        _passthrough: None,
+    };
     crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)?;
-    let (artwork, _passthrough) = Artwork::detect(art);
+    let (artwork, passthrough) = Artwork::detect(art);
+    guard.tmux_passthrough = passthrough
+        .as_ref()
+        .is_some_and(|p| p.synchronized_updates());
+    guard._passthrough = passthrough;
     // Request distinct modified Enter events without changing tmux configuration.
     if std::env::var_os("TMUX").is_some() {
         crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[>4;2m"))?;
@@ -532,7 +606,10 @@ pub async fn run(
         }
     });
     let result = async {
-        let mut presentation = Presentation::default();
+        let mut presentation = Presentation {
+            tmux_passthrough: guard.tmux_passthrough,
+            ..Default::default()
+        };
         let mut last_draw = Instant::now();
         let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
@@ -6928,6 +7005,86 @@ mod tests {
             );
         }
         assert_eq!(output.windows(6).filter(|w| *w == b"\x1b[?25l").count(), 2);
+    }
+
+    #[test]
+    fn redraws_hide_cursor_motion_and_publish_the_caret_with_the_frame() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        let mut output = Vec::new();
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut output),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            let mut presentation = Presentation::default();
+            // Changing cells away from the input field mimics video/progress
+            // updates while the user types. Both frames keep the same caret.
+            for label in ["A", "B"] {
+                assert!(
+                    presentation
+                        .draw(&mut terminal, |frame| {
+                            frame.render_widget(label, frame.area());
+                            Some(Position::new(10, 8))
+                        })
+                        .unwrap()
+                );
+            }
+        }
+        let output = String::from_utf8(output).unwrap();
+        let updates: Vec<_> = output.split("\x1b[?2026h").skip(1).collect();
+        assert_eq!(updates.len(), 2);
+        for update in updates {
+            let (frame, _) = update.split_once("\x1b[?2026l").unwrap();
+            assert!(frame.starts_with("\x1b[?25l"), "hide before drawing");
+            assert!(
+                frame.ends_with("\x1b[9;11H\x1b[?25h"),
+                "move before showing"
+            );
+            assert_eq!(frame.matches("\x1b[?25h").count(), 1);
+        }
+    }
+
+    #[test]
+    fn failed_redraw_releases_synchronized_output() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        use std::io::{self, Write};
+        #[derive(Default)]
+        struct FailOnText(Vec<u8>);
+        impl Write for FailOnText {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes == b"X" {
+                    return Err(io::Error::other("injected draw failure"));
+                }
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = FailOnText::default();
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut output),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            let error = Presentation::default()
+                .draw(&mut terminal, |frame| {
+                    frame.render_widget("X", frame.area());
+                    Some(Position::new(10, 8))
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("injected draw failure"));
+        }
+        let output = String::from_utf8(output.0).unwrap();
+        let (_, update) = output.split_once("\x1b[?2026h").unwrap();
+        assert!(update.contains("\x1b[?2026l"));
     }
 
     #[test]

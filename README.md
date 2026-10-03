@@ -945,4 +945,7 @@ used. It compares 8/12/15 fps, records Kitty uploads, output bandwidth,
 Ghostty/tmux CPU time, input response times and RSS, checks fullscreen controls,
 and captures real pixels for manual inspection under `/tmp`. Use `--fps 12` for a
 single rate or `--output /tmp/vtamp-video-check` to choose the evidence directory.
+Add `--trace-terminal` to check input cursor motion in tmux's actual output to
+Ghostty and retain the raw trace. Pane captures alone cannot detect cursor resets
+caused by graphics passthrough.
 The default suite does not prove terminal pixels or audible playback.

@@ -144,6 +144,16 @@ The social preview cards `site/og.png` and `site/og-ko.png` (1200 × 630, compos
 
 The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Search and folder prompts keep the cover visible: they center over the browser area, sized to their label instead of the pane. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter keeps it (empty clears the filter), while Esc restores the filter and page that were applied before the prompt opened. Results follow a live draft as it is typed: the queue filter is local and instant, and the library waits out a short debounce so a fast typist starts one server search rather than one per keystroke. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
 
+Frame updates publish text, graphics and the input caret together using terminal
+synchronized updates. Hide the cursor before drawing and move it back to the
+active field before showing it, including on terminals without synchronized
+updates. Background video and progress redraws must never expose the drawing
+cursor away from the input field. Unchanged frames emit no terminal commands.
+With Kitty through tmux, start the outer terminal update before passthrough
+uploads as well: tmux resets the outer cursor after each raw graphics chunk.
+Enable this only when all attached clients advertise tmux's `sync` capability;
+tmux's final redraw restores the pane cursor and releases the outer update.
+
 Help scrolls through wrapped text at small pane sizes. When scrolling is needed,
 keep scroll/page controls, close keys, and the visible row range in a fixed
 two-line footer. When all text fits, show only a one-line close hint. Arrow keys and
