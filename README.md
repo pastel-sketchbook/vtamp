@@ -596,6 +596,9 @@ plays with sound independently. Audio and video are not re-encoded; Library
 originals are never rewritten. Names preserve Unicode, replace unsafe characters,
 shorten very long names, and append `(2)`, `(3)`, etc. for collisions.
 There are no per-track folders, separate cover images, or external file references.
+Tar entries preserve the original audio/video file modification times (whole
+seconds), even after tagging or remuxing the copies. `manifest.json` uses its
+export creation time; normal tar extraction retains these timestamps.
 Queue, playback position, settings, credentials, and download history are excluded.
 
 Export temporarily prepares complete media copies before compression, so it

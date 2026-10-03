@@ -21,6 +21,7 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use unicode_normalization::UnicodeNormalization;
 
@@ -184,7 +185,7 @@ fn copy_audio(
     destination: &Path,
     stop: &AtomicBool,
     progress: &mut Tracker<'_>,
-) -> Result<String> {
+) -> Result<(String, u64)> {
     let mut input =
         File::open(source).with_context(|| format!("Cannot read {}", source.display()))?;
     let before = input.metadata()?;
@@ -213,7 +214,17 @@ fn copy_audio(
         "Audio changed while copying: {}",
         source.display()
     );
-    Ok(format!("{:x}", hash.finalize()))
+    Ok((
+        format!("{:x}", hash.finalize()),
+        tar_time(before.modified()?)?,
+    ))
+}
+
+fn tar_time(time: SystemTime) -> Result<u64> {
+    Ok(time
+        .duration_since(UNIX_EPOCH)
+        .context("File timestamp predates the Unix epoch")?
+        .as_secs())
 }
 
 /// Snapshot all metadata first, then stream bounded chunks of the actual assets.
@@ -249,6 +260,7 @@ fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> R
         streams: catalog.streams,
     };
     let mut inputs = BTreeMap::new();
+    let mut mtimes = BTreeMap::new();
     let mut names = HashSet::from(["manifest.json".to_owned()]);
     let mut report = Report {
         operation: "export".into(),
@@ -289,7 +301,8 @@ fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> R
             .context("Audio has no extension")?;
         let audio_name = format!("{name}.{extension}");
         let copied = stage.path().join(&audio_name);
-        let original_sha256 = copy_audio(source, &copied, &stop, progress)?;
+        let (original_sha256, mtime) = copy_audio(source, &copied, &stop, progress)?;
+        mtimes.insert(audio_name.clone(), mtime);
         originals.push((name, audio_name, copied, original_sha256));
     }
     progress.end();
@@ -317,6 +330,10 @@ fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> R
         for (index, video) in videos.iter().enumerate() {
             if let Some(video) = video {
                 let (name, _, audio, _) = &originals[index];
+                mtimes.insert(
+                    format!("{name}.mkv"),
+                    tar_time(video.metadata()?.modified()?)?,
+                );
                 progress.item(done, &catalog.records[index].track.title);
                 tools.mux(
                     video,
@@ -391,6 +408,7 @@ fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> R
             &mut tar,
             "manifest.json",
             json.len() as u64,
+            tar_time(SystemTime::now())?,
             json.as_slice(),
         )?;
         for (index, a) in manifest.tracks.iter().flat_map(assets).enumerate() {
@@ -402,7 +420,7 @@ fn export_tracked(paths: &Paths, output: &Path, progress: &mut Tracker<'_>) -> R
                 bytes: 0,
                 progress,
             };
-            append(&mut tar, &a.path, a.bytes, &mut reader)?;
+            append(&mut tar, &a.path, a.bytes, mtimes[&a.path], &mut reader)?;
             ensure!(
                 reader.bytes == a.bytes && format!("{:x}", reader.hash.finalize()) == a.sha256,
                 "File changed during export: {}",
@@ -445,11 +463,13 @@ fn append<W: Write>(
     tar: &mut tar::Builder<W>,
     name: &str,
     bytes: u64,
+    mtime: u64,
     reader: impl Read,
 ) -> Result<()> {
     let mut header = tar::Header::new_ustar();
     header.set_size(bytes);
     header.set_mode(0o600);
+    header.set_mtime(mtime);
     header.set_cksum();
     tar.append_data(&mut header, name, reader)?;
     Ok(())

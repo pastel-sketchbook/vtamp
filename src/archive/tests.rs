@@ -322,6 +322,7 @@ fn rewrite(input: &Path, output: &Path, mutate: impl FnOnce(&mut Manifest), extr
         &mut tar,
         "manifest.json",
         json.len() as u64,
+        0,
         json.as_slice(),
     )
     .unwrap();
@@ -330,6 +331,7 @@ fn rewrite(input: &Path, output: &Path, mutate: impl FnOnce(&mut Manifest), extr
             &mut tar,
             &a.path,
             a.bytes,
+            0,
             File::open(temp.path().join(&a.path)).unwrap(),
         )
         .unwrap();
@@ -340,6 +342,7 @@ fn rewrite(input: &Path, output: &Path, mutate: impl FnOnce(&mut Manifest), extr
             &mut tar,
             &a.path,
             a.bytes,
+            0,
             File::open(temp.path().join(&a.path)).unwrap(),
         )
         .unwrap();
@@ -454,6 +457,7 @@ fn archive_rejects_links_and_missing_payloads_without_touching_external_files() 
             &mut tar,
             "manifest.json",
             json.len() as u64,
+            0,
             json.as_slice(),
         )
         .unwrap();
@@ -478,6 +482,7 @@ fn archive_rejects_links_and_missing_payloads_without_touching_external_files() 
         &mut tar,
         "manifest.json",
         json.len() as u64,
+        0,
         json.as_slice(),
     )
     .unwrap();
@@ -637,7 +642,7 @@ fn readable_names_keep_unicode_and_disambiguate_sanitized_or_duplicate_titles() 
     assert!(long.len() <= 80);
     assert!(long.starts_with("아주 긴 노래 제목"));
     let mut tar = tar::Builder::new(Vec::new());
-    append(&mut tar, &format!("{long}.mkv"), 1, &[0u8][..]).unwrap();
+    append(&mut tar, &format!("{long}.mkv"), 1, 0, &[0u8][..]).unwrap();
 }
 
 fn mp4_payload(data: &[u8]) -> Vec<u8> {
@@ -727,6 +732,74 @@ fn archive_tag_and_missing_tool_failures_never_publish_or_modify_originals() {
     assert!(!archive.exists());
 }
 
+#[test]
+fn archive_headers_and_normal_extraction_preserve_source_modification_times() {
+    let (_home, paths, _store, local) = fixture();
+    let downloaded = paths.data.join("imports/youtube/VIDEO000001/audio.m4a");
+    let times = [(downloaded, 1_650_000_123), (local, 1_660_000_321)];
+    for (file, seconds) in &times {
+        File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(*seconds)),
+            )
+            .unwrap();
+    }
+    let started = tar_time(SystemTime::now()).unwrap();
+    let archive = paths.data.join("times.tar.gz");
+    export(&paths, &archive).unwrap();
+    let finished = tar_time(SystemTime::now()).unwrap();
+    let mut tar = tar::Archive::new(GzDecoder::new(File::open(&archive).unwrap()));
+    let headers: BTreeMap<_, _> = tar
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.path().unwrap().into_owned(),
+                entry.header().mtime().unwrap(),
+            )
+        })
+        .collect();
+    let manifest_time = headers[Path::new("manifest.json")];
+    assert!((started..=finished).contains(&manifest_time));
+    let mut media_times: Vec<_> = headers
+        .iter()
+        .filter(|(p, _)| **p != Path::new("manifest.json"))
+        .map(|(_, t)| *t)
+        .collect();
+    media_times.sort();
+    assert_eq!(media_times, vec![1_650_000_123, 1_660_000_321]);
+    let extracted = tempfile::tempdir().unwrap();
+    tar::Archive::new(GzDecoder::new(File::open(&archive).unwrap()))
+        .unpack(extracted.path())
+        .unwrap();
+    for (name, expected) in headers {
+        assert_eq!(
+            tar_time(
+                extracted
+                    .path()
+                    .join(name)
+                    .metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    for (file, expected) in times {
+        assert_eq!(
+            tar_time(file.metadata().unwrap().modified().unwrap()).unwrap(),
+            expected
+        );
+    }
+}
+
 fn ffmpeg(args: &[&str]) -> Vec<u8> {
     let binary = crate::subprocess::executable(None, "ffmpeg").unwrap();
     let output = std::process::Command::new(binary)
@@ -789,11 +862,36 @@ fn archive_real_video_exports_sound_and_restores_silent_sidecar_without_reencodi
         "ffv1",
         silent.to_str().unwrap(),
     ]);
+    let video_time = 1_640_000_789;
+    File::options()
+        .write(true)
+        .open(&silent)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(video_time)),
+        )
+        .unwrap();
     let original_audio = fs::read(folder.join("audio.m4a")).unwrap();
     let original_video = fs::read(&silent).unwrap();
     let archive = paths.data.join("video.tar.gz");
     let report = export(&paths, &archive).unwrap();
     assert_eq!((report.included, report.videos), (2, 1));
+    let mut tar = tar::Archive::new(GzDecoder::new(File::open(&archive).unwrap()));
+    let video_header_time = tar
+        .entries()
+        .unwrap()
+        .find_map(|entry| {
+            let entry = entry.unwrap();
+            entry
+                .path()
+                .unwrap()
+                .extension()
+                .is_some_and(|ext| ext == "mkv")
+                .then(|| entry.header().mtime().unwrap())
+        })
+        .unwrap();
+    assert_eq!(video_header_time, video_time);
     assert_eq!(fs::read(folder.join("audio.m4a")).unwrap(), original_audio);
     assert_eq!(fs::read(&silent).unwrap(), original_video);
     let unpacked = tempfile::tempdir().unwrap();

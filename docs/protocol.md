@@ -400,6 +400,10 @@ The independent archive format is version 1: a gzip-compressed tar begins with
 omitted. Names use NFC Unicode, sanitize unsafe characters, bound the stem to
 80 UTF-8 bytes, and append numeric suffixes for collisions. Asset paths have one
 normal component and cannot be hidden or named `manifest.json`.
+Tar headers explicitly store each original audio/video file's modification time
+in Unix seconds, captured before preparing that asset; tagged/remuxed temporary
+file times are not used. `manifest.json` uses the time it is written for export.
+These times live in tar headers, not additional manifest fields.
 
 Every file track has a required `audio` asset, `original_sha256`, and an optional
 `video` asset, plus its effective track metadata, automatic metadata and nullable
