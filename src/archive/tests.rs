@@ -95,8 +95,17 @@ fn fixture() -> (tempfile::TempDir, Paths, Store, PathBuf) {
 
 fn restore(paths: &Paths, store: &mut Store, archive: &Path) -> Report {
     let stop = AtomicBool::new(false);
-    let mut publication = prepare(paths, archive, store.archive_catalog().unwrap(), &stop).unwrap();
-    publication.publish(paths, &stop).unwrap();
+    let mut publication = prepare(
+        paths,
+        archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    publication
+        .publish(paths, &stop, &mut Tracker::silent())
+        .unwrap();
     store.commit_archive(&publication).unwrap();
     publication.finish(paths, true).unwrap();
     publication.report
@@ -250,9 +259,17 @@ fn archive_rolls_back_database_failure_and_recovers_both_commit_outcomes() {
     export(&paths, &archive, true).unwrap();
     let (_home, target, mut store) = empty();
     let stop = AtomicBool::new(false);
-    let mut publication =
-        prepare(&target, &archive, store.archive_catalog().unwrap(), &stop).unwrap();
-    publication.publish(&target, &stop).unwrap();
+    let mut publication = prepare(
+        &target,
+        &archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    publication
+        .publish(&target, &stop, &mut Tracker::silent())
+        .unwrap();
     let connection = rusqlite::Connection::open(target.database()).unwrap();
     connection.execute_batch("CREATE TRIGGER fail_archive BEFORE INSERT ON tracks BEGIN SELECT RAISE(FAIL,'injected archive failure'); END;").unwrap();
     assert!(store.commit_archive(&publication).is_err());
@@ -264,15 +281,32 @@ fn archive_rolls_back_database_failure_and_recovers_both_commit_outcomes() {
         .execute_batch("DROP TRIGGER fail_archive")
         .unwrap();
 
-    let mut pending = prepare(&target, &archive, store.archive_catalog().unwrap(), &stop).unwrap();
-    pending.publish(&target, &stop).unwrap();
+    let mut pending = prepare(
+        &target,
+        &archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    pending
+        .publish(&target, &stop, &mut Tracker::silent())
+        .unwrap();
     drop(pending); // Simulated crash before catalog transaction.
     recover(&target, &store).unwrap();
     assert!(!target.data.join("imports/youtube/VIDEO000001").exists());
 
-    let mut committed =
-        prepare(&target, &archive, store.archive_catalog().unwrap(), &stop).unwrap();
-    committed.publish(&target, &stop).unwrap();
+    let mut committed = prepare(
+        &target,
+        &archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    committed
+        .publish(&target, &stop, &mut Tracker::silent())
+        .unwrap();
     store.commit_archive(&committed).unwrap();
     drop(committed); // Simulated crash after catalog commit, before cleanup.
     recover(&target, &store).unwrap();
@@ -293,7 +327,13 @@ fn archive_rolls_back_database_failure_and_recovers_both_commit_outcomes() {
 
 fn rewrite(input: &Path, output: &Path, mutate: impl FnOnce(&mut Manifest), extra: bool) {
     let temp = tempfile::tempdir().unwrap();
-    let mut manifest = extract(input, temp.path(), &AtomicBool::new(false)).unwrap();
+    let mut manifest = extract(
+        input,
+        temp.path(),
+        &AtomicBool::new(false),
+        &mut Tracker::silent(),
+    )
+    .unwrap();
     let originals: Vec<_> = manifest.tracks.iter().flat_map(assets).cloned().collect();
     mutate(&mut manifest);
     let mut tar = tar::Builder::new(GzEncoder::new(
@@ -388,9 +428,17 @@ fn archive_recovery_preserves_committed_files_after_unregistering_every_track() 
     export(&paths, &archive, true).unwrap();
     let (_home, target, mut store) = empty();
     let stop = AtomicBool::new(false);
-    let mut publication =
-        prepare(&target, &archive, store.archive_catalog().unwrap(), &stop).unwrap();
-    publication.publish(&target, &stop).unwrap();
+    let mut publication = prepare(
+        &target,
+        &archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
+    publication
+        .publish(&target, &stop, &mut Tracker::silent())
+        .unwrap();
     store.commit_archive(&publication).unwrap();
     let files: Vec<_> = publication
         .records
@@ -411,7 +459,13 @@ fn archive_rejects_links_and_missing_payloads_without_touching_external_files() 
     let valid = paths.data.join("valid.tar.gz");
     export(&paths, &valid, true).unwrap();
     let stage = tempfile::tempdir().unwrap();
-    let manifest = extract(&valid, stage.path(), &AtomicBool::new(false)).unwrap();
+    let manifest = extract(
+        &valid,
+        stage.path(),
+        &AtomicBool::new(false),
+        &mut Tracker::silent(),
+    )
+    .unwrap();
     let json = serde_json::to_vec(&manifest).unwrap();
     let original = fs::read(&local).unwrap();
     for entry_type in [
@@ -470,8 +524,14 @@ fn archive_publication_failure_cleans_its_files_and_preserves_existing_destinati
     export(&paths, &archive, true).unwrap();
     let (_home, target, store) = empty();
     let stop = AtomicBool::new(false);
-    let mut publication =
-        prepare(&target, &archive, store.archive_catalog().unwrap(), &stop).unwrap();
+    let mut publication = prepare(
+        &target,
+        &archive,
+        store.archive_catalog().unwrap(),
+        &stop,
+        &mut Tracker::silent(),
+    )
+    .unwrap();
     let occupied = publication.records[1]
         .record
         .track
@@ -483,7 +543,11 @@ fn archive_publication_failure_cleans_its_files_and_preserves_existing_destinati
         .to_path_buf();
     fs::create_dir_all(&occupied).unwrap();
     fs::write(occupied.join("personal.txt"), b"do not delete").unwrap();
-    assert!(publication.publish(&target, &stop).is_err());
+    assert!(
+        publication
+            .publish(&target, &stop, &mut Tracker::silent())
+            .is_err()
+    );
     publication.finish(&target, false).unwrap();
     assert_eq!(
         fs::read(occupied.join("personal.txt")).unwrap(),
@@ -491,4 +555,108 @@ fn archive_publication_failure_cleans_its_files_and_preserves_existing_destinati
     );
     assert!(!target.data.join("imports/youtube/VIDEO000001").exists());
     assert!(store.records().unwrap().is_empty());
+}
+
+#[test]
+fn archive_progress_reports_work_before_publication_and_exact_payload_totals() {
+    let (_source, paths, _store, _) = fixture();
+    let archive = paths.data.join("progress.tar.gz");
+    let mut events = vec![];
+    export_with_progress(&paths, &archive, true, &mut |p| {
+        if p.stage == "hashing" || p.stage == "compressing" {
+            assert!(!archive.exists());
+        }
+        events.push(p.clone());
+    })
+    .unwrap();
+    let hashing = events
+        .iter()
+        .find(|p| p.stage == "hashing" && p.items_done == p.items_total)
+        .unwrap();
+    assert_eq!(hashing.items_total, 2);
+    assert!(hashing.bytes_done > 0);
+    assert_eq!(hashing.bytes_total, None);
+    let compressed = events
+        .iter()
+        .find(|p| p.stage == "compressing" && p.items_done == p.items_total)
+        .unwrap();
+    assert!(compressed.items_total >= 4); // Audio, cover and video.
+    assert_eq!(Some(compressed.bytes_done), compressed.bytes_total);
+    assert_eq!(events.last().unwrap().stage, "completed");
+
+    let (_target, target, _) = empty();
+    let mut restored = vec![];
+    preview_with_progress(&target, &archive, &mut |p| restored.push(p.clone())).unwrap();
+    let extracted = restored
+        .iter()
+        .find(|p| p.stage == "extracting" && p.items_done == p.items_total)
+        .unwrap();
+    assert_eq!(extracted.bytes_done, compressed.bytes_done);
+    assert_eq!(extracted.bytes_total, compressed.bytes_total);
+    assert!(restored.iter().any(|p| p.stage == "validating"));
+    assert!(restored.iter().any(|p| p.stage == "planning"));
+}
+
+#[test]
+fn archive_names_are_readable_when_opened_with_a_standard_tar_reader() {
+    let (_home, paths, _store, _) = fixture();
+    let path = paths.data.join("readable.tar.gz");
+    export(&paths, &path, true).unwrap();
+    let mut tar = tar::Archive::new(GzDecoder::new(File::open(&path).unwrap()));
+    let names: Vec<_> = tar
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        names.contains(&"media/김동률 - 김동률 노래.m4a".to_owned()),
+        "{names:?}"
+    );
+    assert!(names.contains(&"media/김동률 - 김동률 노래.video.mkv".to_owned()));
+    assert!(names.contains(&"covers/김동률 - 김동률 노래.jpg".to_owned()));
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.ends_with("/audio.m4a") || name.ends_with("/video.mkv"))
+    );
+    let (_target, target, mut store) = empty();
+    assert_eq!(restore(&target, &mut store, &path).added, 2);
+}
+
+#[test]
+fn readable_names_keep_unicode_and_disambiguate_sanitized_or_duplicate_titles() {
+    let mut used = HashSet::new();
+    let mut track = Track {
+        id: "unused".into(),
+        playback: PlaybackSource::File {
+            path: "/unused.m4a".into(),
+        },
+        title: "감사".into(),
+        artist: "김동률".into(),
+        album: String::new(),
+        track_number: 0,
+        duration_ms: None,
+        cover: None,
+        source: None,
+    };
+    assert_eq!(readable_name(&track, &mut used), "김동률 - 감사");
+    assert_eq!(readable_name(&track, &mut used), "김동률 - 감사 (2)");
+    track.artist.clear();
+    track.title = "A/B: C?".into();
+    assert_eq!(readable_name(&track, &mut used), "A B C");
+    track.title = "a b c".into();
+    assert_eq!(readable_name(&track, &mut used), "a b c (2)");
+    track.title = "아주 긴 노래 제목 ".repeat(100);
+    let long = readable_name(&track, &mut used);
+    assert!(long.len() <= 80);
+    assert!(long.starts_with("아주 긴 노래 제목"));
+    let mut tar = tar::Builder::new(Vec::new());
+    append(&mut tar, &format!("media/{long}.video.mkv"), 1, &[0u8][..]).unwrap();
 }

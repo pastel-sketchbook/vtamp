@@ -1,5 +1,8 @@
 //! Portable library archives. No download tools or network access are involved.
+mod progress;
 mod restore;
+pub use progress::Progress;
+pub(crate) use progress::Tracker;
 #[cfg(test)]
 mod tests;
 pub(crate) use restore::{Publication, prepare, recover};
@@ -18,6 +21,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
+use unicode_normalization::UnicodeNormalization;
 
 const FORMAT_VERSION: u32 = 1;
 const MAX_MANIFEST: u64 = 64 * 1024 * 1024;
@@ -101,6 +105,8 @@ pub struct Report {
     pub warning_count: usize,
     pub reports: Vec<String>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Progress>,
 }
 
 impl Report {
@@ -122,7 +128,7 @@ fn check_stop(stop: &AtomicBool) -> Result<()> {
 }
 
 /// Detect in-place changes while reading; callers also verify second-pass hashes.
-fn hash_file(path: &Path, stop: &AtomicBool) -> Result<(u64, String)> {
+fn hash_file(path: &Path, stop: &AtomicBool, progress: &mut Tracker<'_>) -> Result<(u64, String)> {
     let mut file = File::open(path).with_context(|| format!("Cannot read {}", path.display()))?;
     let before = file.metadata()?;
     ensure!(
@@ -130,7 +136,7 @@ fn hash_file(path: &Path, stop: &AtomicBool) -> Result<(u64, String)> {
         "Expected a regular file: {}",
         path.display()
     );
-    let (bytes, hash) = hash_reader(&mut file, stop)?;
+    let (bytes, hash) = hash_reader(&mut file, stop, progress)?;
     let after = file.metadata()?;
     ensure!(
         before.len() == bytes && after.len() == bytes && before.modified()? == after.modified()?,
@@ -140,7 +146,11 @@ fn hash_file(path: &Path, stop: &AtomicBool) -> Result<(u64, String)> {
     Ok((bytes, hash))
 }
 
-fn hash_reader(reader: &mut impl Read, stop: &AtomicBool) -> Result<(u64, String)> {
+fn hash_reader(
+    reader: &mut impl Read,
+    stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
+) -> Result<(u64, String)> {
     let mut digest = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0; 128 * 1024];
@@ -151,6 +161,7 @@ fn hash_reader(reader: &mut impl Read, stop: &AtomicBool) -> Result<(u64, String
             break;
         }
         digest.update(&buffer[..count]);
+        progress.advance(count);
         bytes = bytes
             .checked_add(count as u64)
             .context("File is too large")?;
@@ -158,8 +169,13 @@ fn hash_reader(reader: &mut impl Read, stop: &AtomicBool) -> Result<(u64, String
     Ok((bytes, format!("{:x}", digest.finalize())))
 }
 
-fn asset(path: &Path, name: String, stop: &AtomicBool) -> Result<Asset> {
-    let (bytes, sha256) = hash_file(path, stop)?;
+fn asset(
+    path: &Path,
+    name: String,
+    stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
+) -> Result<Asset> {
+    let (bytes, sha256) = hash_file(path, stop, progress)?;
     Ok(Asset {
         path: name,
         bytes,
@@ -169,6 +185,25 @@ fn asset(path: &Path, name: String, stop: &AtomicBool) -> Result<Asset> {
 
 /// Snapshot all metadata first, then stream bounded chunks of the actual assets.
 pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Report> {
+    export_tracked(paths, output, include_local, &mut Tracker::silent())
+}
+
+pub fn export_with_progress(
+    paths: &Paths,
+    output: &Path,
+    include_local: bool,
+    sink: &mut dyn FnMut(&Progress),
+) -> Result<Report> {
+    export_tracked(paths, output, include_local, &mut Tracker::new(sink))
+}
+
+fn export_tracked(
+    paths: &Paths,
+    output: &Path,
+    include_local: bool,
+    progress: &mut Tracker<'_>,
+) -> Result<Report> {
+    progress.begin("snapshot", 0, None);
     let stop = AtomicBool::new(false);
     ensure!(
         !output.try_exists()?,
@@ -187,6 +222,7 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
         streams: catalog.streams,
     };
     let mut inputs = BTreeMap::new();
+    let mut names = HashSet::new();
     let mut report = Report {
         operation: "export".into(),
         status: "completed".into(),
@@ -194,7 +230,10 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
         ..Default::default()
     };
     let managed = paths.data.join("imports").canonicalize().ok();
+    progress.begin("hashing", catalog.records.len(), None);
     for (index, record) in catalog.records.into_iter().enumerate() {
+        progress.item(index, &record.track.title);
+        let name = readable_name(&record.track, &mut names);
         let file = record
             .track
             .playback
@@ -224,13 +263,13 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
                 .extension()
                 .and_then(|s| s.to_str())
                 .context("Audio has no extension")?;
-            let a = asset(&file, format!("media/{index}/audio.{extension}"), &stop)?;
+            let a = asset(&file, format!("media/{name}.{extension}"), &stop, progress)?;
             inputs.insert(a.path.clone(), file.clone());
             entry.audio = Some(a);
             report.included += 1;
         } else {
             entry.external = Some(file.clone());
-            match hash_file(&file, &stop) {
+            match hash_file(&file, &stop, progress) {
                 Ok((_, hash)) => entry.external_sha256 = Some(hash),
                 Err(error) => report.note(format!(
                     "External reference cannot be verified: {}: {error:#}",
@@ -242,7 +281,7 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
         if let Some(cover) = entry.track.cover.as_ref() {
             if cover.try_exists()? {
                 let ext = cover.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
-                let a = asset(cover, format!("covers/{index}.{ext}"), &stop)?;
+                let a = asset(cover, format!("covers/{name}.{ext}"), &stop, progress)?;
                 inputs.insert(a.path.clone(), cover.clone());
                 entry.cover = Some(a);
             } else {
@@ -255,7 +294,7 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
                 .context("Missing audio directory")?
                 .join("video.mkv");
             if video.try_exists()? {
-                let a = asset(&video, format!("media/{index}/video.mkv"), &stop)?;
+                let a = asset(&video, format!("media/{name}.video.mkv"), &stop, progress)?;
                 inputs.insert(a.path.clone(), video);
                 entry.video = Some(a);
                 report.videos += 1;
@@ -272,6 +311,7 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
         entry.track.cover = entry.cover.as_ref().map(|a| PathBuf::from(&a.path));
         manifest.tracks.push(entry);
     }
+    progress.end();
     validate(&manifest)?;
     let json = serde_json::to_vec(&manifest)?;
     ensure!(
@@ -280,6 +320,14 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
     );
     let parent = output.parent().context("Output has no parent directory")?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    let total = manifest
+        .tracks
+        .iter()
+        .flat_map(assets)
+        .try_fold(0u64, |n, a| n.checked_add(a.bytes))
+        .context("Archive size overflow")?;
+    let count = manifest.tracks.iter().flat_map(assets).count();
+    progress.begin("compressing", count, Some(total));
     {
         let encoder = GzEncoder::new(temp.as_file_mut(), Compression::fast());
         let mut tar = tar::Builder::new(encoder);
@@ -289,12 +337,14 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
             json.len() as u64,
             json.as_slice(),
         )?;
-        for a in manifest.tracks.iter().flat_map(assets) {
+        for (index, a) in manifest.tracks.iter().flat_map(assets).enumerate() {
+            progress.item(index, &a.path);
             let path = &inputs[&a.path];
             let mut reader = CheckingReader {
                 inner: File::open(path)?,
                 hash: Sha256::new(),
                 bytes: 0,
+                progress,
             };
             append(&mut tar, &a.path, a.bytes, &mut reader)?;
             ensure!(
@@ -309,22 +359,28 @@ pub fn export(paths: &Paths, output: &Path, include_local: bool) -> Result<Repor
         }
         tar.into_inner()?.finish()?;
     }
+    progress.end();
+    progress.begin("finalizing", 0, None);
     temp.as_file_mut().sync_all()?;
     temp.persist_noclobber(output).map_err(|e| e.error)?;
     File::open(parent)?.sync_all()?;
+    progress.begin("completed", 0, None);
+    report.progress = Some(progress.value.clone());
     Ok(report)
 }
 
-struct CheckingReader<R> {
+struct CheckingReader<'a, 'b, R> {
     inner: R,
     hash: Sha256,
     bytes: u64,
+    progress: &'a mut Tracker<'b>,
 }
-impl<R: Read> Read for CheckingReader<R> {
+impl<R: Read> Read for CheckingReader<'_, '_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let n = self.inner.read(buffer)?;
         self.hash.update(&buffer[..n]);
         self.bytes += n as u64;
+        self.progress.advance(n);
         Ok(n)
     }
 }
@@ -345,6 +401,62 @@ fn append<W: Write>(
 
 fn assets(entry: &Entry) -> impl Iterator<Item = &Asset> {
     entry.audio.iter().chain(&entry.cover).chain(&entry.video)
+}
+
+/// Keep directly extracted files useful, including on case-insensitive filesystems.
+/// Leave room for a collision suffix and ".video.mkv" within a ustar name field.
+fn readable_name(track: &Track, used: &mut HashSet<String>) -> String {
+    let artist = track.artist.trim();
+    let title = track.title.trim();
+    let title = if title.is_empty() { "Untitled" } else { title };
+    let label = if artist.is_empty() || artist.eq_ignore_ascii_case("Unknown artist") {
+        title.to_owned()
+    } else {
+        format!("{artist} - {title}")
+    };
+    let clean: String = label
+        .nfc()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clean = clean.trim_matches([' ', '.']);
+    let mut bytes = 0;
+    let mut base: String = clean
+        .chars()
+        .take_while(|c| {
+            bytes += c.len_utf8();
+            bytes <= 80
+        })
+        .collect();
+    base = base.trim_end_matches([' ', '.']).to_owned();
+    if base.is_empty() {
+        base = "Untitled".into();
+    }
+    let device = base.split('.').next().unwrap().to_ascii_uppercase();
+    if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (device.len() == 4
+            && (device.starts_with("COM") || device.starts_with("LPT"))
+            && matches!(device.as_bytes()[3], b'1'..=b'9'))
+    {
+        base.insert(0, '_');
+    }
+    for number in 1.. {
+        let candidate = if number == 1 {
+            base.clone()
+        } else {
+            format!("{base} ({number})")
+        };
+        if used.insert(crate::library::normalized(&candidate)) {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn safe_asset_path(path: &str) -> bool {
@@ -423,10 +535,9 @@ fn validate(manifest: &Manifest) -> Result<BTreeMap<String, Asset>> {
                 "Invalid or duplicate YouTube identity"
             );
             ensure!(
-                entry
-                    .audio
-                    .as_ref()
-                    .is_some_and(|a| a.path.ends_with("/audio.m4a")),
+                entry.audio.as_ref().is_some_and(|a| Path::new(&a.path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("m4a"))),
                 "YouTube audio must be included as m4a"
             );
             let source_manifest = crate::imports::Manifest {
@@ -473,7 +584,13 @@ fn validate(manifest: &Manifest) -> Result<BTreeMap<String, Asset>> {
 }
 
 /// Do not use tar::unpack: the manifest is an allowlist, and links are never accepted.
-fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifest> {
+fn extract(
+    path: &Path,
+    destination: &Path,
+    stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
+) -> Result<Manifest> {
+    progress.begin("reading_manifest", 0, None);
     let decoder = GzDecoder::new(File::open(path)?);
     let mut archive = tar::Archive::new(decoder);
     let mut entries = archive.entries()?;
@@ -489,7 +606,12 @@ fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifes
     );
     let manifest: Manifest = serde_json::from_reader(&mut first)?;
     let mut expected = validate(&manifest)?;
-    for item in entries {
+    let total = expected
+        .values()
+        .try_fold(0u64, |n, a| n.checked_add(a.bytes))
+        .context("Archive size overflow")?;
+    progress.begin("extracting", expected.len(), Some(total));
+    for (index, item) in entries.enumerate() {
         check_stop(stop)?;
         let mut item = item?;
         ensure!(
@@ -504,6 +626,7 @@ fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifes
         let a = expected
             .remove(&name)
             .context("Unexpected or duplicate archive file")?;
+        progress.item(index, &name);
         ensure!(item.size() == a.bytes, "Archive file size mismatch");
         let target = destination.join(&name);
         fs::create_dir_all(target.parent().unwrap())?;
@@ -520,6 +643,7 @@ fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifes
             digest.update(&buffer[..n]);
             output.write_all(&buffer[..n])?;
             count += n as u64;
+            progress.advance(n);
         }
         ensure!(
             count == a.bytes && format!("{:x}", digest.finalize()) == a.sha256,
@@ -543,7 +667,10 @@ fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifes
         );
     }
     ensure!(decoder.get_ref().metadata()?.len() > 0, "Empty archive");
+    progress.end();
+    progress.begin("validating", manifest.tracks.len(), None);
     for (index, entry) in manifest.tracks.iter().enumerate() {
+        progress.item(index, &entry.track.title);
         check_stop(stop)?;
         if let Some(audio) = &entry.audio {
             crate::library::read_track(
@@ -558,15 +685,31 @@ fn extract(path: &Path, destination: &Path, stop: &AtomicBool) -> Result<Manifes
                 .context("Invalid archived cover")?;
         }
     }
+    progress.end();
     Ok(manifest)
 }
 
 pub fn preview(paths: &Paths, archive: &Path) -> Result<Report> {
+    preview_tracked(paths, archive, &mut Tracker::silent())
+}
+
+pub fn preview_with_progress(
+    paths: &Paths,
+    archive: &Path,
+    sink: &mut dyn FnMut(&Progress),
+) -> Result<Report> {
+    preview_tracked(paths, archive, &mut Tracker::new(sink))
+}
+
+fn preview_tracked(paths: &Paths, archive: &Path, progress: &mut Tracker<'_>) -> Result<Report> {
+    progress.begin("snapshot", 0, None);
     let snapshot = Store::archive_snapshot(&paths.database())?;
     let stage = tempfile::tempdir()?;
     let stop = AtomicBool::new(false);
-    let manifest = extract(archive, stage.path(), &stop)?;
-    let (mut report, _) = restore::plan(&manifest, &snapshot, &stop)?;
+    let manifest = extract(archive, stage.path(), &stop, progress)?;
+    let (mut report, _) = restore::plan(&manifest, &snapshot, &stop, progress)?;
     report.operation = "dry_run".into();
+    progress.begin("completed", 0, None);
+    report.progress = Some(progress.value.clone());
     Ok(report)
 }

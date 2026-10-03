@@ -363,6 +363,26 @@ Dry-run uses `operation: dry_run`.
 Reports retain at most 1,000 details of 2,048 characters; `warning_count` includes
 omitted details and informational skip reasons.
 
+An additive, optional `progress` object contains `stage`, `items_done`,
+`items_total`, `bytes_done`, nullable `bytes_total`, and nullable `current`.
+Counters apply to the current stage, rather than the entire job. Hashing counts
+tracks and bytes read with an unknown byte total; compression/extraction count
+asset files and uncompressed bytes, excluding tar headers and the manifest.
+Current item text is bounded to 160 characters with control characters removed.
+Progress is updated during chunked reads, throttled to 100 ms, with immediate
+stage boundaries. The server retains only the latest update; progress does not
+write SQLite, emit playback events, or advance revisions.
+
+Stages are `snapshot`, `starting`, `hashing`, `compressing`, `finalizing`,
+`reading_manifest`, `extracting`, `validating`, `checking_library`, `planning`,
+`preparing`, `publishing`, `committing`, `cleaning_up`, `rolling_back`, and terminal
+`completed`/`partial`/`failed`. Fast stages may finish between status polls.
+CLI progress goes to stderr even with `--json`, preserving the single final
+stdout response. Terminal output refreshes one bounded line; redirected output
+records stage changes/completions and at most one intermediate update every five
+seconds.
+Archive format 1, protocol 10, and database version 6 are unchanged.
+
 One restore runs at a time. Concurrent catalog scans, direct-file imports,
 YouTube work (including metadata tasks), or cover refresh prevent admission with
 `library_busy`. During restoration, mutations to Library, source imports,
@@ -375,6 +395,12 @@ reports return `archive_job_not_found`. Relays reject these wire commands with
 
 The independent archive format is version 1: a gzip-compressed tar begins with
 `manifest.json`, then the allowlisted regular files in `media/` and `covers/`.
+Export names audio `media/ARTIST - TITLE.ext`, video
+`media/ARTIST - TITLE.video.mkv` and artwork `covers/ARTIST - TITLE.ext`.
+Unknown/empty artists are omitted. Names use NFC Unicode, replace unsafe
+characters, bound the stem to 80 UTF-8 bytes, and append a numeric suffix to
+avoid case-insensitive or normalized collisions. Import resolves assets through
+manifest paths and stores YouTube audio as `audio.m4a` in its managed directory.
 Manifest entries describe effective track metadata, automatic metadata and
 nullable overrides, YouTube provenance, asset sizes and SHA-256 checksums, or
 absolute external paths and optional checksums. Radio entries hold registered

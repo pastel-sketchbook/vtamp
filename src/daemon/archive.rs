@@ -1,5 +1,5 @@
 use super::*;
-use crate::archive::{self as jobs, Publication, Report};
+use crate::archive::{self as jobs, Progress, Publication, Report, Tracker};
 use std::{
     collections::VecDeque,
     path::PathBuf,
@@ -11,7 +11,7 @@ enum Message {
         Box<Publication>,
         mpsc::SyncSender<(Box<Publication>, Result<(), String>)>,
     ),
-    Done(Report, Option<String>),
+    Done(Box<Report>, Option<String>),
 }
 
 pub(super) struct Runtime {
@@ -20,6 +20,7 @@ pub(super) struct Runtime {
     tx: mpsc::Sender<Message>,
     rx: mpsc::Receiver<Message>,
     reports: VecDeque<Report>,
+    progress: Arc<std::sync::Mutex<Progress>>,
 }
 
 impl Runtime {
@@ -31,6 +32,7 @@ impl Runtime {
             tx,
             rx,
             reports: VecDeque::new(),
+            progress: Arc::new(std::sync::Mutex::new(Progress::default())),
         }
     }
 
@@ -68,18 +70,29 @@ impl Runtime {
             job_id: Some(uuid::Uuid::new_v4().to_string()),
             ..Default::default()
         };
+        let starting = Progress {
+            stage: "starting".into(),
+            ..Default::default()
+        };
+        *self.progress.lock().unwrap() = starting;
         let paths = paths.clone();
         let sender = self.tx.clone();
         let stop = self.stop.clone();
         let mut report = job.clone();
         let job_id = job.job_id.clone();
+        let latest = self.progress.clone();
         self.running = Some(std::thread::spawn(move || {
+            let mut sink = |value: &Progress| {
+                *latest.lock().unwrap() = value.clone();
+            };
+            let mut progress = Tracker::new(&mut sink);
             let mut cleaned_receipt = None;
             let result = (|| -> Result<()> {
-                let mut publication = jobs::prepare(&paths, &path, snapshot, &stop)?;
+                let mut publication = jobs::prepare(&paths, &path, snapshot, &stop, &mut progress)?;
                 report = publication.report.clone();
                 report.job_id = job_id.clone();
-                if let Err(error) = publication.publish(&paths, &stop) {
+                if let Err(error) = publication.publish(&paths, &stop, &mut progress) {
+                    progress.begin("rolling_back", 0, None);
                     if let Err(cleanup) = publication.finish(&paths, false) {
                         return Err(error.context(format!(
                             "Restore cleanup will retry on restart: {cleanup:#}"
@@ -88,6 +101,7 @@ impl Runtime {
                     return Err(error);
                 }
                 let (tx, rx) = mpsc::sync_channel(1);
+                progress.begin("committing", 0, None);
                 sender.send(Message::Commit(Box::new(publication), tx))?;
                 // A lost acknowledgement has an unknown commit outcome. Leave
                 // the journal intact so startup resolves it against SQLite.
@@ -104,6 +118,15 @@ impl Runtime {
                     }
                 };
                 let committed = commit.is_ok();
+                progress.begin(
+                    if committed {
+                        "cleaning_up"
+                    } else {
+                        "rolling_back"
+                    },
+                    0,
+                    None,
+                );
                 let cleanup = publication.finish(&paths, committed);
                 if cleanup.is_ok() {
                     cleaned_receipt = Some(publication.receipt().to_owned());
@@ -123,7 +146,9 @@ impl Runtime {
                 report.status = "failed".into();
                 report.error = Some(format!("{error:#}"));
             }
-            let _ = sender.send(Message::Done(report, cleaned_receipt));
+            progress.begin(&report.status, 0, None);
+            report.progress = Some(progress.value.clone());
+            let _ = sender.send(Message::Done(Box::new(report), cleaned_receipt));
         }));
         self.reports.push_back(job.clone());
         while self.reports.len() > 100 {
@@ -136,7 +161,13 @@ impl Runtime {
         self.reports
             .iter()
             .find(|r| r.job_id.as_deref() == Some(id))
-            .map(Reply::success)
+            .map(|report| {
+                let mut report = report.clone();
+                if report.status == "running" {
+                    report.progress = Some(self.progress.lock().unwrap().clone());
+                }
+                Reply::success(report)
+            })
             .ok_or_else(|| {
                 ApiError::new(
                     "archive_job_not_found",
@@ -163,7 +194,7 @@ impl Runtime {
                 Message::Done(report, receipt) => {
                     Self::cleanup_receipt(store, receipt);
                     if let Some(old) = self.reports.iter_mut().find(|r| r.job_id == report.job_id) {
-                        *old = report;
+                        *old = *report;
                     }
                 }
             }
@@ -175,7 +206,7 @@ impl Runtime {
                 if let Message::Done(report, receipt) = message {
                     Self::cleanup_receipt(store, receipt);
                     if let Some(old) = self.reports.iter_mut().find(|r| r.job_id == report.job_id) {
-                        *old = report;
+                        *old = *report;
                     }
                 }
             }

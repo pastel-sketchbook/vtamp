@@ -153,6 +153,7 @@ fn archive_cli_restores_without_tools_preserves_playback_and_survives_restart() 
     let mut completed = false;
     for _ in 0..200 {
         let status = target.ok(&["library", "archive-status", job]);
+        assert!(status["progress"]["stage"].is_string(), "{status}");
         if status["status"] == "completed" {
             assert_eq!(status["added"], 2);
             assert_eq!(status["radios"], 1);
@@ -202,4 +203,56 @@ fn archive_cli_export_works_offline_and_does_not_overwrite_output() {
             .success()
     );
     assert_eq!(before, fs::read(archive).unwrap());
+}
+
+#[test]
+fn archive_progress_uses_stderr_without_polluting_json_stdout() {
+    let source = Server::new();
+    source.start();
+    let music = source.home.path().join("music");
+    fs::create_dir(&music).unwrap();
+    wav(&music.join("one.wav"), 1);
+    source.ok(&["library", "add", music.to_str().unwrap(), "--wait"]);
+    let archive = source.home.path().join("progress.tar.gz");
+    let exported = source.cmd(&[
+        "library",
+        "export",
+        archive.to_str().unwrap(),
+        "--include-local",
+    ]);
+    assert!(exported.status.success());
+    let data: Value = serde_json::from_slice(&exported.stdout).unwrap();
+    assert_eq!(data["data"]["included"], 1);
+    let stderr = String::from_utf8(exported.stderr).unwrap();
+    assert!(stderr.contains("Hashing"), "{stderr}");
+    assert!(stderr.contains("Compressing"), "{stderr}");
+    assert!(stderr.contains("1/1 files"), "{stderr}");
+    assert!(stderr.contains("100%"), "{stderr}");
+    assert!(!stderr.contains('\r'));
+    assert!(!stderr.contains('\u{1b}'));
+
+    let target = Server::new();
+    let preview = target.cmd(&["library", "import", archive.to_str().unwrap(), "--dry-run"]);
+    assert!(preview.status.success());
+    let _: Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert!(
+        String::from_utf8(preview.stderr)
+            .unwrap()
+            .contains("Extracting and verifying")
+    );
+    assert!(!target.home.path().join("state.db").exists());
+    target.start();
+    let imported = target.cmd(&["library", "import", archive.to_str().unwrap()]);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stdout)
+    );
+    assert!(
+        String::from_utf8(imported.stderr)
+            .unwrap()
+            .contains("Import ·")
+    );
+    let data: Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(data["data"]["progress"]["stage"], "completed");
 }

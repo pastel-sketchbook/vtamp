@@ -55,6 +55,7 @@ pub(super) fn plan(
     manifest: &Manifest,
     catalog: &Catalog,
     stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
 ) -> Result<(Report, Selected)> {
     let mut report = Report {
         operation: "import".into(),
@@ -64,7 +65,9 @@ pub(super) fn plan(
     let mut hashes = HashSet::new();
     let mut paths = HashSet::new();
     let mut videos = HashSet::new();
-    for record in &catalog.records {
+    progress.begin("checking_library", catalog.records.len(), None);
+    for (index, record) in catalog.records.iter().enumerate() {
+        progress.item(index, &record.track.title);
         check_stop(stop)?;
         let file = record
             .track
@@ -76,12 +79,15 @@ pub(super) fn plan(
         if let Some(source) = &record.track.source {
             videos.insert(source.video_id.clone());
         }
-        if let Ok((_, hash)) = hash_file(file, stop) {
+        if let Ok((_, hash)) = hash_file(file, stop, progress) {
             hashes.insert(hash);
         }
     }
+    progress.end();
+    progress.begin("planning", manifest.tracks.len(), None);
     let mut selected = vec![];
     for (index, entry) in manifest.tracks.iter().enumerate() {
+        progress.item(index, &entry.track.title);
         check_stop(stop)?;
         let title = &entry.track.title;
         if let Some(source) = &entry.track.source
@@ -95,7 +101,7 @@ pub(super) fn plan(
             report.references += 1;
             let verified = match &entry.external_sha256 {
                 Some(expected) => {
-                    hash_file(path, stop).is_ok_and(|(_, actual)| actual == *expected)
+                    hash_file(path, stop, progress).is_ok_and(|(_, actual)| actual == *expected)
                 }
                 None => false,
             };
@@ -146,6 +152,7 @@ pub(super) fn plan(
     if report.missing > 0 {
         report.status = "partial".into();
     }
+    progress.end();
     Ok((report, selected))
 }
 
@@ -154,6 +161,7 @@ pub(crate) fn prepare(
     archive: &Path,
     catalog: Catalog,
     stop: &AtomicBool,
+    progress: &mut Tracker<'_>,
 ) -> Result<Publication> {
     platform::private_dir(&paths.data.join("archives"))?;
     let staging = paths.data.join("archives/.staging");
@@ -163,14 +171,16 @@ pub(crate) fn prepare(
         .tempdir_in(&staging)?;
     let extracted = temp.path().join("extracted");
     fs::create_dir(&extracted)?;
-    let manifest = extract(archive, &extracted, stop)?;
-    let (report, selected) = plan(&manifest, &catalog, stop)?;
+    let manifest = extract(archive, &extracted, stop, progress)?;
+    let (report, selected) = plan(&manifest, &catalog, stop, progress)?;
     let mut records = vec![];
     let mut directories = vec![];
     let mut roots = vec![];
-    for (index, external) in selected {
+    progress.begin("preparing", selected.len(), None);
+    for (done, (index, external)) in selected.into_iter().enumerate() {
         check_stop(stop)?;
         let entry = &manifest.tracks[index];
+        progress.item(done, &entry.track.title);
         let id = Uuid::new_v4().to_string();
         let dir = Directory {
             id: id.clone(),
@@ -193,7 +203,11 @@ pub(crate) fn prepare(
                 .extension()
                 .and_then(|s| s.to_str())
                 .context("Missing audio extension")?;
-            let name = format!("audio.{extension}");
+            let name = if entry.track.source.is_some() {
+                "audio.m4a".to_owned()
+            } else {
+                format!("audio.{extension}")
+            };
             fs::rename(extracted.join(&audio.path), staged.join(&name))?;
             roots.push(destination.clone());
             destination.join(name)
@@ -259,6 +273,7 @@ pub(crate) fn prepare(
         File::open(&staged)?.sync_all()?;
         directories.push(dir);
     }
+    progress.end();
     let mut urls: HashSet<_> = catalog.streams.iter().map(|s| s.url.clone()).collect();
     let mut streams = vec![];
     for stream in &manifest.streams {
@@ -292,8 +307,15 @@ impl Publication {
     }
 
     /// Only new, owned directories are installed. The journal precedes every rename.
-    pub(crate) fn publish(&mut self, paths: &Paths, stop: &AtomicBool) -> Result<()> {
-        for dir in &self.journal.directories {
+    pub(crate) fn publish(
+        &mut self,
+        paths: &Paths,
+        stop: &AtomicBool,
+        progress: &mut Tracker<'_>,
+    ) -> Result<()> {
+        progress.begin("publishing", self.journal.directories.len(), None);
+        for (index, dir) in self.journal.directories.iter().enumerate() {
+            progress.item(index, &self.records[index].record.track.title);
             check_stop(stop)?;
             platform::private_dir(&paths.data.join("imports"))?;
             let destination = dir.destination(paths)?;
@@ -325,6 +347,7 @@ impl Publication {
         for root in &mut self.roots {
             *root = root.canonicalize()?;
         }
+        progress.end();
         Ok(())
     }
 

@@ -16,6 +16,14 @@
 - Protocol 10 adds archive restoration commands; database version remains 6.
   Restart an older server with matching binaries before using the new commands.
 
+### Fixed
+
+- Archive export, restore and dry-run now report stages, item counts and byte
+  progress on stderr, including updates within large files. Restore progress is
+  also available through `library archive-status`.
+- Exported audio, video and cover files use readable artist/title names with
+  collision suffixes, so a normally extracted tarball is useful without vtamp.
+
 ## [0.4.0] — 2026-10-03
 
 Changes since v0.3.0. Optional YouTube video now plays inside the terminal, with

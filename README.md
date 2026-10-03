@@ -588,6 +588,13 @@ registrations. Existing output files are never overwritten. Missing included
 audio fails export; unreadable external references are reported without a checksum.
 Queue, playback position, settings, credentials, and download history are excluded.
 
+Files inside the tarball have readable artist/title names, such as
+`media/김동률 - 감사.m4a`, `media/김동률 - 감사.video.mkv` and
+`covers/김동률 - 감사.jpg`. They can be extracted and used without vtamp.
+Names preserve Unicode, replace filesystem-unsafe characters, shorten very long
+names, and append `(2)`, `(3)`, etc. for collisions. The manifest keeps the full
+metadata. Import maps these archive names to vtamp's managed paths.
+
 Restore merges into the existing Library. YouTube video IDs, local audio
 checksums, and normalized radio URLs detect duplicates; existing files and
 metadata win. Duplicate tracks do not gain missing sidecars during restore.
@@ -605,6 +612,15 @@ the job ID to stderr. Ctrl+C stops waiting only; inspect the job with
 restart, repeating the import safely skips existing tracks. These commands work
 without yt-dlp, FFmpeg, or an LLM, and are local only: run them on the server
 machine outside relay mode. There is no TUI archive dialog.
+
+Export, restore, and dry-run show progress on stderr: the current stage,
+processed tracks/files, bytes read, and the current item. Compression and
+extraction also show a percentage of the uncompressed asset bytes; counters reset
+at each stage. Terminals update one line, while redirected stderr logs stage
+changes and periodic updates without terminal escapes. `--json` still writes one
+final JSON response on stdout. `archive-status` includes the latest restore
+progress. Export progress is available immediately with the new CLI; restore
+progress requires a server running the updated build.
 
 ## For scripts and agents
 

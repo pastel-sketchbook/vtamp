@@ -1,3 +1,5 @@
+mod archive_progress;
+
 use crate::{
     client::{Client, Launch},
     model::*,
@@ -1227,7 +1229,10 @@ async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool
         } => {
             let file = platform::absolute(&file)?;
             let report = tokio::task::spawn_blocking(move || {
-                crate::archive::export(&paths, &file, include_local)
+                let mut display = archive_progress::Display::new("Export");
+                crate::archive::export_with_progress(&paths, &file, include_local, &mut |p| {
+                    display.update(p)
+                })
             })
             .await??;
             output(Reply::success(report), json)
@@ -1237,9 +1242,11 @@ async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool
             dry_run: true,
         } => {
             let file = platform::absolute(&file)?;
-            let report =
-                tokio::task::spawn_blocking(move || crate::archive::preview(&paths, &file))
-                    .await??;
+            let report = tokio::task::spawn_blocking(move || {
+                let mut display = archive_progress::Display::new("Dry run");
+                crate::archive::preview_with_progress(&paths, &file, &mut |p| display.update(p))
+            })
+            .await??;
             output(Reply::success(report), json)
         }
         Library::Import {
@@ -1259,13 +1266,25 @@ async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool
                 .context("Archive reply is missing job_id")?
                 .to_owned();
             eprintln!("Archive restore {id}. Inspect with: vtamp library archive-status {id}");
+            let mut display = archive_progress::Display::new("Import");
             loop {
                 let data = client
                     .request(Command::ArchiveStatus { id: id.clone() })
                     .await?
                     .into_data()?;
+                let progress = data
+                    .get("progress")
+                    .filter(|p| !p.is_null())
+                    .cloned()
+                    .map(serde_json::from_value::<crate::archive::Progress>)
+                    .transpose()?
+                    .unwrap_or_default();
+                display.update(&progress);
                 match data["status"].as_str() {
-                    Some("completed" | "partial") => return output(Reply::success(data), json),
+                    Some("completed" | "partial") => {
+                        drop(display);
+                        return output(Reply::success(data), json);
+                    }
                     Some("failed") => {
                         return Err(ApiError::new(
                             "archive_failed",
@@ -1383,6 +1402,12 @@ fn output(reply: Reply, json: bool) -> Result<()> {
     if data.get("operation").is_some() && data.get("references").is_some() {
         let report: crate::archive::Report = serde_json::from_value(data)?;
         writeln!(out, "Library {}: {}", report.operation, report.status)?;
+        if report.status == "running"
+            && let Some(progress) = &report.progress
+        {
+            writeln!(out, "{}", archive_progress::description(progress))?;
+            return Ok(());
+        }
         if report.operation == "export" {
             writeln!(
                 out,
