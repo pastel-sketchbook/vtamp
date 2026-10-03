@@ -147,6 +147,7 @@ while True:
             audio = vt("library", "add", "https://youtu.be/AUDIO000001", "--audio-only", "--wait")
             audio_track = audio['items'][0]['track_id']
             vt("play", "--track", track)
+            vt("queue", "add", "--tracks", track, audio_track)
             vt("repeat", "one")
             for fps in rates:
                 print(f"Checking {fps} fps in Ghostty + tmux…", flush=True)
@@ -226,6 +227,7 @@ while True:
                     run([*tmux, "resize-window", "-t", "video:0", "-x", columns, "-y", rows], env=env)
                     wait_for(lambda: "Loading video" not in capture(), "video after fullscreen resize")
                     time.sleep(.3)
+                    assert re.search(r'\d{2,}:\d{2} / 03:00\s*$', capture()), 'Fullscreen time is clipped'
                     run(["screencapture", "-x", "-o", "-l", window['id'], output / f"fullscreen-{columns}-{rows}-{fps}.png"])
                 run([*tmux, "send-keys", "-t", "video:0.0", "Space"], env=env)
                 wait_for(lambda: vt('status')['status'] == 'paused', 'fullscreen pause')
@@ -235,6 +237,36 @@ while True:
                 assert len(frames()) <= pause_frames + 1
                 run([*tmux, "send-keys", "-t", "video:0.0", "Right", "Space"], env=env)
                 wait_for(lambda: vt('status')['status'] == 'playing', 'fullscreen resume')
+                # Track transitions must redraw without a synchronous cursor
+                # query racing the input stream and detaching the TUI.
+                vt('repeat', 'off')
+                for expected_track in [track, audio_track]:
+                    previous_id = vt('status')['current_id']
+                    run([*tmux, 'send-keys', '-t', 'video:0.0', 'n'], env=env)
+                    state = wait_for(lambda: (s if (s := vt('status'))['current_id'] != previous_id else None), 'next track')
+                    current = next(item for item in state['queue'] if item['id'] == state['current_id'])
+                    assert current['track']['id'] == expected_track
+                    wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'TUI after fullscreen next')
+                    if expected_track == track:
+                        start_frames = len(frames())
+                        wait_for(lambda: len(frames()) > start_frames + 2, 'next video frames')
+                        run([*tmux, 'send-keys', '-t', 'video:0.0', 'F'], env=env)
+                        wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen on next video')
+                vt('play', '--track', track)
+                start_frames = len(frames())
+                wait_for(lambda: len(frames()) > start_frames + 2, 'video before natural ending')
+                run([*tmux, 'send-keys', '-t', 'video:0.0', 'F'], env=env)
+                wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen before natural ending')
+                previous_id = vt('status')['current_id']
+                vt('seek', '179')
+                wait_for(lambda: vt('status')['current_id'] != previous_id, 'natural next track')
+                wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'TUI after natural next')
+                summaries[-1]['fullscreen_track_transitions'] = ['video to video', 'video to audio', 'natural ending']
+                vt('repeat', 'one')
+                start_frames = len(frames())
+                wait_for(lambda: len(frames()) > start_frames + 2, 'video after natural ending')
+                run([*tmux, 'send-keys', '-t', 'video:0.0', 'F'], env=env)
+                wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen after natural ending')
                 run([*tmux, "send-keys", "-t", "video:0.0", "Escape"], env=env)
                 wait_for(lambda: 'vtamp' in capture() and 'F/Esc back' not in capture(), 'return from fullscreen')
                 time.sleep(.3)

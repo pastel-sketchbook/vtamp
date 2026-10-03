@@ -441,8 +441,9 @@ Artwork comes from the embedded front cover first, then the first embedded pictu
 YouTube imports can optionally save video up to 480p (`library add URL --video`).
 The TUI asks before downloading video and automatically plays saved video in the
 cover area on macOS with Kitty/Sixel graphics. Press `w` to switch video/cover
-and save that preference. `F` during video fills the current terminal pane;
-`F`/`Esc` returns, and fullscreen is not saved. Audio remains in the server and keeps playing
+and save that preference. `F` during video fills the current terminal pane,
+with elapsed / total time at the bottom right. `F`/`Esc` returns, and fullscreen
+is not saved. Audio remains in the server and keeps playing
 when the TUI exits. See [video imports and playback](docs/imports.md#terminal-video-macos).
 
 ## tmux status bar

@@ -74,6 +74,19 @@ impl Presentation {
         self.previous = None;
     }
 
+    /// This client owns the whole terminal viewport and places the cursor on
+    /// every draw. Ratatui's `Terminal::clear` queries the cursor to preserve it;
+    /// that synchronous reply can time out while EventStream owns terminal input.
+    fn clear<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+        terminal.backend_mut().clear()?;
+        // Each swap resets the buffer it enters. Reset both without changing
+        // which buffer is current so the next frame redraws the cleared screen.
+        terminal.swap_buffers();
+        terminal.swap_buffers();
+        self.invalidate();
+        Ok(())
+    }
+
     /// `render` returns the text caret, if any. The terminal cursor is shown
     /// only there, so input methods draw their composition inside the field.
     fn draw<B: Backend>(
@@ -590,8 +603,7 @@ pub async fn run(
                         if cover_hidden != app.cover_hidden() || theme != app.theme || spectrum != app.spectrum.enabled || video != app.video.enabled {
                             // Sixel pixels aren't represented by individual text
                             // cells. Clear them when opening or closing a dialog.
-                            terminal.clear()?;
-                            presentation.invalidate();
+                            presentation.clear(&mut terminal)?;
                         }
                     }
                     TerminalEvent::Paste(text) => {
@@ -600,21 +612,18 @@ pub async fn run(
                         }
                     }
                     TerminalEvent::Resize(_, _) => {
-                        terminal.clear()?;
-                        presentation.invalidate();
+                        presentation.clear(&mut terminal)?;
                     },
                     _ => (),
                 }
             }
             if previous_cover_hidden != app.cover_hidden() {
-                terminal.clear()?;
-                presentation.invalidate();
+                presentation.clear(&mut terminal)?;
             }
             app.flush_search(&commands);
             app.sync_video();
             if previous_fullscreen != app.video_fullscreen {
-                terminal.clear()?;
-                presentation.invalidate();
+                presentation.clear(&mut terminal)?;
             }
             presentation.draw(&mut terminal, |frame| {
                 app.draw(frame);
@@ -2395,15 +2404,35 @@ impl App {
         } else {
             "Space pause"
         };
-        let extra = if area.width >= 60 {
-            "  ←/→ seek  +/- vol"
-        } else {
-            ""
-        };
+        let duration = self
+            .state
+            .current()
+            .and_then(|item| item.track.duration_ms)
+            .unwrap_or(0);
+        let time = format!(
+            "{:0>5} / {:0>5} ",
+            display_time(self.position()),
+            display_time(duration)
+        );
+        let [controls, clock] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(time.len() as u16)])
+                .areas(hints);
+        let mut help = format!(" F/Esc back  {space}");
+        let extra = "  ←/→ seek  +/- vol";
+        if Line::from(format!("{help}{extra}")).width() < controls.width as usize {
+            help.push_str(extra);
+        } else if help.len() >= controls.width as usize {
+            help = " F/Esc back".into();
+        }
         frame.render_widget(
-            Paragraph::new(format!(" F/Esc back  {space}{extra}"))
-                .style(Style::default().bg(p.panel).fg(p.muted)),
-            hints,
+            Paragraph::new(help).style(Style::default().bg(p.panel).fg(p.muted)),
+            controls,
+        );
+        frame.render_widget(
+            Paragraph::new(time)
+                .right_aligned()
+                .style(Style::default().bg(p.panel).fg(p.text)),
+            clock,
         );
     }
 
@@ -6924,6 +6953,35 @@ mod tests {
     }
 
     #[test]
+    fn clearing_presentation_does_not_request_a_terminal_cursor_reply() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        // A writer without terminal input must still support layout transitions.
+        // Terminal::clear would request CPR here and fail waiting for a reply.
+        let mut output = Vec::new();
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(&mut output),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+            },
+        )
+        .unwrap();
+        let mut presentation = Presentation::default();
+        let draw = |f: &mut Frame| {
+            f.render_widget("X", f.area());
+            Some(Position::new(2, 1))
+        };
+        assert!(presentation.draw(&mut terminal, draw).unwrap());
+        for _ in 0..3 {
+            presentation.clear(&mut terminal).unwrap();
+            assert!(presentation.draw(&mut terminal, draw).unwrap());
+            assert!(!presentation.draw(&mut terminal, draw).unwrap());
+        }
+        drop(terminal);
+        assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[6n"));
+        assert_eq!(output.iter().filter(|byte| **byte == b'X').count(), 4);
+    }
+
+    #[test]
     fn clearing_and_resizing_force_presentation_of_identical_content() {
         use ratatui::backend::TestBackend;
         let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
@@ -6934,8 +6992,7 @@ mod tests {
         };
         assert!(presentation.draw(&mut terminal, draw).unwrap());
         assert!(!presentation.draw(&mut terminal, draw).unwrap());
-        terminal.clear().unwrap();
-        presentation.invalidate();
+        presentation.clear(&mut terminal).unwrap();
         assert!(presentation.draw(&mut terminal, draw).unwrap());
         assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "s");
         terminal.backend_mut().resize(50, 14);
