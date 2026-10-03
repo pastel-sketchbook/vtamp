@@ -321,6 +321,24 @@ pub enum Queue {
 }
 #[derive(Debug, Subcommand)]
 pub enum Library {
+    /// Export the Library, downloaded media, metadata and radio registrations.
+    Export {
+        file: PathBuf,
+        /// Include local audio files instead of recording external references.
+        #[arg(long)]
+        include_local: bool,
+    },
+    /// Merge a vtamp Library tarball without replacing existing tracks.
+    Import {
+        file: PathBuf,
+        /// Validate and report changes without starting a server or changing the Library.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Inspect an archive restore (reports last until the server restarts).
+    ArchiveStatus {
+        id: String,
+    },
     /// Register live radio channels and import channel lists.
     Stream {
         #[command(subcommand)]
@@ -495,6 +513,14 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Library {
+            command:
+                command @ (Library::Export { .. }
+                | Library::Import { .. }
+                | Library::ArchiveStatus { .. }),
+        } => {
+            return run_archive(&client, paths, command, args.json).await;
+        }
         Action::Library {
             command: Library::Stream { command },
         } => {
@@ -1071,6 +1097,9 @@ pub async fn run(args: Args) -> Result<()> {
             },
         },
         Action::Library { command } => match command {
+            Library::Export { .. } | Library::Import { .. } | Library::ArchiveStatus { .. } => {
+                unreachable!()
+            }
             Library::Stream { .. } => unreachable!(),
             Library::Add { .. } => unreachable!(),
             Library::Imports => Command::Imports,
@@ -1180,6 +1209,87 @@ pub async fn run(args: Args) -> Result<()> {
     output(reply, args.json)
 }
 
+async fn run_archive(client: &Client, paths: Paths, command: Library, json: bool) -> Result<()> {
+    if paths.socket().exists() {
+        let info = client.request(Command::ServerInfo).await?.into_data()?;
+        if info["mode"] == "relay" {
+            return Err(ApiError::new(
+                "archive_local_only",
+                "Run library archive commands on the server's local machine, outside relay mode",
+            )
+            .into());
+        }
+    }
+    match command {
+        Library::Export {
+            file,
+            include_local,
+        } => {
+            let file = platform::absolute(&file)?;
+            let report = tokio::task::spawn_blocking(move || {
+                crate::archive::export(&paths, &file, include_local)
+            })
+            .await??;
+            output(Reply::success(report), json)
+        }
+        Library::Import {
+            file,
+            dry_run: true,
+        } => {
+            let file = platform::absolute(&file)?;
+            let report =
+                tokio::task::spawn_blocking(move || crate::archive::preview(&paths, &file))
+                    .await??;
+            output(Reply::success(report), json)
+        }
+        Library::Import {
+            file,
+            dry_run: false,
+        } => {
+            let path = platform::absolute(&file)?
+                .canonicalize()
+                .context("Archive file does not exist")?;
+            client.ensure().await?;
+            let started = client
+                .request(Command::ArchiveImport { path })
+                .await?
+                .into_data()?;
+            let id = started["job_id"]
+                .as_str()
+                .context("Archive reply is missing job_id")?
+                .to_owned();
+            eprintln!("Archive restore {id}. Inspect with: vtamp library archive-status {id}");
+            loop {
+                let data = client
+                    .request(Command::ArchiveStatus { id: id.clone() })
+                    .await?
+                    .into_data()?;
+                match data["status"].as_str() {
+                    Some("completed" | "partial") => return output(Reply::success(data), json),
+                    Some("failed") => {
+                        return Err(ApiError::new(
+                            "archive_failed",
+                            data["error"].as_str().unwrap_or("Archive restore failed"),
+                        )
+                        .with_details(data)
+                        .into());
+                    }
+                    Some("running") => (),
+                    _ => bail!("Unknown archive job status"),
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => (),
+                    _ = tokio::signal::ctrl_c() => return Err(ApiError::new("wait_interrupted", "Stopped waiting; the archive restore has not been cancelled").with_details(json!({"job_id":id})).into()),
+                }
+            }
+        }
+        Library::ArchiveStatus { id } => {
+            output(client.request(Command::ArchiveStatus { id }).await?, json)
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn read_edit(path: &std::path::Path) -> Result<QueueEdit> {
     let input: Box<dyn Read> = if path == std::path::Path::new("-") {
         Box::new(io::stdin())
@@ -1270,6 +1380,37 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         return Ok(());
     }
     let data = reply.data.unwrap_or(Value::Null);
+    if data.get("operation").is_some() && data.get("references").is_some() {
+        let report: crate::archive::Report = serde_json::from_value(data)?;
+        writeln!(out, "Library {}: {}", report.operation, report.status)?;
+        if report.operation == "export" {
+            writeln!(
+                out,
+                "{} audio files · {} videos · {} external references · {} radio channels",
+                report.included, report.videos, report.references, report.radios
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{} added · {} reconnected · {} duplicates skipped · {} missing · {} radio channels added",
+                report.added, report.reconnected, report.duplicates, report.missing, report.radios
+            )?;
+        }
+        for message in &report.reports {
+            writeln!(out, "  {message}")?;
+        }
+        if report.warning_count > report.reports.len() {
+            writeln!(
+                out,
+                "  {} more details omitted",
+                report.warning_count - report.reports.len()
+            )?;
+        }
+        if let Some(error) = report.error {
+            writeln!(out, "  {error}")?;
+        }
+        return Ok(());
+    }
     if let Some(channels) = data.get("channels").and_then(Value::as_array) {
         writeln!(out, "{} channels · preview only", channels.len())?;
         for entry in channels {

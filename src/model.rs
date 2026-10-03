@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Untagged to retain the existing on-disk and wire representation of files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -190,6 +190,12 @@ impl State {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    ArchiveImport {
+        path: PathBuf,
+    },
+    ArchiveStatus {
+        id: String,
+    },
     StreamPreview {
         path: PathBuf,
     },

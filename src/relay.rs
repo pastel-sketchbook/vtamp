@@ -431,6 +431,14 @@ async fn connection(mut stream: UnixStream, relay: Arc<Relay>) -> Result<()> {
         .await;
     }
     match request.request {
+        Command::ArchiveImport { .. } | Command::ArchiveStatus { .. } => reply(
+            &mut stream,
+            Reply::failure(ApiError::new(
+                "archive_local_only",
+                "Run library archive commands on the server's local machine, outside relay mode",
+            )),
+        )
+        .await,
         Command::SpectrumWatch => daemon::spectrum_connection(stream, relay.spectrum.clone()).await,
         Command::Shutdown => {
             reply(&mut stream, Reply::success(json!({"stopped": true}))).await?;

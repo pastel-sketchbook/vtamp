@@ -1,3 +1,4 @@
+mod archive;
 mod covers;
 mod imports;
 #[cfg(target_os = "macos")]
@@ -116,6 +117,7 @@ pub async fn run(
     };
     let mut store = Store::open(&paths.database())?;
     crate::deletion::recover(&paths, &store)?;
+    crate::archive::recover(&paths, &store)?;
     store.interrupt_scans(unix_ms())?;
     store.interrupt_imports()?;
     if paths.data.join("imports/youtube").is_dir() {
@@ -492,6 +494,7 @@ fn worker(
     let mut active_scan: Option<String> = None;
     let mut youtube = imports::Runtime::new(&store)?;
     let mut covers = covers::Runtime::new();
+    let mut archive = archive::Runtime::new();
     loop {
         let revision_before = engine.state.revision;
         let mut changed = false;
@@ -511,7 +514,29 @@ fn worker(
                 let _ = answer.send(result.unwrap_or_else(failure));
             }
             Ok(Work::Request(command, answer)) => {
-                if let Some(result) = youtube.command(&command, &paths, &mut store, events) {
+                if archive.active() && archive::Runtime::conflicts(&command) {
+                    let _ = answer.send(Reply::failure(ApiError::new(
+                        "library_busy",
+                        "Wait for the archive restore to finish",
+                    )));
+                } else if let Command::ArchiveStatus { id } = &command {
+                    let _ = answer.send(archive.status(id).unwrap_or_else(failure));
+                } else if let Command::ArchiveImport { path } = &command {
+                    let result = if engine.state.scanning
+                        || imports > 0
+                        || youtube.active()
+                        || covers.active()
+                    {
+                        Err(ApiError::new(
+                            "library_busy",
+                            "Wait for scans, downloads, covers and metadata tasks to finish",
+                        )
+                        .into())
+                    } else {
+                        archive.start(path.clone(), &paths, &store)
+                    };
+                    let _ = answer.send(result.unwrap_or_else(failure));
+                } else if let Some(result) = youtube.command(&command, &paths, &mut store, events) {
                     let _ = answer.send(result.unwrap_or_else(failure));
                 } else if let Some(result) = covers.command(&command, &paths, &store) {
                     let _ = answer.send(result.unwrap_or_else(failure));
@@ -1023,6 +1048,7 @@ fn worker(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => (),
         }
+        archive.poll(&mut store, events);
         if let Err(error) = youtube.poll(
             &paths,
             &mut store,

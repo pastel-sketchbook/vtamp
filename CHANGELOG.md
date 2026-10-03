@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- Portable Library tarballs with downloaded YouTube audio/video, covers,
+  metadata edits and radio registrations. `library export --include-local`
+  also includes local originals; default exports preserve external references.
+- `library import`, `--dry-run`, and `library archive-status` validate and merge
+  archives while keeping existing tracks, Queue and playback intact. Matching
+  external files reconnect, and interrupted publication is recovered on startup.
+
+### Upgrade notes
+
+- Protocol 10 adds archive restoration commands; database version remains 6.
+  Restart an older server with matching binaries before using the new commands.
+
 ## [0.4.0] — 2026-10-03
 
 Changes since v0.3.0. Optional YouTube video now plays inside the terminal, with

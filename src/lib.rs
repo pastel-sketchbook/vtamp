@@ -1,3 +1,4 @@
+pub mod archive;
 mod artwork;
 pub mod audio;
 pub mod cast;

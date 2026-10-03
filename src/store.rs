@@ -1,3 +1,4 @@
+mod archive;
 mod imports;
 use crate::{
     library::{Record, normalized, search_blob},
@@ -309,7 +310,11 @@ impl Store {
                 "DELETE FROM requests WHERE expires_ms<=?1",
                 [i64::try_from(now)?],
             )?;
-            let count: i64 = tx.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM requests WHERE id NOT LIKE '/archive/%'",
+                [],
+                |r| r.get(0),
+            )?;
             if count >= 10_000 {
                 return Err(ApiError::new(
                     "request_log_full",

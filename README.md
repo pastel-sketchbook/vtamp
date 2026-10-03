@@ -551,6 +551,9 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `library list [--offset N] [--limit N]` | List indexed tracks, default 200, maximum 1000 per page |
 | `library search [QUERY] [--title TEXT] [--artist TEXT] [--album TEXT] [--exact] [--exclude TEXT]` | Combine normalized field filters and exclusions; supports pagination |
 | `library roots` | Show registered roots |
+| `library export FILE [--include-local]` | Export a portable tar.gz with downloaded media, metadata, covers and radio registrations |
+| `library import FILE [--dry-run]` | Validate or merge a Library archive; waits for completion by default |
+| `library archive-status JOB_ID` | Inspect a restore; reports last until server restart |
 | `status` | Current playback state and queue |
 | `now` | Current track, remaining time, and settings without the full queue |
 | `tmux status [--max-width N] [--show-artist]` | One tmux-safe now-playing line; empty when stopped or unavailable |
@@ -563,6 +566,45 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 The queue is capped at 10,000 entries. Queue entry IDs are distinct from library track IDs: adding a song twice produces two independently editable entries. Library IDs survive rescans of the same canonical path. A file moved to a different path is a new library entry.
 
 Library scans are explicit, not filesystem watchers. A damaged file produces a warning while other files continue scanning. Unavailable roots retain their previous catalog entries. Unregistering a root updates the catalog after the scan, but existing queue entries retain their file paths. The player skips unreadable files, attempts each fallback candidate only once, and stops if none can play. Audio device errors leave the server available; a subsequent `play` or `resume` attempts to reopen the default output device.
+
+### Portable Library archives
+
+Export downloaded YouTube audio, saved video, covers, source information, metadata
+edits, and registered radio names/URLs into one `.tar.gz`:
+
+```sh
+vtamp library export ~/Desktop/library.tar.gz
+vtamp library export ~/Desktop/library.tar.gz --include-local
+vtamp library import ~/Desktop/library.tar.gz --dry-run
+vtamp library import ~/Desktop/library.tar.gz
+vtamp library archive-status JOB_ID
+```
+
+Local originals are external references by default: the archive records their
+absolute paths and SHA-256 checksums. Use `--include-local` for a self-contained
+copy of those files too. Previously restored file copies are always included.
+The export report distinguishes included audio, videos, references, and radio
+registrations. Existing output files are never overwritten. Missing included
+audio fails export; unreadable external references are reported without a checksum.
+Queue, playback position, settings, credentials, and download history are excluded.
+
+Restore merges into the existing Library. YouTube video IDs, local audio
+checksums, and normalized radio URLs detect duplicates; existing files and
+metadata win. Duplicate tracks do not gain missing sidecars during restore.
+External references reconnect only when the original path still contains the
+matching file; missing, changed, or unverifiable references are skipped and
+reported. Reconnected files become individual internal scan roots, so rescans
+keep them without indexing neighboring files. `library roots` lists these paths;
+`library remove FILE` unregisters them. `library add` still accepts directories.
+
+Export and dry-run do not start a server or change Library state. Restore runs
+in the background while playback and Queue controls remain available; conflicting
+Library changes return `library_busy`. The CLI waits for completion and prints
+the job ID to stderr. Ctrl+C stops waiting only; inspect the job with
+`archive-status`. The server retains its latest 100 reports in memory. After a
+restart, repeating the import safely skips existing tracks. These commands work
+without yt-dlp, FFmpeg, or an LLM, and are local only: run them on the server
+machine outside relay mode. There is no TUI archive dialog.
 
 ## For scripts and agents
 
@@ -580,11 +622,11 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":9,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":10,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":9,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":10,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
 `status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
@@ -594,7 +636,7 @@ Every JSON response has a protocol version and `ok`. Successful responses have `
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":9,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":10,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -744,12 +786,12 @@ and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds)
 
 ### Updating from older protocol versions
 
-This build uses **protocol 9** and migrates the library to **database version 6**
+This build uses **protocol 10** and migrates the library to **database version 6**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,
-position, volume, and play-next entries are preserved. Older binaries cannot
-open the migrated database.
+position, volume, and play-next entries are preserved. Binaries that do not
+support database version 6 cannot open the migrated database.
 
 Optional native radio verification uses an isolated, muted server and generated
 silence, including HTTP redirects, token renewal, deliberate network failure,

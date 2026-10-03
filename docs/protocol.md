@@ -1,4 +1,4 @@
-# Local protocol, version 9
+# Local protocol, version 10
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":9,"request":{"command":"pause"}}
+{"version":10,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":9,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":10,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -47,14 +47,14 @@ At most four direct imports and one catalog scan run at a time. There are bounde
 
 ## Watch
 
-Send `{"version":9,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":10,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":9,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
+{"version":10,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
 ```
 
 ```json
-{"version":9,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":10,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -63,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":9,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":10,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -241,11 +241,11 @@ rules: one per track start, seek, and resume, silence while paused or after a
 track ends, an end-of-stream page on stop. Radio playback is not cast. Without
 `--cast` a device server has no cast at all.
 
-Send `{"version":9,"request":{"command":"cast_watch"}}` on a separate connection.
+Send `{"version":10,"request":{"command":"cast_watch"}}` on a separate connection.
 The first reply is a success envelope whose `data` is a `CastInfo`:
 
 ```json
-{"version":9,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
+{"version":10,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
 ```
 
 After that reply the connection carries raw Ogg pages without length prefixes,
@@ -320,7 +320,9 @@ instead of rewinding it.
 
 ## Compatibility and storage
 
-All envelopes advertise protocol 9. Protocol 9 adds opt-in video imports and video
+All envelopes advertise protocol 10. Protocol 10 adds local archive restoration
+and job status commands without changing database version 6. Protocol 9 added
+opt-in video imports and video
 outcomes in import reports; the database version stays 6. Protocol 8 added
 `library_delete` for managed YouTube downloads. Protocol 7 added `cast_watch` and
 `cast_info`. Clients must report `version_mismatch` when
@@ -335,6 +337,77 @@ receipts, and scan jobs. Each migration step is atomic. Preserve old track IDs a
 session data; older binaries
 reject the new database version. The response error object may include optional
 `details` in addition to stable `code` and human-readable `message`.
+
+## Portable Library archives (version 10)
+
+Archive operations are local and independent of optional download tools. The CLI
+performs `library export FILE [--include-local]` and `library import FILE --dry-run`
+using SQLite's backup API from a read-only connection into a temporary snapshot.
+They never create/migrate the live DB or start a server. An absent DB is an empty
+Library; existing databases must be version 6.
+
+| Command | Fields | Result |
+| --- | --- | --- |
+| `archive_import` | absolute `path` to a local tar.gz | Initial archive report with `job_id`, `status: running` |
+| `archive_status` | `id` | Current or terminal archive report |
+
+Reports contain `operation`, `status`, nullable `job_id`, `included`, `videos`,
+`references`, `radios`, `added`, `duplicates`, `reconnected`, `missing`,
+`warning_count`, bounded `reports` strings, and nullable `error`. Export's
+`included` counts audio files and `radios` counts registrations. Restore's `added`
+counts file tracks (including `reconnected`), `radios` counts new channels, and
+`duplicates` includes tracks and channels. Restore counts describe the plan until
+the transaction succeeds. `partial` means external references were skipped;
+`failed` means the restore did not commit or its outcome awaits startup recovery.
+Dry-run uses `operation: dry_run`.
+Reports retain at most 1,000 details of 2,048 characters; `warning_count` includes
+omitted details and informational skip reasons.
+
+One restore runs at a time. Concurrent catalog scans, direct-file imports,
+YouTube work (including metadata tasks), or cover refresh prevent admission with
+`library_busy`. During restoration, mutations to Library, source imports,
+metadata, covers, and radio registrations return `library_busy`; playback, Queue,
+and read-only queries continue. The CLI polls until completion without a
+two-minute command timeout. Ctrl+C interrupts waiting only. `archive_status`
+never starts a server; the newest 100 reports are held in memory, and unavailable
+reports return `archive_job_not_found`. Relays reject these wire commands with
+`archive_local_only`; the CLI also rejects export and dry-run through a relay.
+
+The independent archive format is version 1: a gzip-compressed tar begins with
+`manifest.json`, then the allowlisted regular files in `media/` and `covers/`.
+Manifest entries describe effective track metadata, automatic metadata and
+nullable overrides, YouTube provenance, asset sizes and SHA-256 checksums, or
+absolute external paths and optional checksums. Radio entries hold registered
+names/URLs only. There are at most 100,000 tracks and 100,000 radio entries;
+the manifest is limited to 64 MiB and individual cover images to 16 MiB.
+The reader rejects unsupported versions, duplicate/unexpected files, links,
+special entries, path traversal, absent assets, size/checksum mismatches, and
+truncated gzip data before publishing. No resolved stream URL, session, settings,
+credentials, or import history is archived.
+
+Restore allocates new IDs, rewrites all included paths, and regenerates managed
+YouTube `source.json`. YouTube identity, local content hashes, and normalized
+radio URLs deduplicate entries while preserving destination metadata. External
+files reconnect only after checksum validation; new internal single-file scan
+roots retain those references without scanning sibling files. File copies live
+under `imports/archive/UUID`; YouTube resources retain
+`imports/youtube/VIDEO_ID`. Restored local copies keep the existing local-file
+deletion protection.
+
+Workers handle hashing, decompression, file validation and publication outside
+the playback owner loop. New directories are staged under
+`archives/.staging/restore-*`, with a journal written before publication. The
+server owner commits tracks, metadata, roots and radio entries in one SQLite
+transaction, then emits `library_changed` if anything was added. Queue and
+playback revisions are unaffected. Rollback removes only new owned directories.
+The same transaction writes an internal receipt in the existing requests table
+under a reserved /archive/ ID (invalid as a client request ID). Startup consults
+that receipt to finish cleanup even if all restored tracks have since been
+unregistered. Internal receipts do not consume queue-edit receipt capacity and
+are removed after successful cleanup. A lost commit acknowledgement
+leaves the journal for startup, rather than guessing the outcome. Export writes
+beside its destination and publishes without replacing an existing file.
+Database version remains 6.
 
 ## Optional installed-tool imports
 
@@ -353,7 +426,7 @@ updated session commit in one transaction before the engine changes output;
 state changes increment `revision`, queue changes increment `queue_revision`,
 and a changed session emits `state` before `library_changed`. A missing ID returns
 `track_not_found`, a local original returns `not_managed`, and active
-scans/imports/cover updates return `library_busy`. No database migration is needed.
+scans/imports/archive restores/cover updates return `library_busy`. No database migration is needed.
 Files move into the reserved `imports/.staging/delete-UUID` area before the
 transaction; failures restore them. Startup recovers interrupted operations
 according to whether the catalog entry still exists. A non-null `warning` means

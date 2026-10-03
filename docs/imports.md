@@ -81,6 +81,18 @@ one) gains a cover when the refresh succeeds, and tracks whose cover bytes are
 already current are left untouched. The job report lives in server memory:
 restarting the server loses it, and re-running the command is safe.
 
+## Archive downloaded resources
+
+To move or back up downloaded resources, use `library export FILE` and
+`library import FILE`, described in [Portable Library archives](../README.md#portable-library-archives).
+Archive commands are independent of the optional download tools and remain
+available without yt-dlp. They include saved audio, optional `video.mkv`, cover,
+source information and database metadata overrides, including an explicitly
+cleared album. Restored YouTube resources use the usual managed directory and
+remain compatible with rescanning, retagging, cover refresh, and managed deletion.
+Existing video IDs are skipped as complete archive entries; restore does not
+upgrade their sidecars. Historical download job reports are not restored.
+
 ## Delete a downloaded track
 
 In Library, select a YouTube download and press `d` or `x`. The confirmation
@@ -99,7 +111,7 @@ Deletion removes all queued copies automatically, including copies with a
 different track ID that point to the same file. If the track is current in Queue
 or direct playback, deletion stops it and clears its selection. Other playback
 continues with its position and settings preserved.
-Wait for scans, imports, and cover updates to finish. A successful deletion
+Wait for scans, imports, archive restores, and cover updates to finish. A successful deletion
 removes the source metadata and Library entry, so a rescan does not bring it
 back. Importing the URL again downloads a new copy. Historical import reports
 remain historical and may refer to the deleted track ID.
