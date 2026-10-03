@@ -83,7 +83,7 @@ without tmux; report skips as skips, not as live validation.
 
 ## Protect the active listening session
 
-The maintainer may be listening while you work.
+A listening session may be active on this machine while you work.
 
 - Validate new builds with `target/release/vtamp` explicitly; a `vtamp` on PATH or
   a running daemon may be older. Inspect `status --json` and `doctor --json`
@@ -111,10 +111,10 @@ The maintainer may be listening while you work.
 - Default paths: data in `~/Library/Application Support/vtamp/` (`state.db`,
   `ui.json`, `server.log`, `macos/<generation>/vtamp.app`), covers in
   `~/Library/Caches/vtamp/covers/`, socket at `/tmp/vtamp-<uid>/control.sock`.
-- `~/work/tapmusic/out/*.m4a` may be used locally but never modified. Never commit
-  music, databases, caches, logs, or standalone album art. Some tracks genuinely
-  have no cover (Bills, Liebestraum); inspect metadata and sidecar files before
-  diagnosing a graphics failure.
+- Local test music outside the repository may be used but never modified. Never
+  commit music, databases, caches, logs, or standalone album art. Some tracks
+  genuinely have no cover; inspect metadata and sidecar files before diagnosing a
+  graphics failure.
 
 ## Invariants that are easy to break
 
@@ -162,12 +162,13 @@ The documents above hold the full contracts; these are the most common regressio
 - Radio persists registered URLs only, never resolved or tokenized endpoints.
 - Terminal input, server events, and artwork completions stay immediately
   actionable: no polling gate, and artwork decodes off the input loop. Text fields
-  show the real terminal cursor at the caret so IME composition (Korean) works.
+  show the real terminal cursor at the caret so IME composition (for example CJK
+  input) works.
 
 ## Terminal and UI verification
 
-- The maintainer uses Ghostty inside tmux. Graphics fixes need real pixels there;
-  `tmux capture-pane` and ratatui buffer tests prove only text and layout.
+- The reference terminal is Ghostty inside tmux. Graphics fixes need real pixels
+  there; `tmux capture-pane` and ratatui buffer tests prove only text and layout.
   Discover panes, sizes, and client capabilities instead of hardcoding them.
 - Rows of `+` or `SIXEL IMAGE` are tmux placeholders, not a rendered cover.
   Ghostty + tmux uses Kitty; passthrough changes stay pane-local and are restored
@@ -197,10 +198,10 @@ The documents above hold the full contracts; these are the most common regressio
   `scripts/` unit tests so the bundled Pretendard subsets still cover the text.
 - Refresh the gallery only with `scripts/capture-site.py`: stage with
   `python3 scripts/capture-site.py --output /tmp/vtamp-screenshots`, then publish
-  without `--output`. Keep Training Montage by Vince DiCola as the selected track
-  unless asked otherwise. Never substitute text captures or mockups, and inspect
-  every PNG before committing. After new captures, rebuild both social preview
-  cards with `python3 scripts/build-og.py`.
+  without `--output`. Keep the track selected in the existing gallery captures
+  unless asked otherwise; it must have visible album art. Never substitute text
+  captures or mockups, and inspect every PNG before committing. After new
+  captures, rebuild both social preview cards with `python3 scripts/build-og.py`.
 
 ## Git and delivery
 

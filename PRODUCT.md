@@ -61,7 +61,7 @@ Classic Winamp inspires the compact controls and legible type. The TUI offers ni
 
 ## Evidence on Hand
 
-Local m4a files in ~/work/tapmusic/out are available for development verification. The maintainer chose actual library metadata and visible album covers for the public website screenshots. Capture the real TUI in Catppuccin Mocha; do not bundle music files, source artwork, databases, or private paths. Depicted album artwork retains its respective ownership. No published package, remote repository, endorsements, or usage metrics exist yet.
+Local m4a files outside the repository are available for development verification. The maintainer chose actual library metadata and visible album covers for the public website screenshots. Capture the real TUI in Catppuccin Mocha; do not bundle music files, source artwork, databases, or private paths. Depicted album artwork retains its respective ownership. No published package, remote repository, endorsements, or usage metrics exist yet.
 
 ## Product Principles
 
