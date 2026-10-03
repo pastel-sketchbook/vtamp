@@ -40,7 +40,8 @@ The macOS server integrates with media keys and Now Playing, including track met
 
 An installed `yt-dlp` enables optional audio imports with per-job consent to save
 video up to 480p. On macOS, saved video plays in the cover area through Kitty or
-Sixel and follows the server audio; `w` switches video/cover. Existing audio-only
+Sixel and follows the server audio; `w` switches video/cover and `F` toggles
+fullscreen within the current terminal pane. Existing audio-only
 imports can gain video without changing their identity or queue. Without it, the interface,
 help, and diagnostics show no integration controls or prompts. Imports run in the
 server with visible progress, per-item failures, cancellation, and retry. Metadata

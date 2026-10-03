@@ -244,6 +244,7 @@ struct App {
     stream_dialog: Option<streams::Dialog>,
     spectrum: SpectrumView,
     video: video::View,
+    video_fullscreen: Option<String>,
     viewport: Rect,
     theme: Theme,
     theme_picker: Option<ThemePicker>,
@@ -364,6 +365,7 @@ pub async fn run(
         stream_dialog: None,
         spectrum: SpectrumView::new(saved_spectrum, saved_style),
         video: video::View::default(),
+        video_fullscreen: None,
         viewport: Rect::new(0, 0, size.width, size.height),
         theme,
         theme_picker: None,
@@ -532,6 +534,7 @@ pub async fn run(
                 app.next_redraw(last_draw)
             };
             let previous_cover_hidden = app.cover_hidden();
+            let previous_fullscreen = app.video_fullscreen.clone();
             let terminal_event = tokio::select! {
                 _ = async {
                     if let Some(deadline) = deadline {
@@ -557,7 +560,7 @@ pub async fn run(
                     continue;
                 },
                 _ = video_mailbox.notify.notified() => {
-                    if let Some(notice) = app.video.accept() { app.notice(notice); }
+                    if let Some(notice) = app.video.accept() { app.video_fullscreen = None; app.notice(notice); }
                     None
                 },
                 Some(message) = incoming.recv() => {
@@ -609,6 +612,10 @@ pub async fn run(
             }
             app.flush_search(&commands);
             app.sync_video();
+            if previous_fullscreen != app.video_fullscreen {
+                terminal.clear()?;
+                presentation.invalidate();
+            }
             presentation.draw(&mut terminal, |frame| {
                 app.draw(frame);
                 app.caret
@@ -712,7 +719,7 @@ impl App {
             .style(Style::default().fg(p.text).bg(p.panel));
         let inner = panel.inner(popup);
         frame.render_widget(panel, popup);
-        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video (pauses playback) / channel\nw   Toggle saved video / cover")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
+        let paragraph = Paragraph::new(if self.import_ui.enabled {format!("{HELP_TEXT}\n\nYOUTUBE IMPORT\na   Add folder or YouTube URL\ni   Import progress / cancel / retry\nEnter   Play the selected import\nm   Edit title / artist / album\no / O   Open video (pauses playback) / channel\nw   Toggle saved video / cover\nF   Fullscreen video · F / Esc returns")} else {HELP_TEXT.to_owned()}).wrap(Wrap { trim: false });
         // Count the actual wrapped rows so narrow panes can reach every line.
         let rows = paragraph.line_count(inner.width).min(u16::MAX as usize) as u16;
         let scrollable = rows > inner.height.saturating_sub(1);
@@ -744,6 +751,7 @@ impl App {
 
     fn spectrum_visible(&self) -> bool {
         self.spectrum.enabled
+            && self.video_fullscreen.is_none()
             && !self.cover_hidden()
             && self.theme_picker.is_none()
             && self.viewport.width >= 40
@@ -799,6 +807,17 @@ impl App {
     }
 
     fn sync_video(&mut self) {
+        if !self.video.enabled
+            || self.video.ended
+            || !self.connected
+            || self.state.status == PlaybackStatus::Stopped
+            || self
+                .video_fullscreen
+                .as_deref()
+                .is_some_and(|id| self.state.current().is_none_or(|item| item.id != id))
+        {
+            self.video_fullscreen = None;
+        }
         self.video.sync(
             self.state.current(),
             self.state.status,
@@ -1726,6 +1745,34 @@ impl App {
             }
             return Ok(false);
         }
+        if key.code == KeyCode::Char('F')
+            && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+        {
+            if self.video_fullscreen.is_some() {
+                self.video_fullscreen = None;
+            } else if self.video.enabled && self.video.has_frame() {
+                self.video_fullscreen = self.state.current().map(|item| item.id.clone());
+            }
+            return Ok(false);
+        }
+        if self.video_fullscreen.is_some() {
+            if key.code == KeyCode::Esc {
+                self.video_fullscreen = None;
+                return Ok(false);
+            }
+            // Browsing and dialogs return to their usual layout. Playback keys
+            // act on the current track without exposing a hidden list selection.
+            if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+                || !matches!(
+                    key.code,
+                    KeyCode::Char('q' | ' ' | 'n' | '>' | 'b' | '<' | '+' | '=' | '-' | 's' | 'r')
+                        | KeyCode::Left
+                        | KeyCode::Right
+                )
+            {
+                self.video_fullscreen = None;
+            }
+        }
         // Vim accepts both Ctrl-W w and Ctrl-W Ctrl-W. Reuse Tab's behavior,
         // including returning from the spectrum, only outside prompts/overlays.
         if key.code == KeyCode::Char('w')
@@ -2132,6 +2179,10 @@ impl App {
             );
             return;
         }
+        if self.video_fullscreen.is_some() {
+            self.draw_video_fullscreen(frame, area);
+            return;
+        }
         let [header, body, status, hints] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
@@ -2243,6 +2294,9 @@ impl App {
             .current()
             .is_some_and(|item| item.track.is_live());
         let mut groups = vec!["Enter play", space];
+        if self.video.has_frame() {
+            groups.push("F fullscreen");
+        }
         if area.width >= 102 {
             groups.extend([
                 "n/b skip",
@@ -2267,6 +2321,11 @@ impl App {
             } else {
                 "w video"
             });
+        }
+        while groups.len() > 2
+            && groups.join(" ").chars().count() + " ? help q detach".len() > usize::from(area.width)
+        {
+            groups.pop();
         }
         groups.extend(["? help", "q detach"]);
         // Prefer the roomy spacing; tighten it rather than clip the last hint.
@@ -2311,6 +2370,43 @@ impl App {
             self.draw_theme_picker(frame, content);
         }
     }
+    fn draw_video_fullscreen(&mut self, frame: &mut Frame, area: Rect) {
+        let p = self.theme.palette();
+        let [picture, hints] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        let (width, height) = self.cover_shape().size(picture.width, picture.height);
+        let target = Rect::new(
+            picture.x + (picture.width - width) / 2,
+            picture.y + (picture.height - height) / 2,
+            width,
+            height,
+        );
+        self.video.area = target;
+        if !self.video.render(frame, target) {
+            frame.render_widget(
+                Paragraph::new("Loading video…")
+                    .centered()
+                    .style(Style::default().fg(p.muted)),
+                Rect::new(picture.x, picture.y + picture.height / 2, picture.width, 1),
+            );
+        }
+        let space = if self.state.status == PlaybackStatus::Paused {
+            "Space resume"
+        } else {
+            "Space pause"
+        };
+        let extra = if area.width >= 60 {
+            "  ←/→ seek  +/- vol"
+        } else {
+            ""
+        };
+        frame.render_widget(
+            Paragraph::new(format!(" F/Esc back  {space}{extra}"))
+                .style(Style::default().bg(p.panel).fg(p.muted)),
+            hints,
+        );
+    }
+
     /// A pending destructive action, drawn over everything else. The counts come
     /// from the live state, so a queue change behind the dialog is reflected.
     fn draw_confirm(&mut self, frame: &mut Frame, area: Rect) {
@@ -4623,6 +4719,7 @@ mod tests {
             protocol: ProtocolType::Sixel,
             font_size: FontSize::new(10, 20),
             tmux: true,
+            compress: false,
         };
         let (tx, rx) = sync_mpsc::channel();
         app.cover = Cover::new(tx, None);
@@ -5144,6 +5241,7 @@ mod tests {
             stream_dialog: None,
             spectrum: SpectrumView::new(false, SpectrumStyle::default()),
             video: video::View::default(),
+            video_fullscreen: None,
             viewport: Rect::default(),
             theme: Theme::default(),
             theme_picker: None,
@@ -5254,6 +5352,67 @@ mod tests {
         app.library_selection.select(Some(0));
         app.state.status = status;
         app
+    }
+
+    #[test]
+    fn fullscreen_keys_preserve_playback_filters_and_modal_ownership() {
+        let mut app = youtube_app(PlaybackStatus::Playing);
+        app.state.queue = vec![QueueItem::new(app.tracks[0].clone())];
+        app.state.current_id = Some(app.state.queue[0].id.clone());
+        app.video = video::View::with_test_frame();
+        let (commands, mut requests) = mpsc::channel(16);
+        let press = |app: &mut App, code| {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE), &commands)
+                .unwrap()
+        };
+        let filter = app.library_query.clone();
+        assert!(!press(&mut app, KeyCode::Char('F')));
+        assert!(app.video_fullscreen.is_some());
+        for (w, h) in [(40, 12), (72, 14), (100, 24), (120, 28)] {
+            assert!(hint_row(&mut app, w, h).contains("F/Esc back"));
+            assert!(app.video.area.width <= w && app.video.area.height < h);
+            assert!(!app.spectrum_visible());
+        }
+        assert!(!press(&mut app, KeyCode::Char(' ')));
+        assert!(matches!(requests.try_recv(), Ok(Command::Toggle)));
+        assert!(app.video_fullscreen.is_some());
+        assert!(!press(&mut app, KeyCode::Esc));
+        assert!(app.video_fullscreen.is_none());
+        assert_eq!(app.library_query, filter);
+        press(&mut app, KeyCode::Char('F'));
+        press(&mut app, KeyCode::Char('b'));
+        assert!(matches!(requests.try_recv(), Ok(Command::Prev)));
+        assert!(app.video_fullscreen.is_some());
+        app.key(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &commands,
+        )
+        .unwrap();
+        assert!(
+            app.video_fullscreen.is_none(),
+            "Ctrl-B navigates the visible list"
+        );
+        press(&mut app, KeyCode::Char('F'));
+        press(&mut app, KeyCode::Char('F'));
+        assert!(app.video_fullscreen.is_none());
+        press(&mut app, KeyCode::Char('F'));
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help && app.video_fullscreen.is_none());
+        press(&mut app, KeyCode::Char('F'));
+        assert!(app.help && app.video_fullscreen.is_none());
+        press(&mut app, KeyCode::Esc);
+        app.input = Some(Input::Folder(String::new()));
+        press(&mut app, KeyCode::Char('F'));
+        assert!(matches!(&app.input, Some(Input::Folder(text)) if text == "F"));
+        assert!(app.video_fullscreen.is_none());
+        app.input = None;
+        press(&mut app, KeyCode::Char('F'));
+        app.state.current_id = None;
+        app.sync_video();
+        assert!(app.video_fullscreen.is_none());
+        app.video = video::View::default();
+        press(&mut app, KeyCode::Char('F'));
+        assert!(app.video_fullscreen.is_none());
     }
 
     #[test]
@@ -6947,6 +7106,7 @@ mod tests {
             protocol: ProtocolType::Sixel,
             font_size: FontSize::new(10, 20),
             tmux: true,
+            compress: false,
         };
         let protocol = app.artwork.new_resize_protocol(
             image::DynamicImage::new_rgb8(512, 512),

@@ -5,7 +5,7 @@ use image::{DynamicImage, Rgba};
 use ratatui_image::{
     FontSize,
     picker::{
-        Picker, ProtocolType,
+        Capability, Picker, ProtocolType,
         cap_parser::{Parser, QueryStdioOptions, Response},
     },
     protocol::{
@@ -29,6 +29,7 @@ pub(crate) enum Artwork {
         protocol: ProtocolType,
         font_size: FontSize,
         tmux: bool,
+        compress: bool,
     },
 }
 
@@ -56,14 +57,14 @@ impl Artwork {
                     || (matches!(art, Art::Auto) && !(caps.sixel && caps.font_size.is_some())))
             {
                 passthrough = TmuxPassthrough::enable();
-                if matches!(art, Art::Auto)
-                    && let Some(guard) = &passthrough
+                if let Some(guard) = &passthrough
                     && guard.pane_is_active()
                 {
                     // Replies from the outer terminal go to the active pane.
                     // Do not inject query replies into another running program.
                     let outer = probe(true).unwrap_or_default();
                     caps.kitty = outer.kitty;
+                    caps.compress = outer.compress;
                     caps.font_size = caps.font_size.or(outer.font_size);
                 }
                 if matches!(art, Art::Auto) && !(caps.kitty && caps.font_size.is_some()) {
@@ -72,7 +73,11 @@ impl Artwork {
             }
             return (Self::native(art, tmux, caps), passthrough);
         }
-        let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+        let mut picker = Picker::from_query_stdio_with_options(QueryStdioOptions {
+            kitty_compression: true,
+            ..Default::default()
+        })
+        .unwrap_or_else(|_| Picker::halfblocks());
         if matches!(art, Art::Kitty) {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
@@ -91,22 +96,30 @@ impl Artwork {
             protocol,
             font_size: caps.font_size.unwrap_or(FALLBACK_FONT),
             tmux,
+            compress: caps.compress,
         }
     }
 
     pub fn video_graphics(&self) -> Option<VideoGraphics> {
-        let (kind, font, tmux) = match self {
-            Self::Detected(p) => (p.protocol_type(), p.font_size(), p.tmux_detected()),
+        let (kind, font, tmux, compress) = match self {
+            Self::Detected(p) => (
+                p.protocol_type(),
+                p.font_size(),
+                p.tmux_detected(),
+                p.capabilities().contains(&Capability::KittyCompression),
+            ),
             Self::Native {
                 protocol,
                 font_size,
                 tmux,
-            } => (*protocol, *font_size, *tmux),
+                compress,
+            } => (*protocol, *font_size, *tmux, *compress),
         };
         matches!(kind, ProtocolType::Kitty | ProtocolType::Sixel).then_some(VideoGraphics {
             kind,
             font,
             tmux,
+            compress,
         })
     }
 
@@ -133,6 +146,7 @@ impl Artwork {
                 protocol,
                 font_size,
                 tmux,
+                ..
             } => {
                 let protocol = match protocol {
                     // Always unwrapped: tmux's own Sixel support owns the image.
@@ -155,12 +169,13 @@ pub(crate) struct VideoGraphics {
     pub kind: ProtocolType,
     pub font: FontSize,
     pub tmux: bool,
+    pub compress: bool,
 }
 impl VideoGraphics {
     pub fn protocol(self, image: DynamicImage, background: Rgba<u8>, id: u32) -> StatefulProtocol {
         let protocol = match self.kind {
             ProtocolType::Kitty => {
-                StatefulProtocolType::Kitty(StatefulKitty::new(id, self.tmux, false))
+                StatefulProtocolType::Kitty(StatefulKitty::new(id, self.tmux, self.compress))
             }
             _ => StatefulProtocolType::Sixel(Sixel::default()),
         };
@@ -187,6 +202,7 @@ impl VideoGraphics {
 struct Capabilities {
     sixel: bool,
     kitty: bool,
+    compress: bool,
     font_size: Option<FontSize>,
 }
 
@@ -210,6 +226,7 @@ impl Capabilities {
         match response {
             Response::Sixel => self.sixel = true,
             Response::Kitty => self.kitty = true,
+            Response::KittyCompression => self.compress = true,
             Response::CellSize(Some((width, height))) if width > 0 && height > 0 => {
                 self.font_size = Some(FontSize::new(width, height));
             }
@@ -348,6 +365,7 @@ fn probe(tmux_passthrough: bool) -> io::Result<Capabilities> {
     let query = Parser::query(
         tmux_passthrough,
         QueryStdioOptions {
+            kitty_compression: true,
             blacklist_protocols: vec![if tmux_passthrough {
                 ProtocolType::Sixel
             } else {
@@ -421,6 +439,17 @@ mod tests {
         caps
     }
 
+    #[test]
+    fn video_compression_requires_a_positive_terminal_reply() {
+        for (reply, expected) in [
+            ("\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;OK\x1b\\\x1b[0n", true),
+            ("\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;EINVAL\x1b\\\x1b[0n", false),
+            ("\x1b_Gi=31;OK\x1b\\\x1b[0n", false),
+        ] {
+            let artwork = Artwork::native(Art::Kitty, true, capabilities(reply));
+            assert_eq!(artwork.video_graphics().unwrap().compress, expected);
+        }
+    }
     #[test]
     fn native_tmux_sixel_uses_reported_pixels_without_passthrough() {
         let caps = capabilities("\x1b[?1;2;4c\x1b[6;34;17t\x1b[0n");

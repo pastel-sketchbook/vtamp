@@ -10,8 +10,12 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use image::{DynamicImage, RgbImage, Rgba};
-use ratatui::{Frame, layout::Rect};
-use ratatui_image::{ResizeEncodeRender, protocol::StatefulProtocol};
+use ratatui::{Frame, buffer::Buffer, layout::Rect, widgets::Widget};
+use ratatui_image::{
+    ResizeEncodeRender,
+    picker::ProtocolType,
+    protocol::{Protocol, StatefulProtocol, kitty::Kitty},
+};
 use std::{
     io::{Read, Write},
     os::{fd::AsRawFd, unix::process::CommandExt},
@@ -63,12 +67,90 @@ struct Request {
 }
 struct Packet {
     generation: u64,
+    ended: bool,
     result: Result<Option<Picture>, String>,
 }
 struct Picture {
-    protocol: StatefulProtocol,
+    protocol: PictureProtocol,
     aspect: f32,
     position: u64,
+}
+// Keep uploads at the decoded resolution. Kitty scales its virtual placement
+// to the target cells, including fullscreen, without sending enlarged pixels.
+enum PictureProtocol {
+    Kitty {
+        image: Protocol,
+        placement: Option<String>,
+        area: Rect,
+    },
+    Sixel(StatefulProtocol),
+}
+impl PictureProtocol {
+    fn encode(
+        image: DynamicImage,
+        graphics: VideoGraphics,
+        background: Rgba<u8>,
+        id: u32,
+        area: Rect,
+    ) -> Result<Self> {
+        if graphics.kind == ProtocolType::Kitty {
+            let image = Kitty::new(image, area.as_size(), id, graphics.tmux, graphics.compress)?;
+            let placement = format!(
+                "\x1b_Ga=d,d=i,i={id},q=2;\x1b\\\x1b_Ga=p,U=1,i={id},p=1,c={},r={},q=2;\x1b\\",
+                area.width, area.height
+            );
+            let placement = if graphics.tmux {
+                format!("\x1bPtmux;{}\x1b\\", placement.replace('\x1b', "\x1b\x1b"))
+            } else {
+                placement
+            };
+            Ok(Self::Kitty {
+                image: Protocol::Kitty(image),
+                placement: Some(placement),
+                area,
+            })
+        } else {
+            let mut protocol = graphics.protocol(image, background, id);
+            protocol.resize_encode(&ratatui_image::Resize::Scale(None), area.into());
+            if let Some(Err(error)) = protocol.last_encoding_result() {
+                bail!("{error}");
+            }
+            Ok(Self::Sixel(protocol))
+        }
+    }
+    fn render(&mut self, area: Rect, buffer: &mut Buffer) -> bool {
+        match self {
+            Self::Kitty {
+                image,
+                placement,
+                area: encoded,
+            } => {
+                if area != *encoded {
+                    return false;
+                }
+                ratatui_image::Image::new(image).render(area, buffer);
+                // The first cell carries the library's upload. Issue placement
+                // sizing after it, once, in the same synchronized terminal draw.
+                // Replace the upload's default virtual placement so placeholders
+                // without an explicit placement ID select our scaled placement.
+                if let Some(placement) = placement.take()
+                    && let Some(cell) = buffer.cell_mut((area.x, area.y))
+                {
+                    cell.set_symbol(&format!("{}{placement}", cell.symbol()));
+                }
+            }
+            Self::Sixel(protocol) => {
+                if protocol
+                    .needs_resize(&ratatui_image::Resize::Scale(None), area.into())
+                    .is_some()
+                {
+                    return false;
+                }
+                protocol.render(area, buffer);
+            }
+        }
+        true
+    }
 }
 #[derive(Default)]
 pub(super) struct Mailbox {
@@ -100,6 +182,7 @@ pub(super) struct View {
     pub aspect: Option<f32>,
     pub area: Rect,
     pub epoch: u64,
+    pub ended: bool,
     frame: Option<Picture>,
     generation: u64,
     request: Option<Request>,
@@ -117,6 +200,7 @@ impl Default for View {
             aspect: None,
             area: Rect::default(),
             epoch: 0,
+            ended: false,
             frame: None,
             generation: 0,
             request: None,
@@ -130,6 +214,30 @@ impl Default for View {
     }
 }
 impl View {
+    #[cfg(test)]
+    pub(super) fn with_test_frame() -> Self {
+        let graphics = VideoGraphics {
+            kind: ProtocolType::Kitty,
+            font: ratatui_image::FontSize::new(10, 20),
+            tmux: false,
+            compress: false,
+        };
+        let mut view = Self::default();
+        view.aspect = Some(16.0 / 9.0);
+        view.frame = Some(Picture {
+            protocol: PictureProtocol::encode(
+                DynamicImage::new_rgb8(160, 90),
+                graphics,
+                Rgba([0; 4]),
+                1,
+                Rect::new(0, 0, 16, 5),
+            )
+            .unwrap(),
+            aspect: 16.0 / 9.0,
+            position: 0,
+        });
+        view
+    }
     pub fn start(&mut self, paths: Paths, graphics: Option<VideoGraphics>) {
         let Some(graphics) = graphics else {
             return;
@@ -197,6 +305,7 @@ impl View {
                 .as_ref()
                 .is_some_and(|r| r.clock.position().abs_diff(position) > DRIFT_MS);
         if changed {
+            self.ended = false;
             let previous = self.request.take();
             if let Some(request) = &previous {
                 request.cancel.store(true, Ordering::Relaxed);
@@ -263,6 +372,7 @@ impl View {
         if packet.generation != self.generation || self.request.is_none() {
             return None;
         }
+        self.ended = packet.ended;
         match packet.result {
             Ok(Some(picture)) => {
                 if self
@@ -300,15 +410,7 @@ impl View {
     pub fn render(&mut self, frame: &mut Frame, area: Rect) -> bool {
         self.area = area;
         if let Some(picture) = &mut self.frame {
-            if picture
-                .protocol
-                .needs_resize(&crate::cover::COVER_RESIZE, area.into())
-                .is_some()
-            {
-                return false;
-            }
-            picture.protocol.render(area, frame.buffer_mut());
-            true
+            picture.protocol.render(area, frame.buffer_mut())
         } else {
             false
         }
@@ -557,6 +659,7 @@ fn worker(
                 decoder = None;
                 attempted = false;
                 mailbox.put(Packet {
+                    ended: false,
                     generation: r.generation,
                     result: Ok(None),
                 });
@@ -603,12 +706,14 @@ fn worker(
                 if d.index <= target {
                     continue;
                 }
-                let mut protocol = graphics.protocol(image, Rgba(r.key.background), ids[slot]);
+                let protocol = PictureProtocol::encode(
+                    image,
+                    graphics,
+                    Rgba(r.key.background),
+                    ids[slot],
+                    r.key.area,
+                )?;
                 slot ^= 1;
-                protocol.resize_encode(&crate::cover::COVER_RESIZE, r.key.area.into());
-                if let Some(Err(error)) = protocol.last_encoding_result() {
-                    bail!("{error}");
-                }
                 let info = asset.as_ref().unwrap().1;
                 return Ok(Some(Picture {
                     protocol,
@@ -622,6 +727,7 @@ fn worker(
             Ok(Some(picture)) => {
                 if !r.cancel.load(Ordering::Relaxed) {
                     mailbox.put(Packet {
+                        ended: false,
                         generation: r.generation,
                         result: Ok(Some(picture)),
                     });
@@ -635,6 +741,7 @@ fn worker(
                 decoder = None;
                 if !r.cancel.load(Ordering::Relaxed) {
                     mailbox.put(Packet {
+                        ended: false,
                         generation: r.generation,
                         result: Err(format!("{error:#}")),
                     });
@@ -644,12 +751,28 @@ fn worker(
         if decoder.as_ref().is_some_and(|d| d.eof) {
             decoder = None;
             mailbox.put(Packet {
+                ended: true,
                 generation: r.generation,
                 result: Ok(None),
             });
         }
-        if decoder.is_some() {
-            thread::park_timeout(Duration::from_millis(5));
+        if let Some(d) = &decoder {
+            let target = r.clock.position().saturating_sub(d.start) * u64::from(fps) / 1000;
+            if d.index <= target {
+                // A 480p RGB frame is much larger than the pipe. Wake on data,
+                // not once per 5ms chunk: that throttle cannot sustain video at
+                // fullscreen resolution and makes every complete frame late.
+                let mut fd = libc::pollfd {
+                    fd: d.stdout.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut fd, 1, 5);
+                }
+            } else {
+                thread::park_timeout(Duration::from_millis(5));
+            }
         } else {
             // No decoder means missing video, paused output, EOF, or an error.
             // New clock/state requests wake this worker; idle clients stay idle.
@@ -679,6 +802,45 @@ mod tests {
                 ..Default::default()
             }),
         })
+    }
+    #[test]
+    fn kitty_fullscreen_scales_placement_without_enlarging_or_retransmitting_pixels() {
+        for compress in [false, true] {
+            for tmux in [false, true] {
+                let area = Rect::new(3, 2, 100, 24);
+                let graphics = VideoGraphics {
+                    kind: ProtocolType::Kitty,
+                    font: ratatui_image::FontSize::new(10, 20),
+                    tmux,
+                    compress,
+                };
+                let mut picture = PictureProtocol::encode(
+                    DynamicImage::new_rgb8(160, 90),
+                    graphics,
+                    Rgba([0; 4]),
+                    42,
+                    area,
+                )
+                .unwrap();
+                let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 28));
+                assert!(!picture.render(Rect::new(0, 0, 50, 12), &mut buffer));
+                assert!(picture.render(area, &mut buffer));
+                let first = buffer[(3, 2)].symbol();
+                assert!(first.contains("s=160,v=90"));
+                assert!(first.contains("c=100,r=24"));
+                assert_eq!(first.contains("o=z"), compress);
+                assert_eq!(first.contains("tmux;"), tmux);
+                assert!(first.find("a=T").unwrap() < first.find("a=p").unwrap());
+                if compress {
+                    assert!(first.len() < 2000);
+                }
+                let mut next = Buffer::empty(buffer.area);
+                assert!(picture.render(area, &mut next));
+                assert!(!next[(3, 2)].symbol().contains("a=T"));
+                assert!(!next[(3, 2)].symbol().contains("a=p"));
+                assert!(next[(102, 25)].symbol().contains('\u{10eeee}'));
+            }
+        }
     }
     #[test]
     fn audio_clock_extrapolates_only_while_playing() {
@@ -720,6 +882,7 @@ mod tests {
         assert!(first.cancel.load(Ordering::Relaxed));
         assert_ne!(view.generation, first.generation);
         view.mailbox.put(Packet {
+            ended: false,
             generation: first.generation,
             result: Err("stale".into()),
         });
@@ -768,6 +931,7 @@ mod tests {
         let mailbox = Mailbox::default();
         for generation in 0..1000 {
             mailbox.put(Packet {
+                ended: false,
                 generation,
                 result: Ok(None),
             });
@@ -815,6 +979,7 @@ mod tests {
             kind: ratatui_image::picker::ProtocolType::Kitty,
             font: ratatui_image::FontSize::new(10, 20),
             tmux: false,
+            compress: false,
         };
         let mut decoder = Decoder::start(
             dir.path(),

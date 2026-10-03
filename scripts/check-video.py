@@ -41,6 +41,22 @@ def wait_for(call, description, seconds=15):
     raise RuntimeError(f"Timed out waiting for {description}")
 
 
+def cpu_seconds(pid):
+    """Cumulative process CPU, so a sample excludes startup and earlier work."""
+    value = run(["ps", "-o", "time=", "-p", pid])
+    parts = list(map(float, value.split(":")))
+    return sum(value * 60 ** power for power, value in enumerate(reversed(parts)))
+
+
+def sample_cpu(pids, seconds=5):
+    before = {name: cpu_seconds(pid) for name, pid in pids.items()}
+    started = time.monotonic()
+    time.sleep(seconds)
+    after = {name: cpu_seconds(pid) for name, pid in pids.items()}
+    elapsed = time.monotonic() - started
+    return {name: round(100 * (after[name] - before[name]) / elapsed, 1) for name in pids}
+
+
 def check(output, rates):
     for name in ("ffmpeg", "ffprobe", "tmux", "swiftc", "screencapture"):
         if not shutil.which(name):
@@ -107,6 +123,7 @@ tail=b''
 while True:
  data=os.read(0,65536)
  if not data: break
+ f.write(json.dumps({'at':time.monotonic(),'bytes':len(data)})+'\\n')
  buf=tail+data
  for m in re.finditer(rb'_G([^;\\x1b]*);',buf):
   if m.end()<=len(tail): continue
@@ -155,12 +172,16 @@ while True:
                 if columns < 120 or rows < 28:
                     raise RuntimeError("The 120×28 test window does not fit; reduce Ghostty font size")
                 ready.touch()
+                def events():
+                    return [json.loads(line) for line in timings.read_text().splitlines() if line.endswith('}')] if timings.exists() else []
                 def frames():
-                    return [json.loads(line) for line in timings.read_text().splitlines()] if timings.exists() else []
+                    return [event for event in events() if 'id' in event]
                 wait_for(lambda: len(frames()) > 20, "video frames")
                 pane_pid = run([*tmux, "display-message", "-p", "-t", "video:0.0", "#{pane_pid}"], env=env)
                 rss = lambda: int(run(["ps", "-o", "rss=", "-p", pane_pid]))
                 rss_before = rss()
+                tmux_pid = run([*tmux, "display-message", "-p", "#{pid}"], env=env)
+                cpu = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid})
                 started = time.monotonic()
                 time.sleep(3)
                 for suffix in ("a", "b"):
@@ -182,11 +203,50 @@ while True:
                 stable = [f for f in frames() if started < f['at'] < ended]
                 counts = collections.Counter(f['id'] for f in stable)
                 summaries.append({'requested_fps': fps, 'observed_upload_fps': len(stable)/(ended-started),
+                                  'cpu_percent': cpu,
+                                  'output_mib_per_second': sum(e.get('bytes', 0) for e in events() if started < e['at'] < ended) / (ended - started) / 1024**2,
                                   'image_ids': dict(counts), 'input_p95_ms': sorted(latency)[18],
                                   'rss_before_kib': rss_before, 'rss_after_kib': rss()})
                 assert summaries[-1]['input_p95_ms'] <= 100, summaries[-1]
                 assert abs(summaries[-1]['observed_upload_fps'] - fps) < 2, summaries[-1]
                 assert len(counts) <= 2, "Video image IDs keep growing"
+                # Fullscreen fills this pane, keeps playback keys, and scales
+                # the saved 480p picture even when the terminal is larger.
+                run([*tmux, "send-keys", "-t", "video:0.0", "F"], env=env)
+                wait_for(lambda: "F/Esc back" in capture(), "fullscreen")
+                fullscreen_start = len(frames())
+                wait_for(lambda: len(frames()) > fullscreen_start + 10 and "Loading video" not in capture(), "fullscreen frames")
+                fullscreen_at = time.monotonic()
+                summaries[-1]['fullscreen_cpu_percent'] = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid})
+                fullscreen_elapsed = time.monotonic() - fullscreen_at
+                fullscreen_frames = [f for f in frames() if f['at'] > fullscreen_at]
+                summaries[-1]['fullscreen_upload_fps'] = len(fullscreen_frames) / fullscreen_elapsed
+                assert abs(summaries[-1]['fullscreen_upload_fps'] - fps) < 2
+                for columns, rows in [(40, 12), (72, 14), (120, 28), (100, 24)]:
+                    run([*tmux, "resize-window", "-t", "video:0", "-x", columns, "-y", rows], env=env)
+                    wait_for(lambda: "Loading video" not in capture(), "video after fullscreen resize")
+                    time.sleep(.3)
+                    run(["screencapture", "-x", "-o", "-l", window['id'], output / f"fullscreen-{columns}-{rows}-{fps}.png"])
+                run([*tmux, "send-keys", "-t", "video:0.0", "Space"], env=env)
+                wait_for(lambda: vt('status')['status'] == 'paused', 'fullscreen pause')
+                time.sleep(.3)
+                pause_frames = len(frames())
+                time.sleep(.5)
+                assert len(frames()) <= pause_frames + 1
+                run([*tmux, "send-keys", "-t", "video:0.0", "Right", "Space"], env=env)
+                wait_for(lambda: vt('status')['status'] == 'playing', 'fullscreen resume')
+                run([*tmux, "send-keys", "-t", "video:0.0", "Escape"], env=env)
+                wait_for(lambda: 'vtamp' in capture() and 'F/Esc back' not in capture(), 'return from fullscreen')
+                time.sleep(.3)
+                run([*tmux, "send-keys", "-t", "video:0.0", "F"], env=env)
+                wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen before Ctrl-B')
+                run([*tmux, "send-keys", "-t", "video:0.0", "C-b"], env=env)
+                wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'visible list after Ctrl-B')
+                time.sleep(.3)
+                run(["screencapture", "-x", "-o", "-l", window['id'], output / f"normal-after-ctrl-b-{fps}.png"])
+                run([*tmux, "send-keys", "-t", "video:0.0", "F", "?"], env=env)
+                wait_for(lambda: 'ATTACH / DETACH' in capture(), 'help from fullscreen')
+                run([*tmux, "send-keys", "-t", "video:0.0", "Escape"], env=env)
                 # Real import prompts, including a playlist; cancel both without downloads.
                 for suffix, name in [("", "download-choice"), ("&list=TEST", "playlist-choice")]:
                     run([*tmux, "send-keys", "-t", "video:0.0", "a"], env=env)

@@ -440,8 +440,9 @@ Artwork comes from the embedded front cover first, then the first embedded pictu
 
 YouTube imports can optionally save video up to 480p (`library add URL --video`).
 The TUI asks before downloading video and automatically plays saved video in the
-cover area on macOS with Kitty/Sixel graphics. Press `w` to switch video/cover;
-this display preference is saved. Audio remains in the server and keeps playing
+cover area on macOS with Kitty/Sixel graphics. Press `w` to switch video/cover
+and save that preference. `F` during video fills the current terminal pane;
+`F`/`Esc` returns, and fullscreen is not saved. Audio remains in the server and keeps playing
 when the TUI exits. See [video imports and playback](docs/imports.md#terminal-video-macos).
 
 ## tmux status bar
@@ -939,7 +940,8 @@ After `cargo build --locked --release`, run `python3 scripts/check-video.py` on
 macOS with Ghostty and installed FFmpeg/FFprobe/tmux/Swift. It generates synthetic
 media, uses a fake downloader with real FFmpeg, and runs muted isolated servers
 and private tmux sockets. No network, browser cookies, LLM, or personal library is
-used. It compares 8/12/15 fps, records Kitty uploads, input response times and RSS,
+used. It compares 8/12/15 fps, records Kitty uploads, output bandwidth,
+Ghostty/tmux CPU time, input response times and RSS, checks fullscreen controls,
 and captures real pixels for manual inspection under `/tmp`. Use `--fps 12` for a
 single rate or `--output /tmp/vtamp-video-check` to choose the evidence directory.
 The default suite does not prove terminal pixels or audible playback.

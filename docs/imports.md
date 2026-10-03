@@ -193,6 +193,14 @@ Ghostty + tmux uses Kitty. Press `w` to switch between video and cover; this dis
 preference is saved in `ui.json` independently of the per-import download choice.
 Halfblock and `--art none` sessions retain their existing artwork behavior.
 
+Press uppercase `F` while video is visible to fill the current terminal pane,
+preserving the picture's aspect ratio with a one-line control hint. `F` or `Esc`
+returns to the normal layout without clearing search filters or detaching.
+Space, seek, volume, shuffle/repeat, and next/previous still work. Browsing or
+opening a dialog returns to the normal layout; changing tracks, stopping, or
+losing the server connection also leaves fullscreen. Fullscreen is not saved
+between attachments and never zooms tmux or changes the OS window.
+
 The server remains the sole audio player. Each TUI decodes its locally accessible
 managed sidecar with installed FFmpeg and follows the server's playback position.
 Pause freezes the frame; seek, repeat, and reattach synchronize to the audio.
@@ -205,6 +213,12 @@ Video buffers and terminal image IDs are bounded; delayed frames are dropped.
 The default frame rate is 15 fps. `VTAMP_VIDEO_FPS=8`, `12`, or `15` allows local
 comparisons (accepted range 1–30; invalid values use the default). This changes
 rendering only, not the downloaded file or music playback.
+Kitty video uses fast lossless transmission compression when the terminal's
+capability probe confirms support, and scales the image in the terminal for
+fullscreen without uploading enlarged pixels. Other Kitty terminals retain
+uncompressed transmission; Sixel encodes at the display size. Video still
+costs terminal and tmux CPU. For lower usage, launch the TUI with
+`VTAMP_VIDEO_FPS=8 target/release/vtamp`, or press `w` to show the cover.
 
 ## Optional LLM inference
 

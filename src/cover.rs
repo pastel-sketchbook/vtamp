@@ -170,6 +170,7 @@ mod tests {
                 protocol: kind,
                 font_size: FontSize::new(10, 20),
                 tmux: true,
+                compress: false,
             };
             let protocol = |color| {
                 artwork.new_resize_protocol(

@@ -241,7 +241,15 @@ remember consent for the next job. Keep controls reachable at 40×12.
 
 Saved video automatically occupies the existing cover area with its own aspect
 ratio. `w` toggles video/cover and saves the display preference; `v`/`V` retain
-spectrum behavior. Audio belongs to the server. Pause freezes the picture;
+spectrum behavior. Uppercase `F` fills only the current terminal pane with an
+aspect-preserving picture and one footer line: `F/Esc back`, Space's current
+pause/resume action, and seek/volume hints when they fit. Hide the lists and
+spectrum in fullscreen; suspend spectrum work. `F`/`Esc` returns without changing
+filters. Playback keys stay active; browsing and dialogs return to the normal
+layout. Track changes, stop, video failure/end, and disconnect also leave this
+attachment-only mode. Never zoom tmux or alter the OS window. Kitty scales the
+bounded source pixels in the terminal and uses compression only after a positive
+capability reply. Audio belongs to the server. Pause freezes the picture;
 covering overlays suspend decoding and hide pixels, and close/resize/reattach
 resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
 Video failure uses a single notice and the existing cover, without interrupting
