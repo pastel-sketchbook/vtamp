@@ -2,30 +2,60 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-03
+
+Changes since v0.3.0. Optional YouTube video now plays inside the terminal, with
+pane-local fullscreen, lower graphics overhead, and stable seeking and input.
+
 ### Added
 
+- Optional YouTube video downloads up to 480p. The TUI asks for Audio only or
+  Audio + video for each import; the CLI accepts `library add URL --video`.
+  Existing audio imports can gain video without changing track identity or
+  Queue. Failed or cancelled video downloads preserve successfully imported audio.
+- Terminal video playback on macOS with installed FFmpeg/FFprobe and Kitty or
+  Sixel graphics. Video follows the server's audio; `w` toggles video/cover,
+  and `F` fills the current terminal pane with elapsed / total time below.
+  `F` or Esc returns. Audio keeps playing when the TUI detaches.
+- Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
+  Kitty uploads use capability-detected compression and terminal-side scaling,
+  including fullscreen. Frame buffers and image IDs remain bounded.
 - Spectrum styles. `V` switches the visible spectrum between `bars`, `gradient`,
   `mono`, `mirror`, `dots`, and `waterfall`; the status row names the new style
   and `ui.json` remembers it as `spectrum_style` (older files default to `bars`).
   Every style uses the active theme's colors. The waterfall scrolls one row per
-  analysis frame, freezes while paused, and resets on a track change. No server
-  or protocol change; attached TUIs pick it up on reattach.
+  analysis frame, freezes while paused, and resets on a track change.
 - Deleting managed YouTube downloads: `d` in Library opens a confirmation, and
-  `vtamp library delete TRACK_ID` removes the audio, cover, source metadata, and
-  catalog entry. Local originals and tracks in Queue or playback are refused.
-  Protocol **8** adds `library_delete`.
+  `vtamp library delete TRACK_ID` removes the audio, video, cover, source metadata,
+  and catalog entry. Local originals and tracks in Queue or playback are refused.
 
 ### Fixed
 
+- Pasted YouTube playlist URLs open the playlist preview instead of importing
+  only the selected video.
+- Idle or paused spectrum streams stay connected without repeated reconnects.
+- Video fullscreen exits cleanly on track transitions, and seeks retain the
+  last displayed frame until the target is ready instead of flashing the cover.
+- Text input cursors stay at the field during video redraws, including Kitty
+  passthrough through tmux to Ghostty.
 - Relay mode spectrum frames now carry the remote's `current_id`, so an attached
   TUI shows the spectrum of the audio the relay plays instead of dropping every
   frame.
 
 ### Upgrade notes
 
-- Protocol is **8**; database version remains **6**, so no migration runs.
-  Restart the server with the new binary (`vtamp server stop`, then start
-  vtamp) before reattaching, or clients report `version_mismatch`.
+- Protocol is **9**; database version remains **6**, so upgrading from v0.3.0
+  needs no database migration. Clients and servers must use the same protocol.
+- Before upgrading v0.3.0, stop its server with the matching installed binary:
+  `vtamp server stop`. Then run `brew update && brew upgrade vtamp` (or replace
+  the binary) and start vtamp again. The saved session is restored paused.
+  Installing or rebuilding does not replace a running server.
+- Video is optional and requires installed `yt-dlp`, FFmpeg, and FFprobe for
+  imports; tools are detected at runtime and are not installed automatically.
+  Playback is local to the macOS TUI. Linux remains a headless server without
+  device playback, relay, media keys, radio, or terminal video.
+- Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux with glibc 2.39+
+  (tested on Ubuntu 24.04). Intel Macs and other Linux architectures build from source.
 
 ## [0.3.0] — 2026-10-02
 
@@ -82,4 +112,6 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/rath/vtamp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rath/vtamp/compare/v0.2.0...v0.3.0
