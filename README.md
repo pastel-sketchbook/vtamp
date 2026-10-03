@@ -29,13 +29,16 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.3
+## What ships in v0.4
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
 - Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
+- Optional YouTube audio imports, with a per-import choice to download video up to 480p.
+- Terminal video on macOS with installed FFmpeg/FFprobe and Kitty or Sixel graphics: `w` switches video/cover, and `F` fills the current pane with elapsed / total time below. Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
+- Managed YouTube download deletion with confirmation; local originals and tracks in Queue or playback are protected.
 - Read-only audio spectrum with six rendering styles (bars, gradient, mono, mirror, dots, waterfall); press `v` to toggle and `V` to change the style.
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
@@ -48,9 +51,9 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Saved queue, playback position, volume, shuffle, and repeat settings.
 - A small, dependency-free [landing page](https://vtamp.told.me/) in English and [Korean](https://vtamp.told.me/ko/), with [source in `site/`](site/).
 
-macOS is the supported platform for playback. Linux ships as a headless server: each release attaches a prebuilt 64-bit ARM build, tested on Ubuntu 24.04, without device playback, relay, media keys, or radio. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
+macOS is the supported platform for playback. Linux ships as a headless server: each release attaches a prebuilt 64-bit ARM build, tested on Ubuntu 24.04, without device playback, relay, media keys, radio, or terminal video. Named playlists, EQ, crossfade, gapless playback, and login-time startup are not implemented.
 
-See the [changelog](CHANGELOG.md) for changes since v0.2.0 and upgrade notes.
+See the [changelog](CHANGELOG.md) for release changes and upgrade notes, and the [integration guide](docs/imports.md) for YouTube imports and terminal video.
 
 ## Install
 
