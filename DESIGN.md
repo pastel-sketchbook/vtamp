@@ -237,7 +237,7 @@ Reconnecting; paused live media reads LIVE · PAUSED. A stream carries no artwor
 to load, so the cover slot reads Live stream instead of the No album art label
 used for files. Seek keys explain that live radio cannot seek. The spectrum area
 shows an honest unavailable message and keeps its toggle preference, without
-simulated animation or an active subscription.
+simulated animation, an animation timer, or an active subscription.
 
 The a prompt accepts folders, URLs, and local M3U/PLS lists. A non-YouTube HTTP(S)
 URL opens a centered channel-name prompt using the shared grapheme editor and real

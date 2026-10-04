@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- Live radio with the spectrum shown no longer keeps the TUI redrawing 20 times
+  a second; the panel's unavailable notice now lets the animation timer sleep.
 - Exported tar entries retain source audio/video modification times, and the
   manifest uses its export creation time instead of displaying January 1, 1970.
 - Archive export, restore and dry-run now report stages, item counts and byte
