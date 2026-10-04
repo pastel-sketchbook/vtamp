@@ -8,7 +8,7 @@
 <meta property="og:type" content="website"><meta property="og:site_name" content="vtamp"><meta property="og:locale" content="ko_KR"><meta property="og:locale:alternate" content="en_US"><meta property="og:url" content="https://vtamp.told.me/ko/"><meta property="og:title" content="vtamp · 화면을 닫아도 재생이 멈추지 않는 터미널 음악 플레이어"><meta property="og:description" content="vtamp는 터미널 음악 플레이어입니다. 화면을 닫아도 백그라운드 서버가 재생을 이어 가고, 로컬 음악과 라이브 라디오를 한 큐에서 재생하며, 스크립트와 에이전트를 위한 JSON CLI를 제공합니다. Rust로 만들었고 macOS를 먼저 지원합니다."><meta property="og:image" content="https://vtamp.told.me/og-ko.png"><meta property="og:image:type" content="image/png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="vtamp: 화면을 닫아도 재생이 멈추지 않는 터미널 음악 플레이어. Homebrew 설치 명령 아래에 앨범 아트와 현재 곡이 보이는 터미널 스크린샷."><meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"vtamp","url":"https://vtamp.told.me/ko/","inLanguage":"ko","description":"vtamp는 터미널 음악 플레이어입니다. 화면을 닫아도 백그라운드 서버가 재생을 이어 가고, 로컬 음악과 라이브 라디오를 한 큐에서 재생하며, 스크립트와 에이전트를 위한 JSON CLI를 제공합니다. Rust로 만들었고 macOS를 먼저 지원합니다.","applicationCategory":"MultimediaApplication","operatingSystem":"macOS","softwareVersion":"0.4.1","license":"https://github.com/rath/vtamp/blob/main/LICENSE","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"image":"https://vtamp.told.me/og-ko.png","screenshot":"https://vtamp.told.me/screenshots/wide.png","downloadUrl":"https://github.com/rath/vtamp/releases/latest","installUrl":"https://vtamp.told.me/ko/#install","sameAs":["https://github.com/rath/vtamp"],"author":{"@type":"Person","name":"황장호","url":"https://xrath.com"}}</script>
 <link rel="icon" type="image/png" sizes="32x32" href="../favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="../favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png"><link rel="preload" href="../fonts/Pretendard-Regular.subset.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="../fonts/Pretendard-Medium.subset.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="../style.css">
-<script type="application/json" id="strings">{"pauseLabel":"자동 전환 멈추기","playLabel":"자동 전환 시작하기","pause":"일시정지","play":"재생","loading":"스크린샷을 아직 불러오는 중입니다. 잠시 후 다시 시도해 주세요.","unavailable":"스크린샷을 불러올 수 없습니다","unavailableReload":"스크린샷을 불러올 수 없습니다. 페이지를 새로 고쳐 주세요.","copied":"명령을 복사했습니다.","copyFallback":"직접 선택해 복사하세요: "}</script><script src="../app.js" defer></script>
+<script type="application/json" id="strings">{"pauseLabel":"자동 전환 멈추기","playLabel":"자동 전환 시작하기","pause":"일시정지","play":"재생","loading":"스크린샷을 아직 불러오는 중입니다. 잠시 후 다시 시도해 주세요.","unavailable":"스크린샷을 불러올 수 없습니다","unavailableReload":"스크린샷을 불러올 수 없습니다. 페이지를 새로 고쳐 주세요.","copied":"명령을 복사했습니다.","copyFallback":"직접 선택해 복사하세요: ","videoPauseLabel":"스펙트럼 영상 일시정지","videoPlayLabel":"스펙트럼 영상 재생"}</script><script src="../app.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -117,6 +117,19 @@ vtamp server start --remote /tmp/music-box.sock</code></pre>
   '&quot;#{=21:pane_title}&quot; #{vtamp}'</code></pre>
 <div class="tmux-example-foot"><span>TPM 또는 직접 불러오기</span><button type="button" class="copy-text" data-copy="set -g status-right '&quot;#{=21:pane_title}&quot; #{vtamp}'" aria-label="tmux 상태 형식 복사">상태 형식 복사</button></div>
 </div>
+</div>
+<div class="spectrum-feature" aria-labelledby="spectrum-heading">
+<div>
+<h3 id="spectrum-heading">열 가지 스타일의 스펙트럼</h3>
+<p><code>v</code>를 누르면 서버가 재생 중인 음악의 스펙트럼이 열립니다. 읽기 전용이며, <code>V</code>를 누를 때마다 bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks 순서로 스타일이 바뀝니다.</p>
+<p>모든 스타일은 테마 색을 그대로 씁니다. 오디오 분석은 스펙트럼이 보이는 동안에만 돌고, 재생을 일시정지하거나 멈추면 스펙트럼이 가라앉은 뒤 화면 갱신도 멈춥니다.</p>
+<a class="feature-guide" href="https://github.com/rath/vtamp#see-the-music">스펙트럼 스타일 모두 보기</a>
+</div>
+<figure class="spectrum-example">
+<video id="spectrum-video" width="1020" height="740" poster="../media/spectrum-styles.webp" preload="none" muted loop playsinline controls aria-label="스펙트럼 패널이 radial에서 fire, ridge, sparks로 바뀌는 녹화 영상"><source src="../media/spectrum-styles.mp4" type="video/mp4"></video>
+<button type="button" id="spectrum-toggle" aria-label="스펙트럼 영상 일시정지" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span>일시정지</span></button>
+<figcaption>radial, fire, ridge, sparks를 5초씩 담았습니다. Ghostty 100 × 25 셀, Nord 테마에서 소리 없이 녹화했습니다.</figcaption>
+</figure>
 </div>
 </section>
 <section id="commands" class="commands wrap" aria-labelledby="commands-heading">

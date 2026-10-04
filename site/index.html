@@ -8,7 +8,7 @@
 <meta property="og:type" content="website"><meta property="og:site_name" content="vtamp"><meta property="og:locale" content="en_US"><meta property="og:locale:alternate" content="ko_KR"><meta property="og:url" content="https://vtamp.told.me/"><meta property="og:title" content="vtamp · A music player for the terminal that keeps playing after you detach"><meta property="og:description" content="vtamp is a detachable terminal music player. Local music, a persistent server, and a CLI for people, scripts, and agents. Built with Rust. macOS first."><meta property="og:image" content="https://vtamp.told.me/og.png"><meta property="og:image:type" content="image/png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:alt" content="vtamp: a music player for the terminal that keeps playing after you detach. The Homebrew install command above a terminal screenshot with album art and the current track."><meta name="twitter:card" content="summary_large_image">
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"vtamp","url":"https://vtamp.told.me/","inLanguage":"en","description":"vtamp is a detachable terminal music player. Local music, a persistent server, and a CLI for people, scripts, and agents. Built with Rust. macOS first.","applicationCategory":"MultimediaApplication","operatingSystem":"macOS","softwareVersion":"0.4.1","license":"https://github.com/rath/vtamp/blob/main/LICENSE","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"image":"https://vtamp.told.me/og.png","screenshot":"https://vtamp.told.me/screenshots/wide.png","downloadUrl":"https://github.com/rath/vtamp/releases/latest","installUrl":"https://vtamp.told.me/#install","sameAs":["https://github.com/rath/vtamp"],"author":{"@type":"Person","name":"Jang-Ho Hwang","url":"https://xrath.com"}}</script>
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"><link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png"><link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"><link rel="preload" href="fonts/SpaceGrotesk.ttf" as="font" type="font/ttf" crossorigin><link rel="stylesheet" href="style.css">
-<script type="application/json" id="strings">{"pauseLabel":"Pause automatic slideshow","playLabel":"Start automatic slideshow","pause":"Pause","play":"Play","loading":"This screenshot is still loading. Please try again.","unavailable":"Screenshot unavailable","unavailableReload":"Screenshot unavailable. Please reload the page.","copied":"Command copied.","copyFallback":"Select and copy: "}</script><script src="app.js" defer></script>
+<script type="application/json" id="strings">{"pauseLabel":"Pause automatic slideshow","playLabel":"Start automatic slideshow","pause":"Pause","play":"Play","loading":"This screenshot is still loading. Please try again.","unavailable":"Screenshot unavailable","unavailableReload":"Screenshot unavailable. Please reload the page.","copied":"Command copied.","copyFallback":"Select and copy: ","videoPauseLabel":"Pause the spectrum recording","videoPlayLabel":"Play the spectrum recording"}</script><script src="app.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -117,6 +117,19 @@ vtamp server start --remote /tmp/music-box.sock</code></pre>
   '&quot;#{=21:pane_title}&quot; #{vtamp}'</code></pre>
 <div class="tmux-example-foot"><span>TPM or direct loading</span><button type="button" class="copy-text" data-copy="set -g status-right '&quot;#{=21:pane_title}&quot; #{vtamp}'" aria-label="Copy tmux status format">Copy status format</button></div>
 </div>
+</div>
+<div class="spectrum-feature" aria-labelledby="spectrum-heading">
+<div>
+<h3 id="spectrum-heading">A spectrum in ten styles.</h3>
+<p>Press <code>v</code> to show a read-only spectrum of what the server is playing, and <code>V</code> to switch between ten styles: bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, and sparks.</p>
+<p>Every style takes its colors from your theme. Audio is analyzed only while the spectrum is shown; when playback pauses or stops, it settles and stops redrawing.</p>
+<a class="feature-guide" href="https://github.com/rath/vtamp#see-the-music">See every spectrum style</a>
+</div>
+<figure class="spectrum-example">
+<video id="spectrum-video" width="1020" height="740" poster="media/spectrum-styles.webp" preload="none" muted loop playsinline controls aria-label="Recording of the spectrum panel switching from radial to fire, ridge, and sparks"><source src="media/spectrum-styles.mp4" type="video/mp4"></video>
+<button type="button" id="spectrum-toggle" aria-label="Pause the spectrum recording" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span>Pause</span></button>
+<figcaption>Radial, fire, ridge, and sparks, five seconds each. Recorded in Ghostty at 100 × 25 cells in the Nord theme, without sound.</figcaption>
+</figure>
 </div>
 </section>
 <section id="commands" class="commands wrap" aria-labelledby="commands-heading">

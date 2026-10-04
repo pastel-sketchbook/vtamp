@@ -83,6 +83,8 @@ The lifecycle section also introduces the optional tmux status-bar plugin with a
 
 A macOS feature row pairs Now Playing copy with a static F7/F8/F9 keyboard reference. These are labeled keys, not clickable playback controls. Match the neighboring tmux feature’s spacing and stack copy above the keys on mobile.
 
+A spectrum feature row follows the tmux row: copy names `v`, `V`, and the ten styles beside a 20-second recording of the spectrum panel (radial, fire, ridge, and sparks, five seconds each), captured from the real TUI in Ghostty at 100 × 25 cells in Nord and cropped to the panel, so it carries no album art; the file has no audio track. It downloads only when played (`preload="none"` with a WebP poster), plays muted and looped while at least a quarter of it is on screen, pauses offscreen or in a hidden tab, and never starts on its own under reduced motion. A Pause/Play button beside the caption controls it, and an explicit choice wins over automatic play; without JavaScript, the poster shows with native controls. Record it without tmux: a pane-sized tmux client throttles large frames.
+
 The CLI section introduces agent workflows in its existing two-column layout. Copyable examples show current-track JSON, field search, and a sleep timer; a compact response excerpt in the current protocol avoids a full queue dump. Link to the README for atomic-edit and retry details. Long commands wrap beside reachable copy buttons, including on mobile.
 
 ## Audio spectrum

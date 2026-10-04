@@ -84,6 +84,40 @@ async function loadSlide(index) {
 loadSlide(0).then(() => { loadSlide(1); loadSlide(2); });
 gallery.querySelector('.gallery-controls').hidden = false;
 renderRotation();
+// The spectrum recording plays muted while it is on screen. Reduced motion leaves it
+// paused until the visitor presses Play; the button always wins over automatic play.
+const recording = $('spectrum-video');
+if (recording) {
+  const toggle = $('spectrum-toggle');
+  let wanted = !reducedMotion.matches;
+  let onScreen = false;
+  const renderToggle = () => {
+    toggle.setAttribute('aria-label', wanted ? strings.videoPauseLabel : strings.videoPlayLabel);
+    toggle.querySelector('span').textContent = wanted ? strings.pause : strings.play;
+    toggle.querySelector('path').setAttribute('d', wanted ? 'M8 5v14M16 5v14' : 'm8 5 11 7-11 7Z');
+  };
+  const sync = () => {
+    if (wanted && onScreen && !document.hidden) {
+      // Autoplay can still be refused, for example in a low-power mode.
+      recording.play().catch(() => { wanted = false; renderToggle(); });
+    } else {
+      recording.pause();
+    }
+  };
+  recording.controls = false;
+  toggle.hidden = false;
+  toggle.addEventListener('click', () => { wanted = !wanted; renderToggle(); sync(); });
+  recording.querySelector('source').addEventListener('error', () => { toggle.hidden = true; });
+  reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { wanted = false; renderToggle(); sync(); } });
+  document.addEventListener('visibilitychange', sync);
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; sync(); }, { threshold: 0.25 }).observe(recording);
+  } else {
+    onScreen = true;
+    sync();
+  }
+  renderToggle();
+}
 let feedbackTimer;
 document.querySelectorAll('[data-copy]').forEach((button) => {
   button.addEventListener('click', async () => {

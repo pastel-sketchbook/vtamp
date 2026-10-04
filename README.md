@@ -981,7 +981,7 @@ To preview the landing page:
 python3 -m http.server 8765 --directory site
 ```
 
-Open `http://localhost:8765`, or `http://localhost:8765/ko/` for the Korean page. No build step or external network requests are needed. The hero cycles through actual Ghostty + tmux captures of vtamp in Catppuccin Mocha: a wide view, a compact Library, and a compact Queue. Select a layout or pause the slideshow; open an image at full resolution to inspect the terminal text and album art. Reduced-motion preferences disable automatic rotation.
+Open `http://localhost:8765`, or `http://localhost:8765/ko/` for the Korean page. No build step or external network requests are needed. The hero cycles through actual Ghostty + tmux captures of vtamp in Catppuccin Mocha: a wide view, a compact Library, and a compact Queue. Select a layout or pause the slideshow; open an image at full resolution to inspect the terminal text and album art. Reduced-motion preferences disable automatic rotation. Below the tmux row, a muted recording of the spectrum panel plays while it is on screen; with reduced motion it stays paused until you press Play.
 
 ### Refresh the screenshots
 
