@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Untagged to retain the existing on-disk and wire representation of files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -127,6 +127,7 @@ pub struct State {
     pub status: PlaybackStatus,
     pub position_ms: u64,
     pub volume: u8,
+    pub normalization: crate::loudness::Status,
     pub shuffle: bool,
     pub repeat: Repeat,
     pub revision: u64,
@@ -148,6 +149,7 @@ impl Default for State {
             status: PlaybackStatus::Stopped,
             position_ms: 0,
             volume: 70,
+            normalization: Default::default(),
             shuffle: false,
             repeat: Repeat::Off,
             revision: 0,
@@ -293,6 +295,9 @@ pub enum Command {
     Seek {
         milliseconds: i64,
         relative: bool,
+    },
+    Normalize {
+        enabled: Option<bool>,
     },
     Volume {
         value: Option<u8>,
@@ -603,6 +608,7 @@ impl State {
             "remaining_ms": duration_ms.map(|duration| duration.saturating_sub(self.position_ms)),
             "is_live": self.current().is_some_and(|item| item.track.is_live()),
             "stream_status": self.stream_status,
+            "normalization": self.normalization,
             "volume": self.volume, "shuffle": self.shuffle, "repeat": self.repeat,
             "queue_length": self.queue.len(), "revision": self.revision,
             "current_in_queue": self.current_index().is_some(),

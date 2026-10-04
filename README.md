@@ -124,6 +124,48 @@ vtamp play '/path/to/first.m4a' '/path/to/second.flac'
 
 The first-run volume is 70% of system output. `vtamp volume 35` sets the player to 35%; it does not change the system volume.
 
+## Loudness normalization
+
+File playback automatically matches songs to **−18 LUFS** while preserving each
+song's dynamics and your 0–100 volume setting. A single background worker measures
+existing Library files, queued/direct files, and newly imported music. Playback
+never waits for a measurement: an unanalyzed file plays unchanged, and its result
+is used the next time that file starts. Pause, resume, seeking, and output-device
+recovery retain the gain selected at playback start.
+
+```sh
+vtamp normalize                 # preference, analysis progress, current file gain
+vtamp normalize off             # saved; takes effect on next playback
+vtamp normalize on --json
+```
+
+Normalization starts enabled, including for existing installations. Turning it off
+cancels background analysis; turning it back on resumes pending work. Queries do
+not start a server. `status` and `now` also include `normalization`. The preference
+belongs to the playback server and is shared by attached clients; no TUI shortcut
+is required. Setting changes also take effect on the next playback, so they never
+change the volume of an already playing song.
+
+The analyzer measures integrated loudness and true peak with the same decoder used
+for playback, without requiring FFmpeg. It limits gain to keep the measured source
+below **−1 dBTP** and caps amplification at **+12 dB**. A song with large peaks can
+therefore remain quieter than the target. This is a constant gain, not a compressor
+or a limiter; no samples, file tags, or original music files are rewritten.
+Mono is measured as dual mono to match playback through both front channels.
+Radio, unknown multichannel layouts, silence, and files too short to measure play
+unchanged. Resampling and lossy cast encoding can change reconstructed peaks, so
+the source peak margin is not a guarantee about every listener's final output.
+
+Measurements are cached in `state.db` by canonical path, size, modification time,
+and analyzer version. Changed files are reanalyzed when scanned or selected for
+playback. Failures do not stop music; inspect `normalize` and `server.log`, then
+retry with `library scan` or at the next server start. Library archives omit this
+local cache and rebuild it after import.
+
+Device playback and headless casts apply the same file gain before listener
+volume. Relays receive the corrected cast and do not normalize it a second time.
+A cast remains independent of the server's volume setting, including mute.
+
 ## Live radio
 
 Register a channel using its stable HTTP(S) URL and a name:
@@ -539,6 +581,7 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `next`, `prev` | Move to the next or previous track |
 | `seek 90`, `seek +10`, `seek -10` | Absolute or relative seconds; decimals supported |
 | `volume [0..100]` | Read or set volume |
+| `normalize [on\|off]` | Read or set file loudness normalization; changes apply on next playback |
 | `shuffle on\|off` | Shuffle without repeating entries within a traversal |
 | `repeat off\|one\|all` | Repeat mode; repeat-one affects natural endings, not manual skipping |
 | `queue list [--offset N] [--limit N]` | List queue entries; optional pagination includes a queue revision |
@@ -656,21 +699,21 @@ vtamp watch --json
 Every JSON response has a protocol version and `ok`. Successful responses have `data`; failures have an error code and message. Times are integer milliseconds, volume is an integer from 0 to 100, and playback status is `playing`, `paused`, or `stopped`.
 
 ```json
-{"version":10,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
+{"version":11,"ok":true,"data":{"scanning":true,"job_id":"SCAN_JOB_ID"}}
 ```
 
 ```json
-{"version":10,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
+{"version":11,"ok":false,"error":{"code":"server_unavailable","message":"Cannot connect to vtamp…"}}
 ```
 
-`status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
+`status` returns `queue`, `current_id`, `status`, `position_ms`, `volume`, `normalization`, `shuffle`, `repeat`, `revision`, `queue_revision`, `play_next`, `scheduled_stop`, `scanning`, and `last_error`. Each queue entry contains `id` and `track`; each track includes its library ID, path, title, artist, album, track number, duration, and optional local cover path. `current_id` identifies a **queue entry**, not a library track. It is null before a current entry is selected. A stopped player may still have a selected entry.
 
 `library list` and `library search` return `{ "tracks": [...], "total": N, "offset": N }`. The default query page is bounded; use `--offset` to retrieve subsequent pages.
 
 `watch --json` emits one response envelope per line (NDJSON), starting with a `state` event. Later events are `state`, `progress`, `library_changed`, `scan_completed`, and `shutdown`:
 
 ```json
-{"version":10,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
+{"version":11,"ok":true,"data":{"event":"progress","data":{"position_ms":102000,"revision":7}}}
 ```
 
 State events contain the full state; progress events update position for their matching state revision. Heartbeats occur about once a second, including while paused. A slow subscriber gets a fresh state after event-buffer lag. `Ctrl+C` stops watching without stopping playback.
@@ -820,12 +863,12 @@ and `queue_item_id`, or `kind: "deadline"` and `deadline_ms` (Unix milliseconds)
 
 ### Updating from older protocol versions
 
-This build uses **protocol 10** and migrates the library to **database version 6**
+This build uses **protocol 11** and migrates the library to **database version 7**
 when the new server starts. Stop an older running server using its matching old
 binary before starting the new binary, then reattach TUIs. Restart restores the
 selected track paused and clears stop reservations. Track IDs, queue entries,
 position, volume, and play-next entries are preserved. Binaries that do not
-support database version 6 cannot open the migrated database.
+support database version 7 cannot open the migrated database.
 
 Optional native radio verification uses an isolated, muted server and generated
 silence, including HTTP redirects, token renewal, deliberate network failure,

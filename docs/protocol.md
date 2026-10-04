@@ -1,4 +1,4 @@
-# Local protocol, version 10
+# Local protocol, version 11
 
 The CLI is the recommended automation interface. These details are for contributors building another local client.
 
@@ -7,13 +7,13 @@ The CLI is the recommended automation interface. These details are for contribut
 Connect to the per-user Unix socket printed by `vtamp doctor --json`. Send a four-byte unsigned **big-endian** byte count, followed by that many bytes of UTF-8 JSON. The limit is 16 MiB in either direction. A normal connection handles one request and one reply, then closes. Request reads and reply writes have deadlines; an idle or slow client cannot block playback.
 
 ```json
-{"version":10,"request":{"command":"pause"}}
+{"version":11,"request":{"command":"pause"}}
 ```
 
 The `Command`, `Request`, `Reply`, `State`, and `Event` types in `src/model.rs` are the source of truth for field names. Commands are internally tagged with `command` in snake_case. Paths supplied by clients must be absolute; the CLI resolves relative paths before sending them. The server's working directory is not the invoking shell's directory.
 
 ```json
-{"version":10,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
+{"version":11,"ok":false,"error":{"code":"version_mismatch","message":"Client and server protocol versions differ; restart the server with this binary"}}
 ```
 
 A version mismatch is rejected before dispatch. There is no TCP listener and no network discovery. Socket permissions restrict clients to the same OS user.
@@ -47,14 +47,14 @@ At most four direct imports and one catalog scan run at a time. There are bounde
 
 ## Watch
 
-Send `{"version":10,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
+Send `{"version":11,"request":{"command":"watch"}}`. The first reply contains the current `State`. Keep the connection open. Subsequent frames contain success envelopes whose `data` is an `Event`:
 
 ```json
-{"version":10,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
+{"version":11,"ok":true,"data":{"event":"state","data":{"queue":[],"current_id":null,"direct":null,"queue_cursor":null,"status":"stopped","position_ms":0,"volume":70,"normalization":{"enabled":true,"target_lufs":-18.0,"ready":0,"pending":0,"failed":0,"unmeasurable":0,"applied_gain_db":null},"shuffle":false,"repeat":"off","revision":0,"queue_revision":0,"play_next":[],"scheduled_stop":null,"scanning":false,"last_error":null,"stream_status":null}}}
 ```
 
 ```json
-{"version":10,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
+{"version":11,"ok":true,"data":{"event":"progress","data":{"position_ms":1000,"revision":7}}}
 ```
 
 `library_changed` and `shutdown` have no data payload. Watch subscriptions are established before the initial snapshot is taken. A client should ignore queued state events with revisions lower than its most recent snapshot and progress events whose revision does not match its current state. On event-buffer lag, the server obtains and emits a new snapshot. Reconnect after a dropped stream and replace local state from the new snapshot; never infer the server's lifetime from one UI connection.
@@ -63,7 +63,7 @@ The CLI's NDJSON watch output normalizes the first snapshot into a `state` event
 
 ## Spectrum subscription
 
-Send `{"version":10,"request":{"command":"spectrum_watch"}}` on a separate
+Send `{"version":11,"request":{"command":"spectrum_watch"}}` on a separate
 connection. The first and subsequent replies contain a `SpectrumFrame` directly
 in `data`, not a `State` or `Event`. Fields are `generation`, nullable `current_id`,
 `active`, `low_hz`, `high_hz`, and `levels` (32 finite values in 0–1). An initial
@@ -241,11 +241,11 @@ rules: one per track start, seek, and resume, silence while paused or after a
 track ends, an end-of-stream page on stop. Radio playback is not cast. Without
 `--cast` a device server has no cast at all.
 
-Send `{"version":10,"request":{"command":"cast_watch"}}` on a separate connection.
+Send `{"version":11,"request":{"command":"cast_watch"}}` on a separate connection.
 The first reply is a success envelope whose `data` is a `CastInfo`:
 
 ```json
-{"version":10,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
+{"version":11,"ok":true,"data":{"available":true,"codec":"opus","container":"ogg","bitrate":128000,"sample_rate":48000,"channels":2,"listeners":1}}
 ```
 
 After that reply the connection carries raw Ogg pages without length prefixes,
@@ -318,10 +318,51 @@ the relay machine send their commands to the remote server. A lost local output
 device, or audio that cannot be played, makes the relay rejoin the live cast
 instead of rewinding it.
 
+## File loudness normalization (version 11)
+
+`normalize` accepts optional nullable `enabled`. Omitted/null reads the preference,
+progress, and selected file gain without starting a server or writing state. A bool
+persists the preference and increments the state revision, not the queue revision.
+Both forms return `{normalization: ..., applies_to: "next_playback"}`. The CLI is
+`vtamp normalize [on|off]`, with `--json` supported. Relays forward it unchanged.
+
+`State` and `now` include `normalization` with `enabled` (default true),
+`target_lufs` (−18), `ready`, `pending`, `failed`, `unmeasurable`, and nullable
+`applied_gain_db`. Counts cover distinct local paths in the catalog, queue, and
+direct selection; radio is excluded. Pending includes an active measurement and
+remains visible when analysis is disabled. `applied_gain_db` is null for stopped
+playback/radio and zero for uncorrected file playback. It describes the current
+playback, even if the preference has since changed. Restoring a session resets
+transient counts/gain and rebuilds them from the cache; the preference persists.
+Analysis progress emits ordinary state events and never changes queue revisions.
+
+A single cancellable worker decodes and measures complete files outside playback
+control and output callbacks. The server alone commits results. Measurements use
+EBU R128 integrated loudness and true peak with bounded histogram memory, native
+playback decoders, and dual-mono weighting for mono files. Unknown multichannel
+layouts, silence, and too-short signals are unmeasurable and remain unmodified.
+Gain in dB is `min(-18 - integrated_lufs, -1 - true_peak_dbtp, 12)`. This constrains
+the measured source, not any later resampling or lossy encoding at the listener.
+
+The engine fixes gain at each new playback start; new results and preference
+changes wait until the next start. Seeking, pause/resume and device recovery do
+not recalculate it. Gain precedes the device/cast split and listener volume;
+headless casts carry it too. Remote cast playback never applies file gain again.
+The earlier "full scale" cast contract means independent of listener volume,
+not exclusion of per-file loudness correction. Radio is unchanged.
+
+Database 7 transactionally adds `loudness(path PRIMARY KEY, json)` without changing
+existing identities or session data. JSON stores file size, nanosecond mtime,
+analyzer version, optional measurement and optional failure. Recheck the fingerprint
+before publishing and using a result. Failed files retry on an explicit library
+scan or server restart; changed fingerprints invalidate both success and failure.
+The cache is not part of Library archives. Analysis does not write source tags.
+
 ## Compatibility and storage
 
-All envelopes advertise protocol 10. Protocol 10 adds local archive restoration
-and job status commands without changing database version 6. Protocol 9 added
+All envelopes advertise protocol 11. Protocol 11 adds file loudness normalization
+and database version 7 (a separate measurement cache). Protocol 10 added local
+archive restoration and job status commands without changing database version 6. Protocol 9 added
 opt-in video imports and video
 outcomes in import reports; the database version stays 6. Protocol 8 added
 `library_delete` for managed YouTube downloads. Protocol 7 added `cast_watch` and
@@ -344,7 +385,7 @@ Archive operations are local and do not require yt-dlp or an LLM. Video archives
 require FFmpeg and FFprobe as described below. The CLI performs `library export FILE` and `library import FILE --dry-run`
 using SQLite's backup API from a read-only connection into a temporary snapshot.
 They never create/migrate the live DB or start a server. An absent DB is an empty
-Library; existing databases must be version 6.
+Library; existing databases may be version 6 or 7.
 
 | Command | Fields | Result |
 | --- | --- | --- |
@@ -382,7 +423,7 @@ CLI progress goes to stderr even with `--json`, preserving the single final
 stdout response. Terminal output refreshes one bounded line; redirected output
 records stage changes/completions and at most one intermediate update every five
 seconds.
-Archive format 1, protocol 10, and database version 6 are unchanged.
+Archive format 1 is unchanged; normalization measurements are not exported.
 
 One restore runs at a time. Concurrent catalog scans, direct-file imports,
 YouTube work (including metadata tasks), or cover refresh prevent admission with

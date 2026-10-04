@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Automatic per-file loudness normalization to −18 LUFS, with true-peak headroom
+  and bounded amplification. Background measurements are cached without modifying
+  music; playback never waits and new results apply on the next playback.
+- `normalize [on|off]` reads or saves the server preference, analysis progress and
+  current gain. Device playback and casts share the correction; relays do not
+  apply it twice. Radio remains unchanged. Protocol 11 and database 7 preserve
+  existing Library identities, queues, and session settings.
+
 ## [0.4.1] — 2026-10-04
 
 Changes since v0.4.0. The Library exports to a portable archive of playable

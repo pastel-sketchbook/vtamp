@@ -26,7 +26,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(5))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             bail!("Database was created by a newer vtamp; please upgrade");
         }
         if version == 0 {
@@ -84,6 +84,14 @@ impl Store {
                 PRAGMA user_version = 6;
                 COMMIT;")?;
         }
+        if version < 7 {
+            db.execute_batch(
+                "BEGIN;
+                CREATE TABLE loudness (path TEXT PRIMARY KEY, json TEXT NOT NULL);
+                PRAGMA user_version = 7;
+                COMMIT;",
+            )?;
+        }
         Ok(Self { db })
     }
     pub fn restore(&self) -> Result<State> {
@@ -101,6 +109,10 @@ impl Store {
         } else {
             PlaybackStatus::Stopped
         };
+        state.normalization = crate::loudness::Status {
+            enabled: state.normalization.enabled,
+            ..Default::default()
+        };
         state.scanning = false;
         state.scheduled_stop = None;
         state.stream_status = None;
@@ -112,6 +124,25 @@ impl Store {
     }
     pub fn save(&self, state: &State) -> Result<()> {
         self.db.execute("INSERT INTO session(id,json) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json", [serde_json::to_string(state)?])?;
+        Ok(())
+    }
+    pub(crate) fn loudness(&self) -> Result<crate::loudness::Cache> {
+        let mut query = self.db.prepare("SELECT path,json FROM loudness")?;
+        query
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .map(|row| {
+                let (path, json) = row?;
+                Ok((PathBuf::from(path), serde_json::from_str(&json)?))
+            })
+            .collect()
+    }
+    pub(crate) fn save_loudness(
+        &self,
+        path: &Path,
+        analysis: &crate::loudness::Analysis,
+    ) -> Result<()> {
+        self.db.execute("INSERT INTO loudness(path,json) VALUES(?1,?2) ON CONFLICT(path) DO UPDATE SET json=excluded.json",
+            params![path.to_string_lossy(), serde_json::to_string(analysis)?])?;
         Ok(())
     }
     pub fn roots(&self) -> Result<Vec<PathBuf>> {
@@ -482,6 +513,69 @@ mod tests {
     use super::*;
     use crate::model::QueueItem;
     #[test]
+    fn version_six_migration_preserves_session_ids_and_persists_loudness() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .replace_catalog(&[record("stable", "Song", "Artist", "Album")])
+            .unwrap();
+        let item = QueueItem::new(store.track("stable").unwrap().unwrap());
+        let original = State {
+            current_id: Some(item.id.clone()),
+            queue: vec![item],
+            position_ms: 125,
+            ..Default::default()
+        };
+        let mut old = serde_json::to_value(&original).unwrap();
+        old.as_object_mut().unwrap().remove("normalization");
+        old["volume"] = serde_json::json!(42);
+        store
+            .db
+            .execute(
+                "INSERT INTO session(id,json) VALUES(1,?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        store
+            .db
+            .execute_batch("DROP TABLE loudness; PRAGMA user_version = 6;")
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let mut state = store.restore().unwrap();
+        assert_eq!(state.volume, 42);
+        assert_eq!(state.current_id, original.current_id);
+        assert_eq!(state.queue[0].id, original.queue[0].id);
+        assert_eq!(state.queue[0].track.id, "stable");
+        assert_eq!(state.position_ms, 125);
+        assert!(state.normalization.enabled);
+        assert!(store.loudness().unwrap().is_empty());
+        let audio = dir.path().join("tone.wav");
+        crate::loudness::write_tone(&audio, 0.1, 2);
+        let analysis = crate::loudness::analyze_file(
+            &audio,
+            crate::loudness::Fingerprint::read(&audio).unwrap(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        store.save_loudness(&audio, &analysis).unwrap();
+        state.normalization.enabled = false;
+        store.save(&state).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert!(!store.restore().unwrap().normalization.enabled);
+        assert!(store.loudness().unwrap()[&audio].matches(&audio));
+        assert_eq!(
+            store
+                .db
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
     fn stream_registration_survives_scans_and_uses_unified_paging() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("state.db")).unwrap();
@@ -560,7 +654,7 @@ mod tests {
         store.save(&state).unwrap();
         store
             .db
-            .execute_batch("DROP VIEW catalog; DROP TABLE streams; PRAGMA user_version=5;")
+            .execute_batch("DROP VIEW catalog; DROP TABLE streams; DROP TABLE loudness; PRAGMA user_version=5;")
             .unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();
@@ -601,7 +695,9 @@ mod tests {
                 ],
             )
             .unwrap();
-        db.db.pragma_update(None, "user_version", 4).unwrap();
+        db.db
+            .execute_batch("DROP TABLE loudness; PRAGMA user_version=4;")
+            .unwrap();
         drop(db);
         let db = Store::open(&path).unwrap();
         let replay = db.replay("receipt", "payload", 500).unwrap().unwrap();
@@ -750,7 +846,7 @@ mod tests {
                 .db
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            6
+            7
         );
         let filter = SearchFilter {
             exclude: vec!["LIVE".into()],

@@ -129,11 +129,12 @@ The documents above hold the full contracts; these are the most common regressio
 - Queue entry IDs are not library track IDs, and direct `--no-queue` IDs are
   neither. Never silently deduplicate a queue. Shuffle changes playback order, not
   visible order. Repeat-one applies only to natural endings.
-- The protocol version is 10 and the database version is 6. A schema change needs
+- The protocol version is 11 and the database version is 7. A schema change needs
   a transactional, ID-preserving migration, a version bump, and a `docs/protocol.md`
   update.
 - Casts (headless servers, and device servers started with `--cast`) carry
-  full-scale audio; volume is a listener setting. Every load, seek, and resume
+  audio with file loudness correction applied once; volume is a listener setting.
+  Every load, seek, and resume
   begins a new logical Ogg stream, a pause fills the open stream with silence,
   and only a stop ends it. The device tap only copies samples into a lock-free
   queue; encoding runs on its own thread, and no cast path waits on sockets. A

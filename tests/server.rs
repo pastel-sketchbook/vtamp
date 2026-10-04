@@ -720,6 +720,13 @@ fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
     );
     assert_eq!(relay.ok(&["server", "start"])["mode"], "relay");
 
+    // Normalization belongs to the source server, never to the relay's output.
+    assert_eq!(
+        relay.ok(&["normalize", "off"])["normalization"]["enabled"],
+        false
+    );
+    assert_eq!(remote.ok(&["normalize"])["normalization"]["enabled"], false);
+    relay.ok(&["normalize", "on"]);
     // Commands and state pass through to the remote server.
     let wav = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stereo.wav");
     let state = relay.ok(&["play", wav]);
@@ -896,4 +903,96 @@ fn http_cast_serves_the_token_path_and_rejects_others() {
     drop(listener);
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(server.ok(&["cast", "status"])["listeners"], 0);
+}
+
+#[test]
+fn normalization_is_automatic_persistent_and_only_changes_on_next_playback() {
+    let server = Server::new();
+    assert!(!server.cmd(&["normalize"]).status.success());
+    assert!(
+        !server.socket().exists(),
+        "normalization query must not start a server"
+    );
+    assert!(!server.home.path().join("state.db").exists());
+    server.ok(&["server", "start", "--headless"]);
+    server.ok(&["volume", "0"]);
+    assert_eq!(server.ok(&["normalize"])["normalization"]["enabled"], true);
+    server.ok(&["normalize", "off"]);
+    // Generate our own long stereo sine; the user's music and output are never touched.
+    let path = server.home.path().join("tone.wav");
+    let frames = 48000u32 * 30;
+    let size = frames * 4;
+    let mut bytes = Vec::with_capacity(size as usize + 44);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(size + 36).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    for v in [1u16, 2] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [48000u32, 192000] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [4u16, 16] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&size.to_le_bytes());
+    for i in 0..frames {
+        let value = ((i as f64 * 1000.0 * std::f64::consts::TAU / 48000.0).sin() * 16383.0) as i16;
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    std::fs::write(&path, &bytes).unwrap();
+    let path_arg = path.to_str().unwrap();
+    let first = server.ok(&["play", "--no-queue", path_arg]);
+    assert_eq!(first["normalization"]["applied_gain_db"], 0.0);
+    let enabled = server.ok(&["normalize", "on"]);
+    assert_eq!(enabled["applies_to"], "next_playback");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let state = server.ok(&["normalize"]);
+        if state["normalization"]["ready"] == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "analysis did not finish: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(server.ok(&["now"])["normalization"]["applied_gain_db"], 0.0);
+    server.ok(&["pause"]);
+    server.ok(&["seek", "1"]);
+    server.ok(&["resume"]);
+    assert_eq!(
+        server.ok(&["status"])["normalization"]["applied_gain_db"],
+        0.0
+    );
+    let corrected = server.ok(&["play", "--no-queue", path_arg]);
+    let gain = corrected["normalization"]["applied_gain_db"]
+        .as_f64()
+        .unwrap();
+    assert!(gain < -10.0 && gain > -14.0, "{gain}");
+    server.ok(&["normalize", "off"]);
+    assert_eq!(
+        server.ok(&["now"])["normalization"]["applied_gain_db"],
+        gain
+    );
+    let uncorrected = server.ok(&["play", "--no-queue", path_arg]);
+    assert_eq!(uncorrected["normalization"]["applied_gain_db"], 0.0);
+    let current = uncorrected["current_id"].clone();
+    server.ok(&["server", "stop"]);
+    server.wait_stopped();
+    server.ok(&["server", "start", "--headless"]);
+    let restored = server.ok(&["status"]);
+    assert_eq!(restored["normalization"]["enabled"], false);
+    assert_eq!(restored["current_id"], current);
+    assert_eq!(restored["volume"], 0);
+    assert_eq!(restored["status"], "paused");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "analysis never modifies original files"
+    );
 }

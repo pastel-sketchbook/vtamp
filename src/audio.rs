@@ -71,6 +71,8 @@ pub trait PlaybackBackend: Send {
     fn stream_update(&mut self) -> Option<StreamUpdate> {
         None
     }
+    /// File gain selected by the engine; independent of listener volume.
+    fn normalization(&mut self, _gain_db: f64) {}
     fn pause(&mut self);
     fn resume(&mut self) -> Result<()>;
     fn stop(&mut self);
@@ -103,6 +105,9 @@ impl PlaybackBackend for Box<dyn PlaybackBackend> {
     }
     fn stream_update(&mut self) -> Option<StreamUpdate> {
         (**self).stream_update()
+    }
+    fn normalization(&mut self, gain_db: f64) {
+        (**self).normalization(gain_db)
     }
     fn pause(&mut self) {
         (**self).pause()
@@ -169,6 +174,7 @@ pub struct RodioBackend {
     progress: ProgressWatch,
     path: Option<PathBuf>,
     volume: u8,
+    normalization_db: f64,
     paused: bool,
     position_offset_ms: u64,
     error: Arc<AtomicBool>,
@@ -384,13 +390,20 @@ impl PlaybackBackend for RodioBackend {
             // decoder thread running for a paused selection or restored session.
             self.stop();
         } else {
-            self.start(source, volume, Some((path, position_ms)))?;
+            self.start(
+                crate::loudness::apply(source, self.normalization_db),
+                volume,
+                Some((path, position_ms)),
+            )?;
         }
         self.path = Some(path.to_owned());
         self.volume = volume;
         self.paused = paused;
         self.position_offset_ms = position_ms;
         Ok(())
+    }
+    fn normalization(&mut self, gain_db: f64) {
+        self.normalization_db = gain_db;
     }
     fn pause(&mut self) {
         #[cfg(target_os = "macos")]

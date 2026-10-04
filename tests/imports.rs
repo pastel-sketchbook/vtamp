@@ -1,4 +1,6 @@
 //! Isolated process tests with fake download tools; no network, cookies or audio device.
+mod support;
+
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -672,7 +674,7 @@ fn adding_video_to_existing_audio_preserves_identity_overrides_and_queue() {
     assert_eq!(result["job"]["updated"], 1);
     assert_eq!(result["items"][0]["track_id"], id);
     assert_eq!(result["items"][0]["status"], "updated");
-    assert_eq!(h.ok(&["status"]), before);
+    support::assert_playback_unchanged(before.clone(), h.ok(&["status"]));
     assert_eq!(audio.metadata().unwrap().ino(), inode);
     assert_eq!(fs::read(&audio).unwrap(), bytes);
     let track = h.ok(&["library", "track", id]);

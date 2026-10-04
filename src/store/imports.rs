@@ -401,7 +401,7 @@ mod tests {
         original
             .db
             .execute_batch(
-                "ALTER TABLE track_metadata DROP COLUMN album_override; PRAGMA user_version=3;",
+                "ALTER TABLE track_metadata DROP COLUMN album_override; DROP TABLE loudness; PRAGMA user_version=3;",
             )
             .unwrap();
         drop(original);
@@ -446,7 +446,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        original.db.execute_batch("DROP TABLE import_jobs; DROP TABLE import_items; DROP TABLE track_metadata; PRAGMA user_version=2;").unwrap();
+        original.db.execute_batch("DROP TABLE import_jobs; DROP TABLE import_items; DROP TABLE track_metadata; DROP TABLE loudness; PRAGMA user_version=2;").unwrap();
         drop(original);
         let mut store = Store::open(&path).unwrap();
         assert_eq!(store.restore().unwrap().volume, 37);

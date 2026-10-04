@@ -13,6 +13,8 @@ const OUTPUT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Engine<B: PlaybackBackend> {
     pub state: State,
+    pub(crate) loudness: crate::loudness::Cache,
+    pub(crate) normalization_selection: u64,
     backend: B,
     loaded: bool,
     upcoming: VecDeque<String>,
@@ -46,6 +48,8 @@ impl<B: PlaybackBackend> Engine<B> {
         let mut engine = Self {
             queue_snapshot: QueueSnapshot::new(&state),
             state,
+            loudness: Default::default(),
+            normalization_selection: 0,
             backend,
             loaded: false,
             upcoming: VecDeque::new(),
@@ -56,6 +60,21 @@ impl<B: PlaybackBackend> Engine<B> {
             engine.refill_shuffle();
         }
         engine
+    }
+    fn select_normalization(&mut self, item: &QueueItem) {
+        self.normalization_selection = self.normalization_selection.wrapping_add(1);
+        let db = item.track.playback.file().map(|path| {
+            if self.state.normalization.enabled {
+                self.loudness
+                    .get(path)
+                    .filter(|a| a.matches(path))
+                    .map_or(0.0, crate::loudness::Analysis::gain_db)
+            } else {
+                0.0
+            }
+        });
+        self.state.normalization.applied_gain_db = db;
+        self.backend.normalization(db.unwrap_or(0.0));
     }
     pub fn add(&mut self, tracks: Vec<Track>) -> Result<Option<String>> {
         self.add_with_rng(tracks, &mut rand::rng())
@@ -121,6 +140,7 @@ impl<B: PlaybackBackend> Engine<B> {
     fn load_direct(&mut self, item: Box<QueueItem>, position: u64, paused: bool) -> Result<()> {
         let live = item.track.is_live();
         let position = if live { 0 } else { position };
+        self.select_normalization(&item);
         self.backend.announce(&item);
         let result =
             self.backend
@@ -296,6 +316,11 @@ impl<B: PlaybackBackend> Engine<B> {
                 }
                 self.state.position_ms = target;
             }
+            Command::Normalize {
+                enabled: Some(enabled),
+            } => {
+                self.state.normalization.enabled = *enabled;
+            }
             Command::Volume { value: Some(value) } => {
                 if *value > 100 {
                     bail!("Volume must be between 0 and 100");
@@ -423,6 +448,7 @@ impl<B: PlaybackBackend> Engine<B> {
         Ok(())
     }
     pub fn stop(&mut self) {
+        self.state.normalization.applied_gain_db = None;
         self.state.stream_status = None;
         self.state.scheduled_stop = None;
         self.output_retry = None;
@@ -449,6 +475,8 @@ impl<B: PlaybackBackend> Engine<B> {
         let mut last_error = None;
         // Every candidate is attempted at most once, even with repeat-all enabled.
         for (attempt, candidate) in candidates.into_iter().enumerate() {
+            let selected = self.state.queue[candidate].clone();
+            self.select_normalization(&selected);
             let item = &self.state.queue[candidate];
             let position = if attempt == 0 && !item.track.is_live() {
                 position_ms
@@ -718,8 +746,12 @@ mod tests {
         output_event: Option<String>,
         unavailable: bool,
         last_load: Option<(String, u64, u8, bool)>,
+        normalization_db: f64,
     }
     impl PlaybackBackend for Fake {
+        fn normalization(&mut self, db: f64) {
+            self.normalization_db = db;
+        }
         fn load_source(
             &mut self,
             source: &PlaybackSource,
@@ -825,6 +857,66 @@ mod tests {
         }
         .track()
     }
+    #[test]
+    fn normalization_is_fixed_until_next_playback_and_survives_output_recovery() {
+        use crate::loudness::{Analysis, Fingerprint, Measurement};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        crate::loudness::write_tone(&path, 0.5, 2);
+        let mut t = track("tone");
+        t.playback = PlaybackSource::File { path: path.clone() };
+        let mut e = Engine::new(State::default(), Fake::default());
+        e.play_direct(t.clone()).unwrap();
+        assert_eq!(e.backend.normalization_db, 0.0);
+        e.loudness.insert(
+            path.clone(),
+            Analysis {
+                fingerprint: Fingerprint::read(&path).unwrap(),
+                measurement: Some(Measurement {
+                    integrated_lufs: -9.0,
+                    true_peak_dbtp: -0.1,
+                }),
+                error: None,
+            },
+        );
+        e.apply(&Command::Pause).unwrap();
+        e.apply(&Command::Resume).unwrap();
+        e.apply(&Command::Seek {
+            milliseconds: 100,
+            relative: false,
+        })
+        .unwrap();
+        assert_eq!(e.backend.normalization_db, 0.0);
+        e.play_direct(t.clone()).unwrap();
+        assert_eq!(e.backend.normalization_db, -9.0);
+        e.apply(&Command::Volume { value: Some(36) }).unwrap();
+        assert_eq!(e.state.volume, 36);
+        e.apply(&Command::Normalize {
+            enabled: Some(false),
+        })
+        .unwrap();
+        assert_eq!(e.backend.normalization_db, -9.0);
+        e.backend.output_event = Some("device changed".into());
+        e.tick();
+        assert_eq!(e.backend.normalization_db, -9.0);
+        assert_eq!(e.state.normalization.applied_gain_db, Some(-9.0));
+        e.play_direct(t.clone()).unwrap();
+        assert_eq!(e.backend.normalization_db, 0.0);
+        e.apply(&Command::Normalize {
+            enabled: Some(true),
+        })
+        .unwrap();
+        e.play_direct(t.clone()).unwrap();
+        assert_eq!(e.backend.normalization_db, -9.0);
+        // The cache is valid only for the exact file analyzed.
+        crate::loudness::write_tone(&path, 0.2, 3);
+        e.play_direct(t).unwrap();
+        assert_eq!(e.backend.normalization_db, 0.0);
+        e.play_direct(radio_track()).unwrap();
+        assert_eq!(e.state.normalization.applied_gain_db, None);
+        assert_eq!(e.backend.normalization_db, 0.0);
+    }
+
     #[test]
     fn live_disconnects_never_advance_and_failures_remain_selected() {
         let mut e = engine();

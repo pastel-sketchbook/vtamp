@@ -1,4 +1,6 @@
 //! Archive CLI/server integration, using private muted headless instances only.
+mod support;
+
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -144,7 +146,7 @@ fn archive_cli_restores_without_tools_preserves_playback_and_survives_restart() 
     // A catalog mutation cannot race the worker's snapshot/publication.
     let scan = target.request(json!({"command":"library_scan"}));
     assert_eq!(scan["error"]["code"], "library_busy");
-    assert_eq!(target.ok(&["status"]), before);
+    support::assert_playback_unchanged(before.clone(), target.ok(&["status"]));
     let mut completed = false;
     for _ in 0..200 {
         let status = target.ok(&["library", "archive-status", job]);
@@ -159,7 +161,7 @@ fn archive_cli_restores_without_tools_preserves_playback_and_survives_restart() 
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(completed);
-    assert_eq!(target.ok(&["status"]), before);
+    support::assert_playback_unchanged(before.clone(), target.ok(&["status"]));
     assert_eq!(target.ok(&["library", "list"])["total"], 3);
     let repeat = target.ok(&["library", "import", archive.to_str().unwrap()]);
     assert_eq!(repeat["added"], 0);

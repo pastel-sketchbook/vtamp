@@ -1,6 +1,7 @@
 mod archive;
 mod covers;
 mod imports;
+mod loudness;
 #[cfg(target_os = "macos")]
 use crate::audio::RodioBackend;
 use crate::{
@@ -495,6 +496,7 @@ fn worker(
     let mut youtube = imports::Runtime::new(&store)?;
     let mut covers = covers::Runtime::new();
     let mut archive = archive::Runtime::new();
+    let mut normalization = loudness::Runtime::new(&store, &mut engine, events)?;
     loop {
         let revision_before = engine.state.revision;
         let mut changed = false;
@@ -761,6 +763,22 @@ fn worker(
                         Command::Status | Command::Watch | Command::Volume { value: None } => {
                             let _ = answer.send(Reply::success(&engine.state));
                         }
+                        Command::Normalize { enabled } => {
+                            let result = (|| -> Result<Reply> {
+                                if let Some(enabled) = enabled {
+                                    let mut candidate = engine.state.clone();
+                                    candidate.normalization.enabled = enabled;
+                                    candidate.revision += 1;
+                                    store.save(&candidate)?;
+                                    engine.state = candidate;
+                                    let _ = events.send(Event::State(engine.state.clone()));
+                                }
+                                Ok(Reply::success(
+                                    json!({"normalization":engine.state.normalization,"applies_to":"next_playback"}),
+                                ))
+                            })();
+                            let _ = answer.send(result.unwrap_or_else(failure));
+                        }
                         Command::Now => {
                             let _ = answer.send(Reply::success(engine.state.now()));
                         }
@@ -983,6 +1001,7 @@ fn worker(
                 }
             }
             Ok(Work::Catalog { scan, mut job }) => {
+                normalization.retry();
                 engine.state.scanning = false;
                 active_scan = None;
                 engine.state.last_error = None;
@@ -1060,6 +1079,10 @@ fn worker(
         }
         if let Err(error) = covers.poll(&mut store, &mut engine, events) {
             tracing::error!("Cover refresh: {error:#}");
+        }
+        match normalization.poll(&store, &mut engine) {
+            Ok(updated) => changed |= updated,
+            Err(error) => tracing::warn!(%error, "Loudness scheduler"),
         }
         // Commands/catalog changes persist their revisions before replying.
         // Capture that position before the next tick advances it again.

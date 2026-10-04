@@ -54,6 +54,7 @@ pub struct HeadlessBackend {
     tags: Tags,
     path: Option<PathBuf>,
     volume: u8,
+    normalization_db: f64,
     paused: bool,
     position_offset_ms: u64,
 }
@@ -76,6 +77,7 @@ impl HeadlessBackend {
             tags: vec![],
             path: None,
             volume: 0,
+            normalization_db: 0.0,
             paused: true,
             position_offset_ms: 0,
         })
@@ -125,7 +127,11 @@ impl PlaybackBackend for HeadlessBackend {
             // Validate the file and seek, but decode nothing until resumed.
             self.send(Command::Silence)?;
         } else {
-            let (mut decoder, prepared) = DecoderWorker::start(source, CHANNELS, RATE)?;
+            let (mut decoder, prepared) = DecoderWorker::start(
+                crate::loudness::apply(source, self.normalization_db),
+                CHANNELS,
+                RATE,
+            )?;
             decoder.set_context(path, position_ms);
             let mut tags = self.tags.clone();
             tags.push(("VTAMP_POSITION_MS".to_owned(), position_ms.to_string()));
@@ -141,6 +147,9 @@ impl PlaybackBackend for HeadlessBackend {
         self.paused = paused;
         self.position_offset_ms = position_ms;
         Ok(())
+    }
+    fn normalization(&mut self, gain_db: f64) {
+        self.normalization_db = gain_db;
     }
     fn pause(&mut self) {
         let position = self.position();
@@ -362,6 +371,45 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn cast_contains_file_gain_once_even_when_listener_volume_is_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        crate::loudness::write_tone(&path, 0.5, 2);
+        let hub = Arc::new(Hub::default());
+        let (_, mut receiver) = hub.subscribe();
+        let mut backend = HeadlessBackend::new(hub, 96000).unwrap();
+        backend.normalization(-6.0);
+        backend.load(&path, 0, 0, false).unwrap();
+        let mut demuxer = Demuxer::default();
+        let mut events = vec![];
+        wait_until("normalized cast packets", || {
+            events.extend(drain(&mut receiver, &mut demuxer));
+            packets(&events).len() >= 15
+        });
+        backend.stop();
+        let mut decoder = codec::Decoder::new().unwrap();
+        let mut samples = vec![];
+        for packet in packets(&events) {
+            samples.extend_from_slice(decoder.decode(packet).unwrap());
+        }
+        let settled = &samples[codec::FRAME_LEN * 5..codec::FRAME_LEN * 14];
+        let rms = (settled.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>()
+            / settled.len() as f64)
+            .sqrt();
+        let expected = 0.5 / 2.0_f64.sqrt() * 10.0_f64.powf(-6.0 / 20.0);
+        assert!(
+            (20.0 * (rms / expected).log10()).abs() < 0.5,
+            "cast RMS {rms}, expected {expected}"
+        );
+        // Seeking/resuming opens a new stream but retains the same correction.
+        backend.load(&path, 100, 0, true).unwrap();
+        backend.seek(200).unwrap();
+        assert_eq!(backend.normalization_db, -6.0);
+        backend.resume().unwrap();
+        assert_eq!(backend.normalization_db, -6.0);
     }
 
     #[test]

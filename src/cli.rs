@@ -113,6 +113,11 @@ pub enum Action {
         #[arg(allow_hyphen_values = true, value_parser = parse_seek)]
         seconds: Seek,
     },
+    /// Read or set file loudness normalization; changes apply on next playback.
+    Normalize {
+        #[arg(value_enum)]
+        mode: Option<Switch>,
+    },
     /// Read or set volume, from 0 to 100.
     Volume {
         #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
@@ -946,6 +951,7 @@ pub async fn run(args: Args) -> Result<()> {
                 command: Queue::Edit { dry_run: true, .. }
             }
             | Action::Volume { value: None }
+            | Action::Normalize { mode: None }
             | Action::Queue {
                 command: Queue::List { .. }
             }
@@ -1036,6 +1042,9 @@ pub async fn run(args: Args) -> Result<()> {
         Action::Seek { seconds } => Command::Seek {
             milliseconds: seconds.milliseconds,
             relative: seconds.relative,
+        },
+        Action::Normalize { mode } => Command::Normalize {
+            enabled: mode.map(|m| matches!(m, Switch::On)),
         },
         Action::Volume { value } => Command::Volume { value },
         Action::Shuffle { mode } => Command::Shuffle {
@@ -1552,6 +1561,28 @@ fn output(reply: Reply, json: bool) -> Result<()> {
                 "Saved for future attachments. Open TUIs keep their current theme."
             )?;
         }
+        return Ok(());
+    }
+    if data.get("applies_to").and_then(Value::as_str) == Some("next_playback") {
+        let status: crate::loudness::Status =
+            serde_json::from_value(data["normalization"].clone())?;
+        writeln!(
+            out,
+            "Normalization {} · target {} LUFS · {} ready · {} pending · {} failed · {} unmeasurable",
+            if status.enabled { "on" } else { "off" },
+            status.target_lufs,
+            status.ready,
+            status.pending,
+            status.failed,
+            status.unmeasurable
+        )?;
+        if let Some(db) = status.applied_gain_db {
+            writeln!(out, "Current file gain: {db:+.1} dB")?;
+        }
+        writeln!(
+            out,
+            "Setting changes and new analysis results apply on next playback."
+        )?;
         return Ok(());
     }
     if let Ok(state) = serde_json::from_value::<State>(data.clone())

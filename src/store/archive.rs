@@ -18,7 +18,10 @@ impl Store {
             None,
         )?;
         let version: u32 = snapshot.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        anyhow::ensure!(version == 6, "Library archive requires database version 6");
+        anyhow::ensure!(
+            matches!(version, 6 | 7),
+            "Library archive requires database version 6 or 7"
+        );
         Self { db: snapshot }.archive_catalog()
     }
 
