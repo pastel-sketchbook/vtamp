@@ -32,7 +32,7 @@ Agents can inspect compact playback state, search individual metadata fields, sc
 
 An optional read-only spectrum visualizes the decoded music in one of ten styles:
 zoned bars, a gradient, a single accent color, mirrored bars, dot segments, a
-scrolling waterfall, rays around a ring, fire, stacked ridgelines, or bars that
+scrolling waterfall, petals around a ring, fire, stacked ridgelines, or bars that
 throw sparks. Every style uses the active theme's colors. It adapts to the
 available pane space and remembers visibility and style per client preference.
 It is not an equalizer and does not modify audio.

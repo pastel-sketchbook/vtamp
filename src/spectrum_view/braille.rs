@@ -1,9 +1,10 @@
 //! Braille dot canvas: 2 × 4 dots per terminal cell, one foreground color per cell.
-use crate::theme::Palette;
+use crate::theme::{Palette, blend};
 use ratatui::{buffer::Buffer, layout::Rect, style::Color, symbols::braille::BRAILLE};
 
 /// Dots over the cells of an area. A cell shows a single color, so every dot carries a
 /// rank and the lowest rank drawn into a cell chooses it; equal ranks keep the first.
+/// A cell may also glow: its background blends toward a color, the strongest tint winning.
 pub(super) struct Braille {
     area: Rect,
     cells: Vec<Cell>,
@@ -14,6 +15,7 @@ struct Cell {
     bits: u8,
     rank: u32,
     color: Color,
+    glow: Option<(Color, f32)>,
 }
 
 impl Braille {
@@ -22,6 +24,7 @@ impl Braille {
             bits: 0,
             rank: u32::MAX,
             color: Color::Reset,
+            glow: None,
         };
         Self {
             area,
@@ -39,12 +42,9 @@ impl Braille {
 
     /// Lights one dot; dots outside the canvas are ignored.
     pub fn dot(&mut self, x: i32, y: i32, color: Color, rank: u32) {
-        let (width, height) = self.size();
-        if !(0..width).contains(&x) || !(0..height).contains(&y) {
+        let Some(cell) = self.cell(x, y) else {
             return;
-        }
-        let (x, y) = (x as usize, y as usize);
-        let cell = &mut self.cells[y / 4 * usize::from(self.area.width) + x / 2];
+        };
         // ratatui's table is indexed by the dot bits in row-major order.
         cell.bits |= 1 << (y % 4 * 2 + x % 2);
         if rank < cell.rank {
@@ -53,17 +53,38 @@ impl Braille {
         }
     }
 
-    /// Writes every cell; blank cells take one constant style.
+    /// Tints the background of the cell under a dot toward `color` by `strength`.
+    pub fn glow(&mut self, x: i32, y: i32, color: Color, strength: f32) {
+        if let Some(cell) = self.cell(x, y)
+            && cell.glow.is_none_or(|(_, current)| strength > current)
+        {
+            cell.glow = Some((color, strength));
+        }
+    }
+
+    fn cell(&mut self, x: i32, y: i32) -> Option<&mut Cell> {
+        let (width, height) = self.size();
+        if !(0..width).contains(&x) || !(0..height).contains(&y) {
+            return None;
+        }
+        let (x, y) = (x as usize, y as usize);
+        Some(&mut self.cells[y / 4 * usize::from(self.area.width) + x / 2])
+    }
+
+    /// Writes every cell; blank cells without a glow take one constant style.
     pub fn render(&self, buf: &mut Buffer, p: &Palette) {
         for (index, cell) in self.cells.iter().enumerate() {
             let target = &mut buf[self.position(index)];
+            let bg = cell
+                .glow
+                .map_or(p.bg, |(color, strength)| blend(p.bg, color, strength));
             if cell.bits == 0 {
-                target.set_char(' ').set_fg(p.bg).set_bg(p.bg);
+                target.set_char(' ').set_fg(bg).set_bg(bg);
             } else {
                 target
                     .set_char(BRAILLE[usize::from(cell.bits)])
                     .set_fg(cell.color)
-                    .set_bg(p.bg);
+                    .set_bg(bg);
             }
         }
     }
@@ -157,6 +178,26 @@ mod tests {
         assert_eq!(buf[(0, 0)].bg, p.bg);
         assert_eq!(buf[(1, 0)].symbol(), " ");
         assert_eq!((buf[(1, 0)].fg, buf[(1, 0)].bg), (p.bg, p.bg));
+    }
+
+    #[test]
+    fn the_strongest_glow_tints_a_cell_background() {
+        let p = Theme::default().palette();
+        let mut canvas = Braille::new(Rect::new(0, 0, 2, 1));
+        canvas.dot(0, 0, p.text, 0);
+        canvas.glow(0, 0, p.accent, 0.1);
+        canvas.glow(1, 2, p.spectrum[2], 0.3);
+        canvas.glow(0, 3, p.text, 0.2);
+        canvas.glow(9, 0, p.text, 1.0);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 2, 1));
+        canvas.render(&mut buf, &p);
+        assert_eq!(buf[(0, 0)].fg, p.text);
+        assert_eq!(buf[(0, 0)].bg, blend(p.bg, p.spectrum[2], 0.3));
+        assert_eq!(
+            (buf[(1, 0)].fg, buf[(1, 0)].bg),
+            (p.bg, p.bg),
+            "no glow, no tint"
+        );
     }
 
     #[test]

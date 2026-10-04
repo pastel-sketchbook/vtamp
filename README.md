@@ -380,7 +380,7 @@ style takes its colors from the current theme:
 | `mirror` | Bars grow up and down from a center line; peaks mark both ends |
 | `dots` | A dot per row, like a segmented LED meter; the held peak floats as a lone dot |
 | `waterfall` | A scrolling history: the newest frame is the bottom row, older rows move up, and shading and color follow the level. It freezes while paused and resets on a track change |
-| `radial` | Rays around a ring of braille dots: bass on the left, treble on the right, the lower half mirroring the upper. The ring widens on strong bass, and held peaks float past the ray tips |
+| `radial` | Petals around a ring of braille dots: bass on the left, treble on the right, the lower half mirroring the upper. A sudden rise across the spectrum swells a glowing core at the center, widens the ring, and sends a wave out to the edge; held peaks float past the petal tips |
 | `fire` | Flames rising from each frequency's level, red through yellow to white on dark themes; they go out when playback pauses or stops |
 | `ridge` | Recent frames stacked as lines, newest at the bottom; nearer lines hide the ones behind, and older lines fade. It freezes while paused and resets on a track change |
 | `sparks` | The default bars; a band that jumps throws sparks from its bar, which fall back and fade |
@@ -389,11 +389,11 @@ The view starts off and remembers your visibility and style in `ui.json`. Each
 attached TUI has its own visibility; toggling one does not change another. Analysis runs only while
 a spectrum view is subscribed, and slow displays drop old frames instead of
 holding up playback. Pause, stop, and missing data let the bars settle to zero;
-the fire goes out, sparks land, and the ring comes to rest.
+the fire goes out, sparks land, and the radial core and waves fade back to the ring.
 An idle connection waits quietly for new frames; pausing does not require a
 server restart or trigger a reconnect warning.
 Animation stays at 20 fps while needed. Once the bars settle, the fire is out, and
-the last spark is gone, the animation timer stops; the waterfall and ridge redraw
+the last radial wave and spark are gone, the animation timer stops; the waterfall and ridge redraw
 only when a frame arrives, and unchanged screens send no terminal updates.
 After upgrading from a server without spectrum support, restart the server with
 the new binary and reattach. Client and server must use the same protocol version.

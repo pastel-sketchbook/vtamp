@@ -11,6 +11,7 @@ use crate::{
     theme::{Palette, spectrum_gradient},
 };
 use fire::Fire;
+use radial::Radial;
 use rand::rngs::SmallRng;
 use ratatui::{
     Frame,
@@ -98,6 +99,7 @@ pub(crate) struct SpectrumView {
     /// Frames pushed to `history` since it was cleared; ridge lines keep their place by it.
     pushed: u64,
     fire: Fire,
+    radial: Radial,
     sparks: Sparks,
     rng: SmallRng,
     redraw: bool,
@@ -118,6 +120,7 @@ impl SpectrumView {
             history: VecDeque::with_capacity(HISTORY),
             pushed: 0,
             fire: Fire::default(),
+            radial: Radial::default(),
             sparks: Sparks::default(),
             rng: rand::make_rng(),
             redraw: true,
@@ -126,8 +129,8 @@ impl SpectrumView {
     pub fn style(&self) -> SpectrumStyle {
         self.style
     }
-    /// Switches the rendering; levels, peaks, and history carry over, while fire heat
-    /// and sparks start over.
+    /// Switches the rendering; levels, peaks, and history carry over, while fire heat,
+    /// radial waves, and sparks start over.
     pub fn set_style(&mut self, style: SpectrumStyle) {
         self.style = style;
         self.reset_effects();
@@ -150,6 +153,7 @@ impl SpectrumView {
     }
     fn reset_effects(&mut self) {
         self.fire.reset();
+        self.radial.reset();
         self.sparks.reset();
     }
     pub fn needs_animation(&self, playing: bool) -> bool {
@@ -160,6 +164,7 @@ impl SpectrumView {
         self.redraw
             || (self.error.is_none()
                 && (self.fire.is_hot()
+                    || self.radial.is_active()
                     || self.sparks.is_active()
                     || self.levels.iter().chain(&self.peaks).any(|v| *v > 0.0)
                     || (playing
@@ -196,16 +201,19 @@ impl SpectrumView {
             self.history.push_back(frame.levels);
             self.pushed += 1;
             self.redraw |= follows_frames(self.style);
-            // Sparks compare two consecutive frames of one stream; a reset or a gap
+            // Onsets compare two consecutive frames of one stream; a reset or a gap
             // starts the comparison over.
-            if self.style == SpectrumStyle::Sparks
-                && self.received.elapsed() < LIVE
+            if self.received.elapsed() < LIVE
                 && let Some(previous) = self
                     .frame
                     .as_ref()
                     .filter(|f| f.active && f.generation == frame.generation)
             {
-                self.sparks.observe(&previous.levels, &frame.levels);
+                match self.style {
+                    SpectrumStyle::Radial => self.radial.observe(&previous.levels, &frame.levels),
+                    SpectrumStyle::Sparks => self.sparks.observe(&previous.levels, &frame.levels),
+                    _ => {}
+                }
             }
         }
         self.frame = Some(frame);
@@ -255,7 +263,9 @@ impl SpectrumView {
             SpectrumStyle::Dots => self.draw_bars(buf, body, &p, BarKind::Dots),
             SpectrumStyle::Waterfall => self.draw_waterfall(buf, body, &p),
             SpectrumStyle::Radial => {
-                radial::draw(buf, body, &p, &self.levels, &self.peaks, cell);
+                self.radial.advance(dt);
+                self.radial
+                    .draw(buf, body, &p, &self.levels, &self.peaks, cell);
             }
             SpectrumStyle::Fire => {
                 self.fire
@@ -314,7 +324,7 @@ impl SpectrumView {
     }
 
     /// Bar decay and peak hold, shared by every style with falling peaks. Returns the
-    /// seconds it applied, which also drive fire and sparks.
+    /// seconds it applied, which also drive fire, radial waves, and sparks.
     fn advance(&mut self, playing: bool) -> f32 {
         let now = Instant::now();
         let dt = now.duration_since(self.updated).as_secs_f32().min(0.2);
@@ -948,18 +958,54 @@ mod tests {
         render(&mut view, &mut terminal, false);
         assert!(!view.needs_animation(false));
         let resting = terminal.backend().buffer().clone();
+        view.accept(active([0.2; BANDS]));
+        render(&mut view, &mut terminal, true);
+        assert!(!view.radial.is_active(), "one frame has nothing to compare");
         view.accept(active([0.9; BANDS]));
         assert!(view.needs_animation(true));
         render(&mut view, &mut terminal, true);
+        assert!(view.radial.is_active(), "a jump between frames is an onset");
         assert_ne!(terminal.backend().buffer(), &resting);
         settle(&mut view, &mut terminal);
+        assert!(!view.radial.is_active());
         assert!(!view.needs_animation(false));
         assert_eq!(terminal.backend().buffer(), &resting);
         // Body rows y = 1..=15; the idle ring is drawn in the border role alone.
         assert!((1..=15).all(|y| (1..=58).all(|x| {
             let cell = &terminal.backend().buffer()[(x, y)];
-            cell.symbol() == " " || cell.fg == p.border
+            (cell.symbol() == " " || cell.fg == p.border) && cell.bg == p.bg
         })));
+        // A new generation (seek, pause, resume) stops the pulse and waves at once.
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..active([0.2; BANDS])
+        });
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..active([0.9; BANDS])
+        });
+        age(&mut view);
+        render(&mut view, &mut terminal, true);
+        assert!(view.radial.is_active());
+        view.accept(SpectrumFrame {
+            generation: 2,
+            ..SpectrumFrame::default()
+        });
+        assert!(!view.radial.is_active());
+        // Onsets seen under another style send no wave after a switch.
+        view.set_style(SpectrumStyle::Bars);
+        view.accept(SpectrumFrame {
+            generation: 2,
+            ..active([0.2; BANDS])
+        });
+        view.accept(SpectrumFrame {
+            generation: 2,
+            ..active([0.9; BANDS])
+        });
+        view.set_style(SpectrumStyle::Radial);
+        age(&mut view);
+        render(&mut view, &mut terminal, true);
+        assert!(!view.radial.is_active());
     }
 
     #[test]
