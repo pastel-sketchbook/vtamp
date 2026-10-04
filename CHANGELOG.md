@@ -2,15 +2,23 @@
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-04
+
+Changes since v0.4.0. The Library exports to a portable archive of playable
+media and restores from it, and the spectrum gains four styles.
+
 ### Added
 
-- Portable Library tarballs always include local audio and YouTube downloads,
-  embed current tags/covers in audio copies, and export video with sound. Media
-  files sit at the archive root with readable artist/title names; radio
-  registrations and source metadata are retained in the manifest.
+- `vtamp library export` writes a portable Library tarball: local audio and
+  YouTube downloads with current tags and covers embedded, and video with sound.
+  Media files sit at the archive root with readable artist/title names and their
+  source modification times, and play directly after normal extraction; radio
+  registrations and source metadata are kept in the manifest.
 - `library import`, `--dry-run`, and `library archive-status` validate and merge
   archives while keeping existing tracks, Queue and playback intact. Interrupted
-  publication is recovered on startup.
+  publication is recovered on startup. Export, restore, and dry-run report
+  stages, item counts, and byte progress on stderr, and `library archive-status`
+  includes restore progress.
 - Spectrum styles `radial`, `fire`, `ridge`, and `sparks`, after `waterfall`
   in the `V` cycle. Radial draws petals around a ring of braille dots, bass on
   the left and treble on the right, and sudden rises across the spectrum swell
@@ -20,24 +28,30 @@
   sparks throws braille sparks from the bars when a band jumps. All four use
   the active theme's colors and stop animating once the audio stops.
 
-### Upgrade notes
+### Changed
 
-- Protocol 10 adds archive restoration commands; database version remains 6.
-  Restart an older server with matching binaries before using the new commands.
-- An older client reports invalid settings while `ui.json` names one of the new
-  spectrum styles; saving a theme with `t` in that client repairs the file.
+- Deleting a managed YouTube download (`d` in Library or `vtamp library delete`)
+  also removes its queued copies and play-next reservations and stops it if it
+  is playing, instead of refusing tracks in Queue or playback.
 
 ### Fixed
 
 - Live radio with the spectrum shown no longer keeps the TUI redrawing 20 times
   a second; the panel's unavailable notice now lets the animation timer sleep.
-- Exported tar entries retain source audio/video modification times, and the
-  manifest uses its export creation time instead of displaying January 1, 1970.
-- Archive export, restore and dry-run now report stages, item counts and byte
-  progress on stderr, including updates within large files. Restore progress is
-  also available through `library archive-status`.
-- Archive media can be played directly after normal extraction, without
-  per-track folders, separate artwork files, or external path references.
+
+### Upgrade notes
+
+- Protocol is **10**; database version remains **6**, so upgrading from v0.4.0
+  needs no database migration. Protocol 10 adds the archive restoration
+  commands. Clients and servers must use the same protocol.
+- Before upgrading v0.4.0, stop its server with the matching installed binary:
+  `vtamp server stop`. Then run `brew update && brew upgrade vtamp` (or replace
+  the binary) and start vtamp again. The saved session is restored paused.
+  Installing or rebuilding does not replace a running server.
+- An older client reports invalid settings while `ui.json` names one of the new
+  spectrum styles; saving a theme with `t` in that client repairs the file.
+- Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux with glibc 2.39+
+  (tested on Ubuntu 24.04). Intel Macs and other Linux architectures build from source.
 
 ## [0.4.0] — 2026-10-03
 
@@ -149,6 +163,7 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
-[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/rath/vtamp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rath/vtamp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rath/vtamp/compare/v0.2.0...v0.3.0

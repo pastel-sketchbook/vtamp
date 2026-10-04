@@ -29,17 +29,18 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.4
+## What ships in v0.4.1
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
+- Portable Library archives: `vtamp library export` writes one `.tar.gz` of playable media with current tags and covers, and `vtamp library import` merges it into a Library, skipping tracks it already has.
 - Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
 - AAC and ALAC in m4a/MP4, MP3, FLAC, WAV, and Ogg Vorbis playback.
 - Embedded album covers, sidecar covers, and a built-in fallback image.
 - Optional YouTube audio imports, with a per-import choice to download video up to 480p.
 - Terminal video on macOS with installed FFmpeg/FFprobe and Kitty or Sixel graphics: `w` switches video/cover, and `F` fills the current pane with elapsed / total time below. Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
 - Managed YouTube download deletion with confirmation; queued copies are removed together, and local originals are protected.
-- Read-only audio spectrum with six rendering styles (bars, gradient, mono, mirror, dots, waterfall); press `v` to toggle and `V` to change the style.
+- Read-only audio spectrum with ten rendering styles (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks); press `v` to toggle and `V` to change the style.
 - Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
