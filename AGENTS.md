@@ -40,7 +40,7 @@ Put new feature details in those documents, not here.
 | Decoding, output, radio | `src/audio.rs`, `src/audio/` |
 | Ogg Opus cast for headless servers and remote listeners | `src/cast.rs`, `src/cast/` |
 | Relay mode: forward commands to a remote server, play its cast locally | `src/relay.rs` |
-| Spectrum analysis and drawing | `src/spectrum.rs`, `src/spectrum_view.rs` |
+| Spectrum analysis and drawing | `src/spectrum.rs`, `src/spectrum_view.rs`, `src/spectrum_view/` |
 | Media keys, Now Playing, app bundle | `src/media_controls.rs`, `src/media_controls/`, `build.rs` |
 | Library, persistence, radio registrations | `src/library.rs`, `src/store.rs`, `src/store/`, `src/streams.rs` |
 | Imports and LLM metadata | `src/imports.rs`, `src/youtube.rs`, `src/subprocess.rs`, `src/import_config.rs`, `src/metadata.rs`, `src/covers.rs`, `src/llm.rs`, `src/llm/`, `src/prompts/` |

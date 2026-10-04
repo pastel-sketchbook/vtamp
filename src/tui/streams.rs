@@ -269,12 +269,14 @@ impl App {
             }
             frame.render_widget(paragraph, area);
         } else {
+            let font = self.artwork.font_size();
             self.spectrum.draw(
                 frame,
                 area,
                 p,
                 bordered,
                 self.connected && self.state.status == PlaybackStatus::Playing,
+                (font.width, font.height),
             );
         }
     }

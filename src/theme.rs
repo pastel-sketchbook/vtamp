@@ -179,6 +179,15 @@ pub(crate) fn blend(a: Color, b: Color, t: f32) -> Color {
     Color::Rgb(mix(0), mix(1), mix(2))
 }
 
+/// Whether the canvas is lighter than the text, as on Latte.
+pub(crate) fn is_light(p: &Palette) -> bool {
+    let luma = |color| {
+        let [r, g, b] = channels(color).map(f32::from);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    };
+    luma(p.bg) > luma(p.text)
+}
+
 /// Continuous version of the spectrum height zones: the low role at 0, the
 /// middle role at 0.675 (the center of the 55–80 % zone), the high role at 1.
 pub(crate) fn spectrum_gradient(p: &Palette, t: f32) -> Color {
@@ -268,6 +277,18 @@ mod tests {
             let mid = spectrum_gradient(&p, 0.3);
             assert_ne!(mid, p.spectrum[0]);
             assert_ne!(mid, p.spectrum[1]);
+        }
+    }
+
+    #[test]
+    fn light_canvases_match_the_theme_mode() {
+        for theme in Theme::ALL {
+            assert_eq!(
+                is_light(&theme.palette()),
+                theme.mode() == "light",
+                "{}",
+                theme.id()
+            );
         }
     }
 

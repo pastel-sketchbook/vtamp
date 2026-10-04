@@ -11,11 +11,20 @@
 - `library import`, `--dry-run`, and `library archive-status` validate and merge
   archives while keeping existing tracks, Queue and playback intact. Interrupted
   publication is recovered on startup.
+- Spectrum styles `radial`, `fire`, `ridge`, and `sparks`, after `waterfall` in the
+  `V` cycle. Radial draws rays around a ring of braille dots, bass on the left and
+  treble on the right, and the ring widens on strong bass; fire feeds flames on
+  half-block pixels from the band levels; ridge stacks recent frames as lines in
+  which nearer lines hide farther ones, and freezes while paused like the
+  waterfall; sparks throws braille sparks from the bars when a band jumps. All
+  four use the active theme's colors and stop animating once the audio stops.
 
 ### Upgrade notes
 
 - Protocol 10 adds archive restoration commands; database version remains 6.
   Restart an older server with matching binaries before using the new commands.
+- An older client reports invalid settings while `ui.json` names one of the new
+  spectrum styles; saving a theme with `t` in that client repairs the file.
 
 ### Fixed
 

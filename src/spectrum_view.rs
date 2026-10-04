@@ -1,9 +1,17 @@
 //! Terminal-only animation and drawing; no playback controls.
+mod braille;
+mod fire;
+mod radial;
+mod ridge;
+mod sparks;
+
 use crate::{
     settings::SpectrumStyle,
     spectrum::{BANDS, SpectrumFrame},
     theme::{Palette, spectrum_gradient},
 };
+use fire::Fire;
+use rand::rngs::SmallRng;
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -12,14 +20,68 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Paragraph},
 };
+use sparks::Sparks;
 use std::{
     collections::VecDeque,
+    ops::Range,
     time::{Duration, Instant},
 };
 
 const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-/// Rows the waterfall remembers; more than any pane shows, bounded for memory.
+/// Rows the waterfall and ridge remember; more than any pane shows, bounded for memory.
 const HISTORY: usize = 256;
+/// Frames older than this are stale: bars fall and nothing new is detected.
+const LIVE: Duration = Duration::from_millis(300);
+
+/// The bars geometry shared by the bar styles and sparks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarKind {
+    Zoned,
+    Gradient,
+    Mono,
+    Mirror,
+    Dots,
+}
+
+/// Styles drawn from the frame history; they change only when a frame arrives.
+fn follows_frames(style: SpectrumStyle) -> bool {
+    matches!(style, SpectrumStyle::Waterfall | SpectrumStyle::Ridge)
+}
+
+/// Bands shown by item `index` of `count` across the spectrum: neighbors merge when
+/// there are fewer items than bands, and a band repeats when there are more.
+fn bands(index: usize, count: usize) -> Range<usize> {
+    let start = index * BANDS / count;
+    start..((index + 1) * BANDS / count).max(start + 1)
+}
+
+/// The loudest value in a span of bands.
+fn merged(values: &[f32; BANDS], bands: Range<usize>) -> f32 {
+    values[bands].iter().copied().fold(0.0, f32::max)
+}
+
+/// One bar: the bands it merges and its body columns.
+struct Bar {
+    bands: Range<usize>,
+    columns: Range<u16>,
+}
+
+/// Bars run from low to high bands, centered in the body with one blank column between
+/// neighbors; narrow bodies merge neighboring bands.
+fn bar_layout(width: u16) -> impl Iterator<Item = Bar> {
+    let width = usize::from(width);
+    let count = BANDS.min(width.div_ceil(2));
+    let step = (width + 1) / count.max(1);
+    let bar = step.saturating_sub(1).max(1);
+    let offset = (width + step - bar).saturating_sub(count * step) / 2;
+    (0..count).map(move |index| {
+        let x = (offset + index * step) as u16;
+        Bar {
+            bands: bands(index, count),
+            columns: x..x + bar as u16,
+        }
+    })
+}
 
 pub(crate) struct SpectrumView {
     pub enabled: bool,
@@ -31,8 +93,13 @@ pub(crate) struct SpectrumView {
     levels: [f32; BANDS],
     peaks: [f32; BANDS],
     hold: [Instant; BANDS],
-    /// Raw levels of recent active frames, oldest first; the waterfall draws these.
+    /// Raw levels of recent active frames, oldest first; the waterfall and ridge draw these.
     history: VecDeque<[f32; BANDS]>,
+    /// Frames pushed to `history` since it was cleared; ridge lines keep their place by it.
+    pushed: u64,
+    fire: Fire,
+    sparks: Sparks,
+    rng: SmallRng,
     redraw: bool,
 }
 impl SpectrumView {
@@ -49,21 +116,28 @@ impl SpectrumView {
             peaks: [0.0; BANDS],
             hold: [now; BANDS],
             history: VecDeque::with_capacity(HISTORY),
+            pushed: 0,
+            fire: Fire::default(),
+            sparks: Sparks::default(),
+            rng: rand::make_rng(),
             redraw: true,
         }
     }
     pub fn style(&self) -> SpectrumStyle {
         self.style
     }
-    /// Switches the rendering only; levels, peaks, and history carry over.
+    /// Switches the rendering; levels, peaks, and history carry over, while fire heat
+    /// and sparks start over.
     pub fn set_style(&mut self, style: SpectrumStyle) {
         self.style = style;
+        self.reset_effects();
         self.redraw = true;
     }
     pub fn clear(&mut self) {
         self.frame = None;
         self.error = None;
         self.history.clear();
+        self.pushed = 0;
         self.reset_levels();
     }
     /// Drops the bar state for a new logical stream (seek, pause, resume) while
@@ -71,18 +145,25 @@ impl SpectrumView {
     fn reset_levels(&mut self) {
         self.levels.fill(0.0);
         self.peaks.fill(0.0);
+        self.reset_effects();
         self.redraw = true;
     }
+    fn reset_effects(&mut self) {
+        self.fire.reset();
+        self.sparks.reset();
+    }
     pub fn needs_animation(&self, playing: bool) -> bool {
-        if self.style == SpectrumStyle::Waterfall {
+        if follows_frames(self.style) {
             // Rows only appear with frames; nothing moves between them.
             return self.redraw;
         }
         self.redraw
             || (self.error.is_none()
-                && (self.levels.iter().chain(&self.peaks).any(|v| *v > 0.0)
+                && (self.fire.is_hot()
+                    || self.sparks.is_active()
+                    || self.levels.iter().chain(&self.peaks).any(|v| *v > 0.0)
                     || (playing
-                        && self.received.elapsed() < Duration::from_millis(300)
+                        && self.received.elapsed() < LIVE
                         && self
                             .frame
                             .as_ref()
@@ -113,12 +194,26 @@ impl SpectrumView {
                 self.history.pop_front();
             }
             self.history.push_back(frame.levels);
-            self.redraw |= self.style == SpectrumStyle::Waterfall;
+            self.pushed += 1;
+            self.redraw |= follows_frames(self.style);
+            // Sparks compare two consecutive frames of one stream; a reset or a gap
+            // starts the comparison over.
+            if self.style == SpectrumStyle::Sparks
+                && self.received.elapsed() < LIVE
+                && let Some(previous) = self
+                    .frame
+                    .as_ref()
+                    .filter(|f| f.active && f.generation == frame.generation)
+            {
+                self.sparks.observe(&previous.levels, &frame.levels);
+            }
         }
         self.frame = Some(frame);
         self.error = None;
         self.received = Instant::now();
     }
+    /// Draws the panel; `cell` is the terminal cell size in pixels, which keeps the
+    /// radial style round.
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -126,6 +221,7 @@ impl SpectrumView {
         p: Palette,
         bordered: bool,
         playing: bool,
+        cell: (u16, u16),
     ) {
         self.redraw = false;
         let inner = self.header(frame, area, &p, bordered);
@@ -145,11 +241,32 @@ impl SpectrumView {
             height: inner.height.saturating_sub(1),
             ..inner
         };
-        if self.style == SpectrumStyle::Waterfall {
-            self.draw_waterfall(frame.buffer_mut(), body, &p);
+        let dt = if follows_frames(self.style) {
+            0.0
         } else {
-            self.advance(playing);
-            self.draw_bars(frame.buffer_mut(), body, &p);
+            self.advance(playing)
+        };
+        let buf = frame.buffer_mut();
+        match self.style {
+            SpectrumStyle::Bars => self.draw_bars(buf, body, &p, BarKind::Zoned),
+            SpectrumStyle::Gradient => self.draw_bars(buf, body, &p, BarKind::Gradient),
+            SpectrumStyle::Mono => self.draw_bars(buf, body, &p, BarKind::Mono),
+            SpectrumStyle::Mirror => self.draw_bars(buf, body, &p, BarKind::Mirror),
+            SpectrumStyle::Dots => self.draw_bars(buf, body, &p, BarKind::Dots),
+            SpectrumStyle::Waterfall => self.draw_waterfall(buf, body, &p),
+            SpectrumStyle::Radial => {
+                radial::draw(buf, body, &p, &self.levels, &self.peaks, cell);
+            }
+            SpectrumStyle::Fire => {
+                self.fire
+                    .draw(buf, body, &p, &self.levels, dt, &mut self.rng);
+            }
+            SpectrumStyle::Ridge => ridge::draw(buf, body, &p, &self.history, self.pushed),
+            SpectrumStyle::Sparks => {
+                self.draw_bars(buf, body, &p, BarKind::Zoned);
+                self.sparks
+                    .draw(buf, body, &p, &self.levels, dt, &mut self.rng);
+            }
         }
         frame.render_widget(
             Paragraph::new("LOW").style(Style::default().fg(p.muted)),
@@ -196,12 +313,13 @@ impl SpectrumView {
         }
     }
 
-    /// Bar decay and peak hold, shared by every style with falling peaks.
-    fn advance(&mut self, playing: bool) {
+    /// Bar decay and peak hold, shared by every style with falling peaks. Returns the
+    /// seconds it applied, which also drive fire and sparks.
+    fn advance(&mut self, playing: bool) -> f32 {
         let now = Instant::now();
         let dt = now.duration_since(self.updated).as_secs_f32().min(0.2);
         self.updated = now;
-        let live = playing && self.received.elapsed() < Duration::from_millis(300);
+        let live = playing && self.received.elapsed() < LIVE;
         for i in 0..BANDS {
             let target = self
                 .frame
@@ -216,46 +334,37 @@ impl SpectrumView {
                 self.peaks[i] = self.levels[i].max(self.peaks[i] - dt * 0.8);
             }
         }
+        dt
     }
 
-    fn draw_bars(&self, buf: &mut Buffer, body: Rect, p: &Palette) {
+    fn draw_bars(&self, buf: &mut Buffer, body: Rect, p: &Palette, kind: BarKind) {
         let height = body.height;
-        let count = BANDS.min((body.width as usize).div_ceil(2));
-        let step = (body.width as usize + 1) / count;
-        let width = step.saturating_sub(1).max(1);
-        let offset = (body.width as usize - (count * step - (step - width))) / 2;
-        let rows = if self.style == SpectrumStyle::Mirror {
+        let rows = if kind == BarKind::Mirror {
             height & !1
         } else {
             height
         };
         let half = rows / 2;
-        let scale = f32::from(if self.style == SpectrumStyle::Mirror {
-            half
-        } else {
-            rows
-        });
+        let scale = f32::from(if kind == BarKind::Mirror { half } else { rows });
         let bottom = body.y + height;
-        for bar in 0..count {
-            let start = bar * BANDS / count;
-            let end = ((bar + 1) * BANDS / count).max(start + 1);
-            let level = self.levels[start..end].iter().copied().fold(0.0, f32::max) * scale;
-            let peak = self.peaks[start..end].iter().copied().fold(0.0, f32::max) * scale;
-            for col in 0..width {
-                let x = body.x + (offset + bar * step + col) as u16;
-                match self.style {
-                    SpectrumStyle::Bars | SpectrumStyle::Gradient | SpectrumStyle::Mono => {
+        for bar in bar_layout(body.width) {
+            let level = merged(&self.levels, bar.bands.clone()) * scale;
+            let peak = merged(&self.peaks, bar.bands) * scale;
+            for x in bar.columns {
+                let x = body.x + x;
+                match kind {
+                    BarKind::Zoned | BarKind::Gradient | BarKind::Mono => {
                         for row in 0..rows {
-                            let (glyph, color) = self.bar_cell(p, row, rows, level, peak);
+                            let (glyph, color) = Self::bar_cell(kind, p, row, rows, level, peak);
                             buf[(x, bottom - 1 - row)]
                                 .set_char(glyph)
                                 .set_fg(color)
                                 .set_bg(p.bg);
                         }
                     }
-                    SpectrumStyle::Mirror => {
+                    BarKind::Mirror => {
                         for row in 0..half {
-                            let (glyph, color) = self.bar_cell(p, row, half, level, peak);
+                            let (glyph, color) = Self::bar_cell(kind, p, row, half, level, peak);
                             buf[(x, bottom - half - 1 - row)]
                                 .set_char(glyph)
                                 .set_fg(color)
@@ -274,7 +383,7 @@ impl SpectrumView {
                             buf[(x, body.y)].set_char(' ').set_fg(p.bg).set_bg(p.bg);
                         }
                     }
-                    SpectrumStyle::Dots => {
+                    BarKind::Dots => {
                         let lit = level.round() as u16;
                         let peak_row = (peak.round() as u16).checked_sub(1);
                         for row in 0..rows {
@@ -287,7 +396,6 @@ impl SpectrumView {
                             cell.set_bg(p.bg);
                         }
                     }
-                    SpectrumStyle::Waterfall => unreachable!("drawn by draw_waterfall"),
                 }
             }
         }
@@ -310,20 +418,27 @@ impl SpectrumView {
     }
 
     /// Glyph and color of one cell in a vertical bar, including the peak marker.
-    fn bar_cell(&self, p: &Palette, row: u16, rows: u16, level: f32, peak: f32) -> (char, Color) {
+    fn bar_cell(
+        kind: BarKind,
+        p: &Palette,
+        row: u16,
+        rows: u16,
+        level: f32,
+        peak: f32,
+    ) -> (char, Color) {
         let units = Self::units(level, row);
         let glyph = if units == 0 && peak > 0.05 && row == (peak.ceil() as u16).saturating_sub(1) {
             '▔'
         } else {
             BLOCKS[units]
         };
-        let color = match self.style {
-            SpectrumStyle::Gradient => {
+        let color = match kind {
+            BarKind::Gradient => {
                 spectrum_gradient(p, row as f32 / rows.saturating_sub(1).max(1) as f32)
             }
-            SpectrumStyle::Mono if glyph == '▔' => p.text,
-            SpectrumStyle::Mono => p.accent,
-            _ => Self::zone(p, row, rows),
+            BarKind::Mono if glyph == '▔' => p.text,
+            BarKind::Mono => p.accent,
+            BarKind::Zoned | BarKind::Mirror | BarKind::Dots => Self::zone(p, row, rows),
         };
         (glyph, color)
     }
@@ -345,12 +460,8 @@ impl SpectrumView {
                 // Every column shows a band, merged in narrow panes and repeated
                 // in wide ones, so the history fills the width without gaps.
                 let x = body.x + column as u16;
-                let start = column * BANDS / width;
-                let end = ((column + 1) * BANDS / width).max(start + 1);
                 let level = levels
-                    .map_or(0.0, |levels| {
-                        levels[start..end].iter().copied().fold(0.0, f32::max)
-                    })
+                    .map_or(0.0, |levels| merged(&levels, bands(column, width)))
                     .clamp(0.0, 1.0);
                 let cell = &mut buf[(x, y)];
                 if level <= 0.0 {
@@ -378,17 +489,22 @@ impl SpectrumView {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use rand::SeedableRng;
     use ratatui::{Terminal, backend::TestBackend};
 
+    const CELL: (u16, u16) = (10, 20);
+
     fn styled(style: SpectrumStyle) -> SpectrumView {
-        SpectrumView::new(true, style)
+        let mut view = SpectrumView::new(true, style);
+        view.rng = SmallRng::seed_from_u64(7);
+        view
     }
     fn backend(width: u16, height: u16) -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(width, height)).unwrap()
     }
     fn render(view: &mut SpectrumView, terminal: &mut Terminal<TestBackend>, playing: bool) {
         terminal
-            .draw(|f| view.draw(f, f.area(), Theme::default().palette(), true, playing))
+            .draw(|f| view.draw(f, f.area(), Theme::default().palette(), true, playing, CELL))
             .unwrap();
     }
     fn active(levels: [f32; BANDS]) -> SpectrumFrame {
@@ -501,7 +617,7 @@ mod tests {
         assert!(top.contains("SPECTRUM · v close"), "{top}");
         assert!(!top.contains("gradient"), "{top}");
         terminal
-            .draw(|f| view.draw(f, f.area(), Theme::default().palette(), false, false))
+            .draw(|f| view.draw(f, f.area(), Theme::default().palette(), false, false, CELL))
             .unwrap();
         assert!(top_row(&terminal).starts_with("SPECTRUM · gradient"));
         let mut terminal = backend(1, 1);
@@ -749,5 +865,259 @@ mod tests {
         view.set_style(SpectrumStyle::Dots);
         assert_eq!(view.history.len(), 1);
         assert!(view.levels.iter().all(|v| *v > 0.0));
+        // Fire heat and sparks are drawing state, not audio: a switch starts them over.
+        view.set_style(SpectrumStyle::Fire);
+        age(&mut view);
+        render(&mut view, &mut terminal, true);
+        assert!(view.fire.is_hot());
+        view.set_style(SpectrumStyle::Sparks);
+        assert!(!view.fire.is_hot());
+        assert!(view.levels.iter().all(|v| *v > 0.0));
+        assert_eq!(view.history.len(), 1);
+    }
+
+    /// A frame of `level` in `bands` and silence elsewhere.
+    fn bands_at(range: Range<usize>, level: f32) -> [f32; BANDS] {
+        std::array::from_fn(|band| if range.contains(&band) { level } else { 0.0 })
+    }
+
+    /// Lets frames go stale and the envelope, fire, and sparks settle while paused.
+    fn settle(view: &mut SpectrumView, terminal: &mut Terminal<TestBackend>) {
+        view.received = Instant::now() - Duration::from_secs(1);
+        for _ in 0..40 {
+            age(view);
+            render(view, terminal, false);
+        }
+    }
+
+    #[test]
+    fn every_style_draws_any_theme_at_any_size_and_then_settles() {
+        let ramp: [f32; BANDS] = std::array::from_fn(|band| band as f32 / (BANDS - 1) as f32);
+        let sizes = [
+            (1, 1),
+            (40, 3),
+            (40, 4),
+            (40, 5),
+            (40, 6),
+            (40, 12),
+            (61, 12),
+            (120, 40),
+        ];
+        let variants = [(true, CELL), (false, (0, 0)), (true, (7, 15))];
+        for style in SpectrumStyle::ALL {
+            let cases = sizes
+                .iter()
+                .flat_map(|size| variants.map(|variant| (Theme::default(), *size, variant)))
+                .chain(Theme::ALL.map(|theme| (theme, (61, 12), (true, CELL))));
+            for (theme, (width, height), (bordered, cell)) in cases {
+                let p = theme.palette();
+                let mut view = styled(style);
+                let mut terminal = backend(width, height);
+                let mut draw = |view: &mut SpectrumView, playing| {
+                    terminal
+                        .draw(|f| view.draw(f, f.area(), p, bordered, playing, cell))
+                        .unwrap();
+                };
+                for step in 0..6 {
+                    view.accept(active(if step % 2 == 0 { ramp } else { [0.2; BANDS] }));
+                    age(&mut view);
+                    draw(&mut view, true);
+                }
+                view.received = Instant::now() - Duration::from_secs(1);
+                for _ in 0..15 {
+                    age(&mut view);
+                    draw(&mut view, false);
+                }
+                assert!(
+                    !view.needs_animation(false),
+                    "{} {} {width}×{height} settles",
+                    style.id(),
+                    theme.id()
+                );
+                view.error = Some("Disconnected".into());
+                draw(&mut view, false);
+            }
+        }
+    }
+
+    #[test]
+    fn radial_settles_to_its_resting_ring() {
+        let p = Theme::default().palette();
+        let mut view = styled(SpectrumStyle::Radial);
+        let mut terminal = backend(60, 18);
+        render(&mut view, &mut terminal, false);
+        assert!(!view.needs_animation(false));
+        let resting = terminal.backend().buffer().clone();
+        view.accept(active([0.9; BANDS]));
+        assert!(view.needs_animation(true));
+        render(&mut view, &mut terminal, true);
+        assert_ne!(terminal.backend().buffer(), &resting);
+        settle(&mut view, &mut terminal);
+        assert!(!view.needs_animation(false));
+        assert_eq!(terminal.backend().buffer(), &resting);
+        // Body rows y = 1..=15; the idle ring is drawn in the border role alone.
+        assert!((1..=15).all(|y| (1..=58).all(|x| {
+            let cell = &terminal.backend().buffer()[(x, y)];
+            cell.symbol() == " " || cell.fg == p.border
+        })));
+    }
+
+    #[test]
+    fn fire_burns_while_heat_remains_and_resets_with_the_stream() {
+        let p = Theme::default().palette();
+        let mut view = styled(SpectrumStyle::Fire);
+        let mut terminal = backend(40, 12);
+        render(&mut view, &mut terminal, false);
+        assert!(!view.needs_animation(false), "a cold fire is idle");
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..active(bands_at(0..8, 1.0))
+        });
+        for _ in 0..4 {
+            age(&mut view);
+            render(&mut view, &mut terminal, true);
+        }
+        assert!(view.fire.is_hot());
+        let buffer = terminal.backend().buffer();
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "▀"));
+        assert!(
+            (1..=9).all(|y| (30..=38).all(|x| buffer[(x, y)].symbol() == " ")),
+            "treble columns stay cold"
+        );
+        // Stale data lets the levels fall and the fire burn out, then the timer stops.
+        settle(&mut view, &mut terminal);
+        assert!(!view.fire.is_hot());
+        assert!(!view.needs_animation(false));
+        let buffer = terminal.backend().buffer();
+        assert!((1..=9).all(|y| (1..=38).all(|x| {
+            let cell = &buffer[(x, y)];
+            cell.symbol() == " " && cell.fg == p.bg && cell.bg == p.bg
+        })));
+        // A new generation (seek, pause, resume) puts the fire out at once.
+        view.accept(SpectrumFrame {
+            generation: 2,
+            ..active([1.0; BANDS])
+        });
+        age(&mut view);
+        render(&mut view, &mut terminal, true);
+        assert!(view.fire.is_hot());
+        view.accept(SpectrumFrame {
+            generation: 3,
+            ..SpectrumFrame::default()
+        });
+        assert!(!view.fire.is_hot());
+    }
+
+    #[test]
+    fn ridge_redraws_per_frame_and_keeps_history_like_the_waterfall() {
+        let mut view = styled(SpectrumStyle::Ridge);
+        let mut terminal = backend(40, 12);
+        render(&mut view, &mut terminal, true);
+        assert!(!view.needs_animation(true), "an empty ridge is idle");
+        view.accept(active([0.6; BANDS]));
+        assert!(view.needs_animation(true), "a frame requests one draw");
+        render(&mut view, &mut terminal, true);
+        assert!(
+            !view.needs_animation(true),
+            "nothing moves until the next frame"
+        );
+        let drawn = terminal.backend().buffer().clone();
+        assert!(drawn.content().iter().any(|cell| {
+            cell.symbol() != " "
+                && cell
+                    .symbol()
+                    .chars()
+                    .all(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+        }));
+        for _ in 0..3 {
+            age(&mut view);
+            render(&mut view, &mut terminal, false);
+        }
+        assert_eq!(
+            terminal.backend().buffer(),
+            &drawn,
+            "pause freezes the lines"
+        );
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..SpectrumFrame::default()
+        });
+        assert_eq!(view.history.len(), 1, "a new generation keeps the past");
+        assert_eq!(view.pushed, 1);
+        view.accept(SpectrumFrame {
+            generation: 1,
+            current_id: Some("next".into()),
+            ..SpectrumFrame::default()
+        });
+        assert!(view.history.is_empty(), "a new track starts over");
+        assert_eq!(view.pushed, 0);
+    }
+
+    #[test]
+    fn sparks_follow_rises_between_consecutive_frames_only() {
+        let mut view = styled(SpectrumStyle::Sparks);
+        let mut bars = styled(SpectrumStyle::Bars);
+        let (mut terminal, mut plain) = (backend(64, 14), backend(64, 14));
+        let quiet = bands_at(0..BANDS, 0.3);
+        let mut loud = quiet;
+        loud[20] = 0.8;
+        // The first frame after a reset has nothing to compare with.
+        for view in [&mut view, &mut bars] {
+            view.accept(active(loud));
+        }
+        render(&mut view, &mut terminal, true);
+        assert!(!view.sparks.is_active());
+        for frames in [[quiet, quiet], [quiet, loud]] {
+            for frame in frames {
+                for view in [&mut view, &mut bars] {
+                    view.accept(active(frame));
+                }
+            }
+        }
+        // Freeze time so both views draw identical bars.
+        let now = Instant::now();
+        for view in [&mut view, &mut bars] {
+            view.updated = now;
+        }
+        render(&mut view, &mut terminal, true);
+        bars.updated = view.updated;
+        render(&mut bars, &mut plain, true);
+        assert!(view.sparks.is_active());
+        let (sparked, plain) = (terminal.backend().buffer(), plain.backend().buffer());
+        let mut braille = 0;
+        // Body rows y = 1..=11 between the title and the axis.
+        for (x, y) in (1..=11).flat_map(|y| (1..=62).map(move |x| (x, y))) {
+            let (sparked, plain) = (&sparked[(x, y)], &plain[(x, y)]);
+            if sparked
+                .symbol()
+                .chars()
+                .all(|c| ('\u{2801}'..='\u{28FF}').contains(&c))
+            {
+                braille += 1;
+                assert_eq!(plain.symbol(), " ", "sparks only use blank cells");
+            } else {
+                assert_eq!(sparked, plain, "cell {x},{y}");
+            }
+        }
+        assert!(braille > 0);
+        // A rise across a generation change compares nothing.
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..active(quiet)
+        });
+        assert!(!view.sparks.is_active(), "a new generation clears sparks");
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..active(loud)
+        });
+        age(&mut view);
+        render(&mut view, &mut terminal, true);
+        assert!(
+            view.sparks.is_active(),
+            "consecutive frames of the new stream count"
+        );
+        settle(&mut view, &mut terminal);
+        assert!(!view.sparks.is_active());
+        assert!(!view.needs_animation(false));
     }
 }

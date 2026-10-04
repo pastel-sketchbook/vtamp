@@ -3266,6 +3266,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_spectrum_style_draws_inside_the_real_layouts() {
+        let mut app = navigation_app(10);
+        app.connected = true;
+        app.state.status = PlaybackStatus::Playing;
+        app.spectrum.enabled = true;
+        let ramp = std::array::from_fn(|band| band as f32 / 31.0);
+        for style in SpectrumStyle::ALL {
+            app.spectrum.set_style(style);
+            for theme in [Theme::CatppuccinMocha, Theme::CatppuccinLatte] {
+                app.theme = theme;
+                for (width, height) in [(40, 12), (72, 12), (100, 24), (72, 28), (120, 36)] {
+                    app.spectrum.accept(SpectrumFrame {
+                        active: true,
+                        current_id: app.state.current_id.clone(),
+                        levels: ramp,
+                        ..SpectrumFrame::default()
+                    });
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                            .unwrap();
+                    terminal.draw(|f| app.draw(f)).unwrap();
+                    let text: String = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|c| c.symbol())
+                        .collect();
+                    assert!(text.contains("SPECTRUM"), "{} {width}x{height}", style.id());
+                }
+            }
+        }
+    }
+
     fn navigation_app(count: usize) -> App {
         let mut app = app();
         app.tracks = (0..count)
@@ -5011,10 +5046,15 @@ mod tests {
         for expected in [
             SpectrumStyle::Dots,
             SpectrumStyle::Waterfall,
+            SpectrumStyle::Radial,
+            SpectrumStyle::Fire,
+            SpectrumStyle::Ridge,
+            SpectrumStyle::Sparks,
             SpectrumStyle::Bars,
         ] {
             app.key(shift_v, &tx).unwrap();
             assert_eq!(app.spectrum.style(), expected);
+            assert_eq!(app.notice, format!("Spectrum style: {}", expected.id()));
         }
         assert_eq!(
             Settings::load(&app.settings_path).unwrap().spectrum_style,

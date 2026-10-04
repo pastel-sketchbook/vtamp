@@ -44,6 +44,10 @@ every color from the active theme's roles, so they need no per-theme tuning.
 | `mirror` | Bars growing up and down from a center line | spectrum low / middle / high |
 | `dots` | One dot per row, like a segmented meter; unlit dots are faint | spectrum low / middle / high, selection |
 | `waterfall` | A scrolling history with the newest frame at the bottom | spectrum gradient |
+| `radial` | Rays around a ring of braille dots; the ring widens on strong bass | spectrum low → middle → high, border (ring) |
+| `fire` | Flames on half-block pixels fed by each column's level | canvas → spectrum high → middle → text; on light themes canvas → middle → high |
+| `ridge` | Stacked lines of recent frames; nearer lines hide farther ones, which fade | spectrum gradient faded toward canvas |
+| `sparks` | The bars, with sparks thrown up when a band jumps | spectrum low / middle / high; sparks text → middle → high |
 
 See `DESIGN.md` for the geometry of each style and the rules for pause, seek,
 and track changes.

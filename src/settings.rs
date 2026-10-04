@@ -16,16 +16,24 @@ pub enum SpectrumStyle {
     Mirror,
     Dots,
     Waterfall,
+    Radial,
+    Fire,
+    Ridge,
+    Sparks,
 }
 
 impl SpectrumStyle {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Bars,
         Self::Gradient,
         Self::Mono,
         Self::Mirror,
         Self::Dots,
         Self::Waterfall,
+        Self::Radial,
+        Self::Fire,
+        Self::Ridge,
+        Self::Sparks,
     ];
 
     /// Settings identifier; also the literal name shown in the TUI.
@@ -37,6 +45,10 @@ impl SpectrumStyle {
             Self::Mirror => "mirror",
             Self::Dots => "dots",
             Self::Waterfall => "waterfall",
+            Self::Radial => "radial",
+            Self::Fire => "fire",
+            Self::Ridge => "ridge",
+            Self::Sparks => "sparks",
         }
     }
 
@@ -165,6 +177,21 @@ mod tests {
     }
     #[test]
     fn spectrum_style_ids_round_trip_and_cycle() {
+        assert_eq!(
+            SpectrumStyle::ALL.map(SpectrumStyle::id),
+            [
+                "bars",
+                "gradient",
+                "mono",
+                "mirror",
+                "dots",
+                "waterfall",
+                "radial",
+                "fire",
+                "ridge",
+                "sparks"
+            ]
+        );
         for style in SpectrumStyle::ALL {
             assert_eq!(serde_json::to_value(style).unwrap(), style.id());
             assert_eq!(

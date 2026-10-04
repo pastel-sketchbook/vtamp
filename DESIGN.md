@@ -93,13 +93,15 @@ fixed height zones: green below 55%, yellow up to 80%, and red above. Each theme
 provides three spectrum roles; Latte uses darker inks. Unicode eighth blocks and
 briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R meters.
 
-`V` switches to the next of six styles while the spectrum is shown and saves it
+`V` switches to the next of ten styles while the spectrum is shown and saves it
 as `spectrum_style` (default `bars`); the status row names the new style. A
 style is a geometry plus a mapping of theme roles, never its own palette, so all
 nine themes stay readable. Frames stay mono 32-band; a style may merge bands for
-narrow panes but never splits them. The status row and the help overlay carry
-the key; the hint bar does not change. The panel title reads
-`SPECTRUM · <style> · v close · V style` when it fits, otherwise
+narrow panes or join neighboring band values with straight segments, but never
+splits them. Styles draw with eighth blocks, braille dots (2 × 4 per cell), or
+`▀` half blocks (two pixels per cell, foreground over background). The status
+row and the help overlay carry the key; the hint bar does not change. The panel
+title reads `SPECTRUM · <style> · v close · V style` when it fits, otherwise
 `SPECTRUM · v close`; the embedded header reads `SPECTRUM · <style>`.
 
 | Style | Geometry and color |
@@ -110,10 +112,16 @@ the key; the hint bar does not change. The panel title reads
 | `mirror` | An even number of rows anchored at the bottom (an odd top row stays blank). Bars grow up and down from the center with the level scaled to half the rows; zones follow the distance from the center. The lower half paints partial cells by inverting foreground and background with the complementary lower block. Peaks mark both ends (`▔` above, `▁` below). |
 | `dots` | One dot per row (`●` lit, `·` unlit in the selection role); lit count is the level rounded to whole rows, colored by zone; the held peak is a lone lit dot. |
 | `waterfall` | Time history, newest row at the bottom next to the axis. Every active frame adds one row of raw levels (up to 256 kept). Every column shows a band, merged in narrow panes and repeated in wide ones, so rows fill the width without gaps; cells use `░ ▒ ▓ █` by level and the gradient color at that level, and silence is a blank cell with a constant style. No decay or peaks. Pause and stop freeze it (no frames, no rows); a track change, toggle, or reconnect clears it; seek, pause, and resume keep it. |
+| `radial` | Braille rays around a ring centered in the body. Bands run from LOW at the left over the top to HIGH at the right; the lower half mirrors the upper dot for dot. Rays grow outward with the level, one dot wide near the ring and up to two farther out, colored low → middle → high by distance from the ring. A held peak is a short arc in the color of its distance, shown once it floats 1.5 dots past the tip. The ring sits at 36% of the radius in the border role; strong bass (the mean of the five lowest bands above half scale) widens it by up to a quarter and blends it toward the gradient color of that bass. Small rings merge bands into 16, 8, or 4 rays per half. Dots follow the terminal cell size (10 × 20 pixels when unknown) so the ring stays round; bodies more than twice as wide as tall stretch it up to twice as wide, and bodies under four rows draw a strip mirrored around its center line instead. |
+| `fire` | Half-block pixels, two per cell. The bottom pixel row takes each column's level (merged in narrow panes, repeated in wide ones) through a 0.75 power curve. Each step, every pixel takes the heat of a random neighbor below and, half the time, loses a fixed amount, so a full level reaches about 90% of the height; steps run fast enough for heat to climb the body in 0.35 s (30–150 per second). Heat maps in 16 shades from the canvas through the high and middle roles to the text role; light themes run from the middle role to the high role. Cells cold in both halves keep the constant blank style. A new generation clears the heat; once the levels fall, the fire burns out within one climb. |
+| `ridge` | Braille ridgelines from the history, newest frame in front at the bottom. Kept lines sit three to six dots apart, by body height, and move up one dot per frame (one dot every second frame below twelve rows). Straight segments join the 32 band values; nearer lines hide what lies behind them. Points take the gradient color at their level, faded toward the canvas by up to 45% with depth. Bodies of one or two rows show only the newest line. Like the waterfall: no decay or peaks; pause and stop freeze it; a track change, toggle, or reconnect clears it; seek, pause, and resume keep it. |
+| `sparks` | `bars` geometry and zones. When a band above 25% rises by more than 0.1, and by more than 1.5 times its recent average rise, between two consecutive frames of one stream, its bar throws 2–6 braille sparks from the first blank cell above it. A bar then waits 150 ms, up to a quarter of the bars (at least three) throw per draw, and the number of live sparks is capped by the pane size. Sparks fly under gravity as short streaks, cool from the text role through the middle and high roles toward the canvas, vanish within 1.1 s, and use only cells the bars leave blank. Bodies of one or two rows show plain bars. |
 
-Switching styles never clears levels or history. Bars styles reset their levels
-when the analysis generation changes (seek, pause, resume); the waterfall keeps
-rows that were actually heard and discards them only with the current track.
+Switching styles never clears levels or history; it starts fire heat and sparks
+over. Every style except the waterfall and ridge resets its levels when the
+analysis generation changes (seek, pause, resume), which also clears fire heat
+and sparks; the waterfall and ridge keep rows that were actually heard and
+discard them only with the current track.
 
 At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
 with a cover and compact metadata/controls on the left. Keep the lists below.
@@ -125,10 +133,11 @@ its subscription. Labels remain neutral and the axes read LOW / HIGH. Paused,
 stopped, or stale data settles to zero instead of showing decorative motion.
 An idle spectrum connection stays open without requiring periodic frames; quiet
 or paused audio must not trigger a disconnection warning or a reconnect loop.
-Once bars and peaks settle, suspend the animation timer until fresh audio or a
-view change needs it; the waterfall draws once per received frame and is
-otherwise idle. Do not send terminal output for unchanged frames. Keep
-input and artwork completion immediate, and preserve progress and notice expiry.
+Once bars, peaks, fire heat, and sparks settle, suspend the animation timer until
+fresh audio or a view change needs it; the waterfall and ridge draw once per
+received frame and are otherwise idle. Nothing rotates or drifts on its own. Do
+not send terminal output for unchanged frames. Keep input and artwork completion
+immediate, and preserve progress and notice expiry.
 
 ## Shapes
 
