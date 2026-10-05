@@ -28,7 +28,26 @@ pub struct SpectrumFrame {
     pub active: bool,
     pub low_hz: f32,
     pub high_hz: f32,
+    /// Combined channel power, unchanged for older clients and all non-stereo styles.
     pub levels: [f32; BANDS],
+    /// Missing means unsupported, not silent. Additive within protocol 11.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<SpectrumChannels>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpectrumChannels {
+    pub left: [f32; BANDS],
+    pub right: [f32; BANDS],
+}
+
+impl SpectrumFrame {
+    fn inactive() -> Self {
+        Self {
+            channels: Some(SpectrumChannels::default()),
+            ..Self::default()
+        }
+    }
 }
 
 struct Samples {
@@ -120,7 +139,7 @@ impl Spectrum {
     pub fn subscribe(self: &Arc<Self>) -> Subscription {
         if self.subscribers.fetch_add(1, Ordering::AcqRel) == 0 {
             self.epoch.fetch_add(1, Ordering::AcqRel);
-            self.frames.send_replace(SpectrumFrame::default());
+            self.frames.send_replace(SpectrumFrame::inactive());
             self.wake();
         }
         Subscription {
@@ -158,7 +177,7 @@ impl Default for Spectrum {
             subscribers: AtomicUsize::new(0),
             playing: AtomicBool::new(false),
             current_id: Mutex::new(None),
-            frames: watch::channel(SpectrumFrame::default()).0,
+            frames: watch::channel(SpectrumFrame::inactive()).0,
         }
     }
 }
@@ -302,7 +321,9 @@ impl Analyzer {
         self.filled = (self.filled + BLOCK_SIZE).min(FFT_SIZE);
         self.last_sample = Instant::now();
     }
-    fn levels(&mut self, rate: u32) -> [f32; BANDS] {
+    fn levels(&mut self, rate: u32) -> ([f32; BANDS], SpectrumChannels) {
+        let mut channels = SpectrumChannels::default();
+        let mut channel_power = [0.0_f32; FFT_SIZE / 2 + 1];
         let mut power = [0.0_f32; FFT_SIZE / 2 + 1];
         for ch in 0..2 {
             for i in 0..FFT_SIZE {
@@ -313,10 +334,20 @@ impl Analyzer {
             }
             self.fft
                 .process_with_scratch(&mut self.input, &mut self.scratch);
-            for (p, bin) in power.iter_mut().zip(&self.input) {
-                *p += bin.norm_sqr() * 0.5;
+            for ((p, single), bin) in power.iter_mut().zip(&mut channel_power).zip(&self.input) {
+                *single = bin.norm_sqr();
+                *p += *single * 0.5;
+            }
+            let levels = Self::band_levels(&channel_power, rate);
+            if ch == 0 {
+                channels.left = levels;
+            } else {
+                channels.right = levels;
             }
         }
+        (Self::band_levels(&power, rate), channels)
+    }
+    fn band_levels(power: &[f32], rate: u32) -> [f32; BANDS] {
         let high = (rate as f32 / 2.0).min(16_000.0);
         if high <= 40.0 {
             return [0.0; BANDS];
@@ -357,10 +388,10 @@ impl Analyzer {
         let active = enabled
             && self.filled == FFT_SIZE
             && self.last_sample.elapsed() < Duration::from_millis(250);
-        let levels = if active {
+        let (levels, channels) = if active {
             self.levels(self.key.2)
         } else {
-            [0.0; BANDS]
+            ([0.0; BANDS], SpectrumChannels::default())
         };
         if spectrum.generation.load(Ordering::Acquire) != generation
             || spectrum.epoch.load(Ordering::Acquire) != epoch
@@ -374,6 +405,7 @@ impl Analyzer {
             low_hz: 40.0,
             high_hz: (self.key.2 as f32 / 2.0).min(16_000.0),
             levels,
+            channels: Some(channels),
         };
         spectrum.frames.send_if_modified(|frame| {
             // Active frames are also liveness heartbeats: clients decay stale
@@ -470,6 +502,9 @@ mod tests {
             .collect()
     }
     fn analyze(data: Vec<f32>, rate: u32) -> [f32; BANDS] {
+        analyze_frame(data, rate).levels
+    }
+    fn analyze_frame(data: Vec<f32>, rate: u32) -> SpectrumFrame {
         let spectrum = Arc::new(Spectrum::default());
         let _subscription = spectrum.subscribe();
         spectrum.playing(true);
@@ -483,7 +518,7 @@ mod tests {
         analyzer.update(&spectrum);
         let frame = spectrum.frames.borrow().clone();
         assert!(frame.active);
-        frame.levels
+        frame
     }
     #[test]
     fn identical_active_frames_still_refresh_client_liveness() {
@@ -534,6 +569,86 @@ mod tests {
         );
     }
     #[test]
+    fn channel_data_preserves_combined_power_and_channel_calibration() {
+        for rate in [44_100, 48_000, 96_000] {
+            let both = analyze_frame(tone(rate, 1000.0, 0.05, 1.0), rate);
+            let channels = both.channels.unwrap();
+            assert_eq!(channels.left, channels.right);
+            assert_eq!(both.levels, channels.left);
+            let left_pcm = tone(rate, 1000.0, 0.05, 0.0);
+            let left = analyze_frame(left_pcm.clone(), rate);
+            let right_pcm = left_pcm
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|pair| [pair[1], pair[0]])
+                .collect();
+            let right = analyze_frame(right_pcm, rate);
+            assert_eq!(left.levels, right.levels);
+            let left_channels = left.channels.unwrap();
+            let right_channels = right.channels.unwrap();
+            assert_eq!(left_channels.left, channels.left);
+            assert_eq!(left_channels.right, [0.0; BANDS]);
+            assert_eq!(right_channels.left, [0.0; BANDS]);
+            assert_eq!(right_channels.right, channels.right);
+            let peak = channels.left.iter().copied().fold(0.0, f32::max);
+            let combined_peak = left.levels.iter().copied().fold(0.0, f32::max);
+            assert!((peak - combined_peak - 3.0103 / 60.0).abs() < 0.0001);
+            let opposing = analyze_frame(tone(rate, 1000.0, 0.05, -1.0), rate);
+            assert_eq!(opposing.levels, both.levels);
+            assert_eq!(opposing.channels.unwrap(), channels);
+        }
+        let silent = analyze_frame(vec![0.0; FFT_SIZE * 2], 48_000);
+        assert_eq!(silent.channels, Some(SpectrumChannels::default()));
+    }
+
+    #[test]
+    fn stereo_extension_reads_legacy_frames_and_is_ignored_by_legacy_readers() {
+        let old = SpectrumFrame {
+            levels: [0.4; BANDS],
+            ..SpectrumFrame::default()
+        };
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("channels").is_none());
+        assert_eq!(serde_json::from_value::<SpectrumFrame>(json).unwrap(), old);
+        // This is the exact pre-extension response type; serde must ignore the new field.
+        #[derive(Deserialize)]
+        struct LegacyFrame {
+            generation: u64,
+            current_id: Option<String>,
+            active: bool,
+            low_hz: f32,
+            high_hz: f32,
+            levels: [f32; BANDS],
+        }
+        let frame = analyze_frame(tone(48_000, 1000.0, 0.05, 0.0), 48_000);
+        let json = serde_json::to_value(&frame).unwrap();
+        let old: LegacyFrame = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            (
+                old.generation,
+                old.current_id,
+                old.active,
+                old.low_hz,
+                old.high_hz,
+                old.levels
+            ),
+            (
+                frame.generation,
+                frame.current_id.clone(),
+                frame.active,
+                frame.low_hz,
+                frame.high_hz,
+                frame.levels
+            )
+        );
+        assert_eq!(
+            serde_json::from_value::<SpectrumFrame>(json).unwrap(),
+            frame
+        );
+    }
+
+    #[test]
     fn tap_preserves_samples_under_overflow_and_does_nothing_without_demand() {
         let spectrum = Arc::new(Spectrum::default());
         spectrum.playing(true);
@@ -577,6 +692,10 @@ mod tests {
         analyzer.update(&spectrum);
         assert!(!spectrum.frames.borrow().active);
         assert_eq!(spectrum.frames.borrow().levels, [0.0; BANDS]);
+        assert_eq!(
+            spectrum.frames.borrow().channels,
+            Some(SpectrumChannels::default())
+        );
         spectrum.playing(true);
         let old = spectrum.tap(source());
         spectrum.reset();

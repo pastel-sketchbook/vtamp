@@ -77,6 +77,15 @@ inactive frame can precede the first analyzed window. Frequency bands are logari
 from 40 Hz to the lower of 16 kHz and Nyquist. Values are display magnitudes over
 a −70 to −10 dB display range, not calibrated loudness measurements.
 
+An optional `channels` object adds `left` and `right`, each containing 32 finite
+values in 0–1 on the same frequency and dB scale. This is an additive protocol-11
+extension: `levels` retains the original combined-power meaning. Missing or null
+`channels` means unsupported, not silence; older clients ignore this object. New
+servers also include zero channel arrays in inactive frames. Mono input feeds
+both channels equally. Channel magnitudes use full channel power, while `levels`
+uses the mean of the two powers before band reduction and dB conversion. The
+existing two FFTs supply all three outputs; capture and playback are unchanged.
+
 The stream publishes at up to 20 Hz. Frames are disposable: each subscriber keeps
 the latest value, socket writes have a two-second deadline, and EOF releases its
 subscription. There is no replay, persistence, or playback revision change.

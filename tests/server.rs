@@ -528,6 +528,11 @@ fn spectrum_is_a_separate_read_only_latest_frame_stream() {
         let first = receive(&mut stream);
         assert_eq!(first["ok"], true);
         assert_eq!(first["data"]["levels"].as_array().unwrap().len(), 32);
+        assert_eq!(first["data"]["channels"]["left"], json!([0.0; 32].to_vec()));
+        assert_eq!(
+            first["data"]["channels"]["right"],
+            json!([0.0; 32].to_vec())
+        );
         assert_eq!(first["data"]["active"], false);
         assert!(first["data"].get("queue").is_none());
         watchers.push(stream);
@@ -767,6 +772,14 @@ fn relay_forwards_commands_to_a_headless_server_and_stops_only_itself() {
     let frame = receive(&mut spectrum);
     assert_eq!(frame["ok"], true);
     assert_eq!(frame["data"]["levels"].as_array().unwrap().len(), 32);
+    assert_eq!(
+        frame["data"]["channels"]["left"].as_array().unwrap().len(),
+        32
+    );
+    assert_eq!(
+        frame["data"]["channels"]["right"].as_array().unwrap().len(),
+        32
+    );
     // The analyzer wakes on subscription and names the remote's queue entry, so
     // an attached TUI does not drop the relay's frames as another track's.
     let frame = receive(&mut spectrum);

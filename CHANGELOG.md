@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Optional stereo channel data alongside the unchanged combined spectrum in
+  protocol 11. Existing clients and servers remain compatible; restart the server
+  with the new binary to enable the channel data, and reattach for new styles.
+
 ## [0.4.3] — 2026-10-05
 
 Video playback in local Ghostty + tmux avoids bulk terminal uploads and stays
