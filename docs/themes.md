@@ -151,6 +151,12 @@ every color from the active theme's roles, so they need no per-theme tuning.
 | `fire` | Flames on half-block pixels fed by each column's level | canvas → spectrum high → middle → text; on light themes canvas → middle → high |
 | `ridge` | Stacked lines of recent frames; nearer lines hide farther ones, which fade | spectrum gradient faded toward canvas |
 | `sparks` | The bars, with sparks thrown up when a band jumps | spectrum low / middle / high; sparks text → middle → high |
+| `squares` | Whole-cell segments and held peaks | spectrum gradient; selection for unlit dots |
+| `smooth` | Filled braille curve | spectrum low / middle / high by height |
+| `trail` | Six recent frame tops, newest drawn last | spectrum zones faded toward canvas by age |
+| `stereo` | Independent L/R meters around the center | spectrum zones by distance from center; muted channel labels |
+
+Channel labels use the muted role.
 
 See `DESIGN.md` for the geometry of each style and the rules for pause, seek,
 and track changes.

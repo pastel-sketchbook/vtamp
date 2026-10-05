@@ -5240,15 +5240,12 @@ mod tests {
         );
         assert_eq!(std::fs::read(&app.settings_path).unwrap(), b"broken");
         std::fs::remove_file(&app.settings_path).unwrap();
-        for expected in [
-            SpectrumStyle::Dots,
-            SpectrumStyle::Waterfall,
-            SpectrumStyle::Radial,
-            SpectrumStyle::Fire,
-            SpectrumStyle::Ridge,
-            SpectrumStyle::Sparks,
-            SpectrumStyle::Bars,
-        ] {
+        for expected in SpectrumStyle::ALL
+            .into_iter()
+            .cycle()
+            .skip(4)
+            .take(SpectrumStyle::ALL.len() - 3)
+        {
             app.key(shift_v, &tx).unwrap();
             assert_eq!(app.spectrum.style(), expected);
             assert_eq!(app.notice, format!("Spectrum style: {}", expected.id()));

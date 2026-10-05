@@ -30,10 +30,11 @@ Folder-based local library, search, queue editing, album art, machine-readable C
 
 Agents can inspect compact playback state, search individual metadata fields, schedule the next tracks, and apply atomic queue edits that protect the current song. Successful keyed batch edits can be retried for 24 hours across server restarts. Scan jobs expose completion reports; server-owned stop reservations survive client exit and clear on server restart.
 
-An optional read-only spectrum visualizes the decoded music in one of ten styles:
+An optional read-only spectrum visualizes the decoded music in one of fourteen styles:
 zoned bars, a gradient, a single accent color, mirrored bars, dot segments, a
 scrolling waterfall, petals around a ring, fire, stacked ridgelines, or bars that
-throw sparks. Every style uses the active theme's colors. It adapts to the
+throw sparks, square segments, a smooth curve, recent-frame trails, or separate
+L/R meters. Every style uses the active theme's colors. It adapts to the
 available pane space and remembers visibility and style per client preference.
 It is not an equalizer and does not modify audio.
 

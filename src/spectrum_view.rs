@@ -3,7 +3,11 @@ mod braille;
 mod fire;
 mod radial;
 mod ridge;
+mod smooth;
 mod sparks;
+mod squares;
+mod stereo;
+mod trail;
 
 use crate::{
     settings::SpectrumStyle,
@@ -27,6 +31,7 @@ use std::{
     ops::Range,
     time::{Duration, Instant},
 };
+use stereo::Stereo;
 
 const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 /// Rows the waterfall and ridge remember; more than any pane shows, bounded for memory.
@@ -46,7 +51,10 @@ enum BarKind {
 
 /// Styles drawn from the frame history; they change only when a frame arrives.
 fn follows_frames(style: SpectrumStyle) -> bool {
-    matches!(style, SpectrumStyle::Waterfall | SpectrumStyle::Ridge)
+    matches!(
+        style,
+        SpectrumStyle::Waterfall | SpectrumStyle::Ridge | SpectrumStyle::Trail
+    )
 }
 
 /// Bands shown by item `index` of `count` across the spectrum: neighbors merge when
@@ -59,6 +67,19 @@ fn bands(index: usize, count: usize) -> Range<usize> {
 /// The loudest value in a span of bands.
 fn merged(values: &[f32; BANDS], bands: Range<usize>) -> f32 {
     values[bands].iter().copied().fold(0.0, f32::max)
+}
+
+/// The band values joined by straight segments between band centers and flat beyond the
+/// outer centers. Fewer dot columns than bands merge them instead.
+fn sample_at(levels: &[f32; BANDS], x: usize, width: usize) -> f32 {
+    if width < BANDS {
+        return merged(levels, bands(x, width)).clamp(0.0, 1.0);
+    }
+    let position = ((x as f32 + 0.5) * BANDS as f32 / width as f32 - 0.5).max(0.0);
+    let band = (position as usize).min(BANDS - 1);
+    let next = (band + 1).min(BANDS - 1);
+    let t = (position - band as f32).min(1.0);
+    (levels[band] + (levels[next] - levels[band]) * t).clamp(0.0, 1.0)
 }
 
 /// One bar: the bands it merges and its body columns.
@@ -101,6 +122,7 @@ pub(crate) struct SpectrumView {
     fire: Fire,
     radial: Radial,
     sparks: Sparks,
+    stereo: Stereo,
     rng: SmallRng,
     redraw: bool,
 }
@@ -122,6 +144,7 @@ impl SpectrumView {
             fire: Fire::default(),
             radial: Radial::default(),
             sparks: Sparks::default(),
+            stereo: Stereo::default(),
             rng: rand::make_rng(),
             redraw: true,
         }
@@ -155,6 +178,7 @@ impl SpectrumView {
         self.fire.reset();
         self.radial.reset();
         self.sparks.reset();
+        self.stereo.reset();
     }
     pub fn needs_animation(&self, playing: bool) -> bool {
         if follows_frames(self.style) {
@@ -166,6 +190,7 @@ impl SpectrumView {
                 && (self.fire.is_hot()
                     || self.radial.is_active()
                     || self.sparks.is_active()
+                    || (self.style == SpectrumStyle::Stereo && self.stereo.is_active())
                     || self.levels.iter().chain(&self.peaks).any(|v| *v > 0.0)
                     || (playing
                         && self.received.elapsed() < LIVE
@@ -261,6 +286,17 @@ impl SpectrumView {
             SpectrumStyle::Mono => self.draw_bars(buf, body, &p, BarKind::Mono),
             SpectrumStyle::Mirror => self.draw_bars(buf, body, &p, BarKind::Mirror),
             SpectrumStyle::Dots => self.draw_bars(buf, body, &p, BarKind::Dots),
+            SpectrumStyle::Squares => squares::draw(buf, body, &p, &self.levels, &self.peaks),
+            SpectrumStyle::Smooth if smooth::fits(body) => {
+                smooth::draw(buf, body, &p, &self.levels)
+            }
+            SpectrumStyle::Trail => trail::draw(buf, body, &p, &self.history),
+            SpectrumStyle::Stereo if stereo::fits(body) && self.has_channels() => {
+                self.stereo.draw(buf, body, &p)
+            }
+            SpectrumStyle::Smooth | SpectrumStyle::Stereo => {
+                self.draw_bars(buf, body, &p, BarKind::Zoned)
+            }
             SpectrumStyle::Waterfall => self.draw_waterfall(buf, body, &p),
             SpectrumStyle::Radial => {
                 self.radial.advance(dt);
@@ -290,13 +326,28 @@ impl SpectrumView {
         }
     }
 
+    fn has_channels(&self) -> bool {
+        self.frame
+            .as_ref()
+            .is_some_and(|frame| frame.channels.is_some())
+    }
+
     fn header(&self, frame: &mut Frame, area: Rect, p: &Palette, bordered: bool) -> Rect {
-        let name = self.style.id();
+        let name = if self.style == SpectrumStyle::Stereo && !self.has_channels() {
+            "stereo unavailable"
+        } else {
+            self.style.id()
+        };
         if bordered {
             let full = format!(" SPECTRUM · {name} · v close · V style ");
             let title =
                 if Line::from(full.as_str()).width() <= usize::from(area.width).saturating_sub(2) {
                     full
+                } else if self.style == SpectrumStyle::Stereo
+                    && !self.has_channels()
+                    && area.width >= 32
+                {
+                    " SPECTRUM · stereo unavailable ".to_string()
                 } else {
                     " SPECTRUM · v close ".to_string()
                 };
@@ -343,6 +394,14 @@ impl SpectrumView {
             } else if now >= self.hold[i] {
                 self.peaks[i] = self.levels[i].max(self.peaks[i] - dt * 0.8);
             }
+        }
+        if self.style == SpectrumStyle::Stereo {
+            let target = self
+                .frame
+                .as_ref()
+                .filter(|f| live && f.active)
+                .and_then(|f| f.channels.as_ref());
+            self.stereo.advance(target, dt);
         }
         dt
     }
@@ -929,7 +988,14 @@ mod tests {
                         .unwrap();
                 };
                 for step in 0..6 {
-                    view.accept(active(if step % 2 == 0 { ramp } else { [0.2; BANDS] }));
+                    let levels = if step % 2 == 0 { ramp } else { [0.2; BANDS] };
+                    view.accept(SpectrumFrame {
+                        channels: Some(crate::spectrum::SpectrumChannels {
+                            left: levels,
+                            right: [0.3; BANDS],
+                        }),
+                        ..active(levels)
+                    });
                     age(&mut view);
                     draw(&mut view, true);
                 }
@@ -1165,5 +1231,98 @@ mod tests {
         settle(&mut view, &mut terminal);
         assert!(!view.sparks.is_active());
         assert!(!view.needs_animation(false));
+    }
+    #[test]
+    fn trail_freezes_without_frames_keeps_generations_and_clears_with_tracks() {
+        let mut view = styled(SpectrumStyle::Trail);
+        let mut terminal = backend(40, 12);
+        view.accept(active([0.2; BANDS]));
+        view.accept(active([0.9; BANDS]));
+        render(&mut view, &mut terminal, true);
+        let saved = terminal.backend().buffer().clone();
+        assert!(!view.needs_animation(false));
+        age(&mut view);
+        render(&mut view, &mut terminal, false);
+        assert_eq!(&saved, terminal.backend().buffer());
+        view.accept(SpectrumFrame {
+            generation: 1,
+            ..SpectrumFrame::default()
+        });
+        assert_eq!(view.history.len(), 2);
+        view.accept(SpectrumFrame {
+            generation: 2,
+            current_id: Some("other".into()),
+            ..active([0.6; BANDS])
+        });
+        assert_eq!(view.history.len(), 1);
+        view.clear();
+        assert!(view.history.is_empty());
+    }
+
+    #[test]
+    fn stereo_distinguishes_missing_channels_from_silence_and_falls_back() {
+        use crate::spectrum::SpectrumChannels;
+        let mut stereo = styled(SpectrumStyle::Stereo);
+        let mut bars = styled(SpectrumStyle::Bars);
+        let mut terminal = backend(40, 12);
+        stereo.accept(active([0.7; BANDS]));
+        bars.accept(active([0.7; BANDS]));
+        render(&mut stereo, &mut terminal, true);
+        assert!(top_row(&terminal).contains("stereo unavailable"));
+        let fallback = terminal.backend().buffer().clone();
+        render(&mut bars, &mut terminal, true);
+        for y in 1..11 {
+            for x in 1..39 {
+                assert_eq!(fallback[(x, y)], terminal.backend().buffer()[(x, y)]);
+            }
+        }
+        stereo.accept(SpectrumFrame {
+            channels: Some(SpectrumChannels::default()),
+            ..active([0.7; BANDS])
+        });
+        render(&mut stereo, &mut terminal, true);
+        assert!(!top_row(&terminal).contains("unavailable"));
+        // Known silent channels draw no meter, even if the combined test signal is loud.
+        for y in 1..10 {
+            for x in 3..39 {
+                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
+            }
+        }
+        for (width, height) in [(9, 8), (15, 6)] {
+            let mut tiny = backend(width, height);
+            render(&mut stereo, &mut tiny, true);
+            let fallback = tiny.backend().buffer().clone();
+            render(&mut bars, &mut tiny, true);
+            assert_eq!(fallback, *tiny.backend().buffer());
+        }
+    }
+
+    #[test]
+    fn every_style_draws_all_pastel_palettes_with_stereo_and_frequency_labels() {
+        let catalog = crate::theme::ThemeCatalog::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/pastel"),
+        );
+        assert!(catalog.warnings.is_empty());
+        assert_eq!(catalog.themes.len(), Theme::ALL.len() + 16);
+        for theme in catalog.themes {
+            for style in SpectrumStyle::ALL {
+                for (width, height) in [(1, 1), (40, 12), (71, 27), (72, 28), (90, 28), (120, 40)] {
+                    let mut view = styled(style);
+                    view.accept(SpectrumFrame {
+                        low_hz: 40.0,
+                        high_hz: 16_000.0,
+                        channels: Some(crate::spectrum::SpectrumChannels {
+                            left: [0.8; BANDS],
+                            right: [0.3; BANDS],
+                        }),
+                        ..active([0.6; BANDS])
+                    });
+                    let mut terminal = backend(width, height);
+                    terminal
+                        .draw(|f| view.draw(f, f.area(), theme.palette(), true, true, CELL))
+                        .unwrap();
+                }
+            }
+        }
     }
 }

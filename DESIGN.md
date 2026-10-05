@@ -93,12 +93,13 @@ The read-only spectrum extends the existing TUI. `v` toggles it and saves the
 client preference (default off). Bars run from low to high frequencies, using
 fixed height zones: green below 55%, yellow up to 80%, and red above. Each theme
 provides three spectrum roles; Latte uses darker inks. Unicode eighth blocks and
-briefly held falling peaks animate at 20 Hz. There are no EQ sliders or L/R meters.
+briefly held falling peaks animate at 20 Hz. There are no EQ sliders; only `stereo` shows separate L/R meters.
 
-`V` switches to the next of ten styles while the spectrum is shown and saves it
+`V` switches to the next of fourteen styles while the spectrum is shown and saves it
 as `spectrum_style` (default `bars`); the status row names the new style. A
 style is a geometry plus a mapping of theme roles, never its own palette, so all
-palettes share the same role mapping. Frames stay mono 32-band; a style may merge bands for
+palettes share the same role mapping. Combined frames retain their 32 bands; optional channel data adds 32 bands per
+channel for stereo. A style may merge bands for
 narrow panes or join neighboring band values with straight segments, but never
 splits them. Styles draw with eighth blocks, braille dots (2 × 4 per cell), or
 `▀` half blocks (two pixels per cell, foreground over background). The status
@@ -118,12 +119,16 @@ title reads `SPECTRUM · <style> · v close · V style` when it fits, otherwise
 | `fire` | Half-block pixels, two per cell. The bottom pixel row takes each column's level (merged in narrow panes, repeated in wide ones) through a 0.75 power curve. Each step, every pixel takes the heat of a random neighbor below and, half the time, loses a fixed amount, so a full level reaches about 90% of the height; steps run fast enough for heat to climb the body in 0.35 s (30–150 per second). Heat maps in 16 shades from the canvas through the high and middle roles to the text role; light themes run from the middle role to the high role. Cells cold in both halves keep the constant blank style. A new generation clears the heat; once the levels fall, the fire burns out within one climb. |
 | `ridge` | Braille ridgelines from the history, newest frame in front at the bottom. Kept lines sit three to six dots apart, by body height, and move up one dot per frame (one dot every second frame below twelve rows). Straight segments join the 32 band values; nearer lines hide what lies behind them. Points take the gradient color at their level, faded toward the canvas by up to 45% with depth. Bodies of one or two rows show only the newest line. Like the waterfall: no decay or peaks; pause and stop freeze it; a track change, toggle, or reconnect clears it; seek, pause, and resume keep it. |
 | `sparks` | `bars` geometry and zones. When a band above 25% rises by more than 0.1, and by more than 1.5 times its recent average rise, between two consecutive frames of one stream, its bar throws 2–6 braille sparks from the first blank cell above it. A bar then waits 150 ms, up to a quarter of the bars (at least three) throw per draw, and the number of live sparks is capped by the pane size. Sparks fly under gravity as short streaks, cool from the text role through the middle and high roles toward the canvas, vanish within 1.1 s, and use only cells the bars leave blank. Bodies of one or two rows show plain bars. |
+| `squares` | The dots ladder with whole-cell `█` segments and a held peak; the height gradient runs from low through middle to high. Unlit segments use `·` in selection. |
+| `smooth` | A filled braille curve on the shared 2 × 4 dot canvas. Join band centers with straight segments, flatten outside the end centers, and merge bands when dot columns are fewer than bands. Zone colors follow height from the bottom. Below four body columns or two rows, draw combined bars. |
+| `trail` | Tops of the six most recent active frames, using the common bar layout so all bands remain represented. Draw oldest first; the newest top wins overlapping cells. Tops use `▄` and their height zone, blended toward canvas by age/6; zero levels draw nothing. Draw only when frames arrive, retaining history while paused or stopped and across seek/resume; clear on track change, toggle, or reconnect. |
+| `stereo` | Reserve two columns for muted L/R labels. L grows upward and R downward from the center, with an even height anchored at the bottom and zones by distance from the center. Lower partial blocks invert complementary lower-block colors. Each channel decays at the common bar rate, without peaks. Below ten body columns or four rows, draw combined bars. Missing channel data also uses combined bars, with `stereo unavailable` in the title when space allows; true silent channels stay blank. |
 
 Switching styles never clears levels or history; it starts fire heat, the radial
-pulse and waves, and sparks over. Every style except the waterfall and ridge
+pulse and waves, sparks, and the stereo envelopes over. Every style except the waterfall, ridge, and trail
 resets its levels when the analysis generation changes (seek, pause, resume),
-which also clears fire heat, the radial pulse and waves, and sparks; the
-waterfall and ridge keep rows that were actually heard and discard them only
+which also clears fire heat, the radial pulse and waves, sparks, and stereo envelopes; the
+waterfall, ridge, and trail keep rows that were actually heard and discard them only
 with the current track.
 
 At 28+ rows and 72+ columns, use the right half of Now Playing for the spectrum,
@@ -137,7 +142,7 @@ stopped, or stale data settles to zero instead of showing decorative motion.
 An idle spectrum connection stays open without requiring periodic frames; quiet
 or paused audio must not trigger a disconnection warning or a reconnect loop.
 Once bars, peaks, fire heat, radial waves, and sparks settle, suspend the animation timer until
-fresh audio or a view change needs it; the waterfall and ridge draw once per
+fresh audio or a view change needs it; the waterfall, ridge, and trail draw once per
 received frame and are otherwise idle. Nothing rotates or drifts on its own. Do
 not send terminal output for unchanged frames. Keep input and artwork completion
 immediate, and preserve progress and notice expiry.

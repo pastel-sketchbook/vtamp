@@ -20,10 +20,14 @@ pub enum SpectrumStyle {
     Fire,
     Ridge,
     Sparks,
+    Squares,
+    Smooth,
+    Trail,
+    Stereo,
 }
 
 impl SpectrumStyle {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::Bars,
         Self::Gradient,
         Self::Mono,
@@ -34,6 +38,10 @@ impl SpectrumStyle {
         Self::Fire,
         Self::Ridge,
         Self::Sparks,
+        Self::Squares,
+        Self::Smooth,
+        Self::Trail,
+        Self::Stereo,
     ];
 
     /// Settings identifier; also the literal name shown in the TUI.
@@ -49,6 +57,10 @@ impl SpectrumStyle {
             Self::Fire => "fire",
             Self::Ridge => "ridge",
             Self::Sparks => "sparks",
+            Self::Squares => "squares",
+            Self::Smooth => "smooth",
+            Self::Trail => "trail",
+            Self::Stereo => "stereo",
         }
     }
 
@@ -193,7 +205,11 @@ mod tests {
                 "radial",
                 "fire",
                 "ridge",
-                "sparks"
+                "sparks",
+                "squares",
+                "smooth",
+                "trail",
+                "stereo"
             ]
         );
         for style in SpectrumStyle::ALL {

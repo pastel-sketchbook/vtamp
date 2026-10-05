@@ -40,7 +40,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Optional YouTube audio imports, with a per-import choice to download video up to 480p.
 - Terminal video on macOS with installed FFmpeg/FFprobe and Kitty or Sixel graphics: `w` switches video/cover, and `F` fills the current pane with elapsed / total time below. Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
 - Managed YouTube download deletion with confirmation; queued copies are removed together, and local originals are protected.
-- Read-only audio spectrum with ten rendering styles (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks); press `v` to toggle and `V` to change the style.
+- Read-only audio spectrum with fourteen rendering styles (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks, squares, smooth, trail, stereo); press `v` to toggle and `V` to change the style.
 - Nine built-in color themes plus custom JSON palettes, with live previews and saved preferences.
 - High-resolution album art via Kitty graphics, with Sixel and color halfblock fallbacks.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
@@ -366,7 +366,7 @@ the desktop integration cannot initialize.
 | `X` | Empty the Queue after a confirmation dialog; playback stops unless a direct track plays outside it |
 | `J` / `K` | Move the selected queue entry down / up; unavailable while a queue filter is applied |
 | `v` | Toggle the read-only audio spectrum |
-| `V` | Switch to the next spectrum style while the spectrum is shown (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks) |
+| `V` | Switch to the next spectrum style while the spectrum is shown (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks, squares, smooth, trail, stereo) |
 | `t` | Preview and choose a color theme |
 | `?` | Show key reference |
 
@@ -427,6 +427,16 @@ style takes its colors from the current theme:
 | `fire` | Flames rising from each frequency's level, red through yellow to white on dark themes; they go out when playback pauses or stops |
 | `ridge` | Recent frames stacked as lines, newest at the bottom; nearer lines hide the ones behind, and older lines fade. It freezes while paused and resets on a track change |
 | `sparks` | The default bars; a band that jumps throws sparks from its bar, which fall back and fade |
+| `squares` | Whole-cell segments with a height gradient and a held peak |
+| `smooth` | A filled braille curve joining neighboring band centers |
+| `trail` | The six most recent frame tops, older ones fading toward the background; freezes while paused |
+| `stereo` | Independent L/R meters growing above and below the center, with channel labels |
+
+Smooth and stereo fall back to the combined bars when their shape cannot fit.
+Stereo also falls back with `stereo unavailable` in the title when attached to an
+older protocol-11 server without channel data. Reattach for the new TUI styles;
+restart with the new server binary when convenient to enable channel data.
+The other thirteen styles retain the combined-channel analysis.
 
 The view starts off and remembers your visibility and style in `ui.json`. Each
 attached TUI has its own visibility; toggling one does not change another. Analysis runs only while
@@ -436,7 +446,7 @@ the fire goes out, sparks land, and the radial core and waves fade back to the r
 An idle connection waits quietly for new frames; pausing does not require a
 server restart or trigger a reconnect warning.
 Animation stays at 20 fps while needed. Once the bars settle, the fire is out, and
-the last radial wave and spark are gone, the animation timer stops; the waterfall and ridge redraw
+the last radial wave and spark are gone, the animation timer stops; the waterfall, ridge, and trail redraw
 only when a frame arrives, and unchanged screens send no terminal updates.
 After upgrading from a server without spectrum support, restart the server with
 the new binary and reattach. Client and server must use the same protocol version.

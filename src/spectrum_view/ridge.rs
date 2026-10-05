@@ -1,7 +1,7 @@
 //! Ridgelines of recent frames on braille dots, nearest at the bottom, like the stacked
 //! pulsar plot on Joy Division's "Unknown Pleasures". Straight segments join neighboring
 //! band values, and nearer lines hide whatever lies behind them (a floating horizon).
-use super::{BANDS, bands, braille::Braille, merged};
+use super::{BANDS, braille::Braille, sample_at};
 use crate::theme::{Palette, blend, spectrum_gradient};
 use ratatui::{buffer::Buffer, layout::Rect};
 use std::collections::VecDeque;
@@ -53,7 +53,7 @@ pub(super) fn draw(
             }
             let fade = FADE * (4 * depth / rows).min(3) as f32;
             for x in 0..width {
-                profile[x] = level_at(levels, x, width);
+                profile[x] = sample_at(levels, x, width);
                 tops[x] = baseline - (profile[x] * amplitude).round() as i32;
             }
             for x in 0..width {
@@ -83,19 +83,6 @@ pub(super) fn draw(
         }
     }
     canvas.render(buf, p);
-}
-
-/// The band values joined by straight segments between band centers and flat beyond the
-/// outer centers. Fewer dot columns than bands merge them instead.
-fn level_at(levels: &[f32; BANDS], x: usize, width: usize) -> f32 {
-    if width < BANDS {
-        return merged(levels, bands(x, width)).clamp(0.0, 1.0);
-    }
-    let position = ((x as f32 + 0.5) * BANDS as f32 / width as f32 - 0.5).max(0.0);
-    let band = (position as usize).min(BANDS - 1);
-    let next = (band + 1).min(BANDS - 1);
-    let t = (position - band as f32).min(1.0);
-    (levels[band] + (levels[next] - levels[band]) * t).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -133,14 +120,14 @@ mod tests {
         let width = 64;
         let mut levels = [0.0; BANDS];
         levels[16] = 1.0;
-        assert_eq!(level_at(&levels, 0, width), 0.0);
-        assert_eq!(level_at(&levels, 30, width), 0.0);
+        assert_eq!(sample_at(&levels, 0, width), 0.0);
+        assert_eq!(sample_at(&levels, 30, width), 0.0);
         // Band 16's center falls between dot columns 32 and 33; the slopes meet there.
-        let rising = level_at(&levels, 31, width);
-        assert!(rising > 0.0 && rising < level_at(&levels, 32, width));
-        assert_eq!(level_at(&levels, 32, width), level_at(&levels, 33, width));
+        let rising = sample_at(&levels, 31, width);
+        assert!(rising > 0.0 && rising < sample_at(&levels, 32, width));
+        assert_eq!(sample_at(&levels, 32, width), sample_at(&levels, 33, width));
         // A narrow canvas merges bands instead of skipping them.
-        assert_eq!(level_at(&levels, 4, 8), 1.0);
+        assert_eq!(sample_at(&levels, 4, 8), 1.0);
         let dots = lit(&render(32, 12, &[levels]));
         for x in 0..64 {
             assert!(dots.iter().any(|(dx, _)| *dx == x), "column {x} is lit");
@@ -149,7 +136,7 @@ mod tests {
         let peak = dots.iter().map(|(_, y)| *y).min().unwrap();
         assert_eq!(
             peak,
-            47 - (level_at(&levels, 32, width) * 19.2).round() as i32
+            47 - (sample_at(&levels, 32, width) * 19.2).round() as i32
         );
         for x in 28..38 {
             let column: Vec<i32> = dots
