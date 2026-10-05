@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-05
+
+Changes since v0.4.1. Custom JSON themes join the existing palettes, file
+playback gains automatic loudness normalization, and import retries keep their
+source titles.
+
 ### Added
 
 - Automatic per-file loudness normalization to −18 LUFS, with true-peak headroom
@@ -11,6 +17,39 @@
   current gain. Device playback and casts share the correction; relays do not
   apply it twice. Radio remains unchanged. Protocol 11 and database 7 preserve
   existing Library identities, queues, and session settings.
+- Custom JSON palettes in the client data directory's `themes/` folder, with
+  the existing `t` preview/save/cancel controls and `--theme` overrides. New
+  themes need no code changes or rebuild; reattach after editing files.
+- `vtamp theme install FILE... [--replace]` validates and installs palettes
+  without changing the saved default or starting the server. Invalid files
+  produce diagnostics while other choices remain available.
+- Sixteen optional Pastel examples in `themes/pastel/`, preserving the names
+  and colors from [pastel-sketchbook's contribution](https://github.com/pastel-sketchbook/vtamp/commit/a64c16f88aa65a4d6afd38f9756cefae9746c3d9).
+  Install them with `vtamp theme install themes/pastel/*.json` from a checkout
+  or extracted release archive. Homebrew installs the examples under its
+  package share directory. They are not enabled automatically.
+
+### Fixed
+
+- Retried YouTube imports preserve their source titles instead of becoming
+  `YouTube import`. Startup repairs historical placeholder titles using
+  retained source/history data or the URL while preserving other job data.
+
+### Upgrade notes
+
+- Protocol is **11** and database version is **7**. Upgrading from v0.4.1
+  transactionally adds loudness storage while preserving Library identities,
+  Queue, and session settings. Clients and servers must use the same protocol.
+- Before replacing an older protocol-10 binary, stop its server with that
+  matching installed binary: `vtamp server stop`. Then run
+  `brew update && brew upgrade vtamp` and attach again. The saved session is
+  restored paused; installing a binary never replaces a running server.
+- Custom themes are client-local. Once client/server protocols match, selecting
+  or editing a theme only needs a new attachment, not a server restart.
+  Older clients cannot resolve a saved custom theme ID.
+- Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux tested on
+  Ubuntu 24.04 (glibc 2.39+). Intel Macs and other Linux architectures build
+  from source. Release archives include theme documentation and Pastel examples.
 
 ## [0.4.1] — 2026-10-04
 
@@ -173,7 +212,8 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
-[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/rath/vtamp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/rath/vtamp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rath/vtamp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rath/vtamp/compare/v0.2.0...v0.3.0

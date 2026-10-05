@@ -112,6 +112,12 @@ target/release/vtamp --theme pastel-default
 target/release/vtamp --theme pastel-default-light
 ```
 
+Homebrew also installs these files under its package share directory:
+
+```sh
+vtamp theme install "$(brew --prefix vtamp)/share/vtamp/themes/pastel/"*.json
+```
+
 Installation adds sixteen choices, for twenty-five total. It preserves the
 saved default. Use `t` and Enter or `theme set` only when you want to save one.
 

@@ -29,7 +29,7 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.4.1
+## What ships in v0.4.2
 
 - Persistent playback server, with multiple TUI and CLI clients.
 - Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
