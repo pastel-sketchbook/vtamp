@@ -308,3 +308,26 @@ Covering overlays suspend decoding and hide pixels, and close/resize/reattach
 resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
 Video failure uses a single notice and the existing cover, without interrupting
 music. Import details distinguish audio added, video added, and video failure.
+
+### Unresolved swap-pane slowdown
+
+Open as of 2026-10-05, after the Kitty batching change (`04c3eb8`). In Ghostty
+1.3.1 + tmux next-3.9, returning video with `swap-pane` can intermittently leave
+it near 1 fps while audio continues. The user reports immediate recovery when
+focus moves to another pane; refocusing video can bring the slowdown back.
+Earlier episodes also exposed a blinking cursor at the outer terminal's origin,
+not the pane's origin. The user's rotation performs two sequential swaps without
+`-d` between a parked window and a slot in a multi-pane window.
+
+A three-second live sample found the TUI main thread in terminal `write()` in
+2604 of 2605 samples, consistent with output backpressure. That sample was not
+confirmed to coincide with the persistent 1 fps state, so it does not establish
+the cause. Isolated swap/focus trials did not reproduce the persistent slowdown.
+The remaining bottleneck in the TUI → PTY → tmux → Ghostty path is unconfirmed;
+neither a deadlock nor a synchronized-update timeout has been established.
+
+Investigation is deferred. On resumption, capture simultaneous TUI, tmux, and
+Ghostty samples during a confirmed slow episode before changing focus. Compare
+with recovery and check whether large uploads inside the pane's synchronized
+update delay output. Moving uploads outside that transaction remains an unverified
+proposal, not a shipped fix. Keep live playback untouched and scope fixes to vtamp.
