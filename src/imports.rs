@@ -25,6 +25,9 @@ pub struct ImportRequest {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub video_ids: Option<Vec<String>>,
+    /// Source video/playlist title, independent of track metadata overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_title: Option<String>,
 }
 impl ImportRequest {
     pub fn validate(&mut self) -> Result<()> {
@@ -36,6 +39,15 @@ impl ImportRequest {
         }
         for text in [&self.title, &self.artist].into_iter().flatten() {
             validate_text(text)?;
+        }
+        if let Some(title) = &self.source_title
+            && (title.trim().is_empty()
+                || title.chars().count() > 2048
+                || title.chars().any(char::is_control))
+        {
+            bail!(
+                "Source title must be nonempty text, at most 2048 characters, without control characters"
+            );
         }
         if let Some(ids) = &self.video_ids
             && (ids.len() > 10_000 || ids.iter().any(|s| !s.is_empty() && !youtube::valid_id(s)))
@@ -88,7 +100,10 @@ impl ImportJob {
         Self {
             job_id: uuid::Uuid::new_v4().to_string(),
             url: request.url.clone(),
-            title: "YouTube import".into(),
+            title: request
+                .source_title
+                .clone()
+                .unwrap_or_else(|| request.url.clone()),
             status: "queued".into(),
             stage: "queued".into(),
             total: None,
@@ -289,7 +304,7 @@ fn work(
     let preview = if let Some(ids) = &request.video_ids {
         youtube::Preview {
             url: request.url.clone(),
-            title: "YouTube import".into(),
+            title: job.title.clone(),
             playlist: request.playlist,
             existing: None,
             items: ids
@@ -303,7 +318,9 @@ fn work(
     } else {
         youtube::preview(&request.url, request.playlist, config, stop)?
     };
-    job.title = preview.title;
+    if job.title == job.url {
+        job.title = preview.title;
+    }
     job.total = Some(preview.items.len());
     let items: Vec<_> = preview
         .items
@@ -340,6 +357,12 @@ fn work(
                 bail!("Server stopped");
             }
             let existing = wait(rx, stop)?;
+            if !request.playlist
+                && job.title == job.url
+                && let Some(source) = existing.as_ref().and_then(|r| r.track.source.as_ref())
+            {
+                job.title = source.original_title.clone();
+            }
             if let Some(record) = &existing
                 && record
                     .track
@@ -385,6 +408,9 @@ fn work(
                 if source.video_id != item.video_id {
                     bail!("Extractor returned a different video");
                 }
+                if !request.playlist && job.title == job.url {
+                    job.title = source.original_title.clone();
+                }
                 update(job, "metadata", send);
                 let metadata = metadata::resolve(&source, config, paths, stop);
                 item.title = metadata.title.clone();
@@ -417,6 +443,9 @@ fn work(
                     artist_override: request.artist.clone(),
                 }
             };
+            if !request.playlist && job.title == job.url {
+                job.title = manifest.source.original_title.clone();
+            }
             // Repairing missing audio must not discard a previously downloaded video.
             let old_video = final_dir.join(crate::video::FILE);
             if !stage.join(crate::video::FILE).exists()
@@ -638,4 +667,36 @@ pub fn publish_video(paths: &Paths, p: &VideoPublication, record: &Record) -> Re
         dir.join(crate::video::FILE),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_titles_are_optional_and_do_not_override_track_metadata() {
+        let mut request: ImportRequest = serde_json::from_value(serde_json::json!({
+            "url": "https://www.youtube.com/playlist?list=PLtest",
+            "playlist": true,
+            "video_ids": ["lO3lG-qXU14"]
+        }))
+        .unwrap();
+        request.validate().unwrap();
+        assert_eq!(ImportJob::new(&request).title, request.url);
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("source_title")
+                .is_none()
+        );
+        // Extractor titles are bounded in characters, including non-ASCII titles.
+        request.source_title = Some("곡".repeat(2048));
+        request.validate().unwrap();
+        assert_eq!(ImportJob::new(&request).title, "곡".repeat(2048));
+        assert!(request.title.is_none());
+        for invalid in [" ".into(), "a\nb".into(), "a".repeat(2049)] {
+            request.source_title = Some(invalid);
+            assert!(request.validate().is_err());
+        }
+    }
 }

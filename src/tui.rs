@@ -5881,6 +5881,8 @@ mod tests {
                     assert!(request.playlist);
                     assert!(request.video);
                     assert_eq!(request.video_ids.unwrap(), ["0OeEx5SiRI0", "lO3lG-qXU14"]);
+                    assert_eq!(request.source_title.as_deref(), Some("Example playlist"));
+                    assert!(request.title.is_none());
                 }
                 assert!(requests.try_recv().is_err());
             }

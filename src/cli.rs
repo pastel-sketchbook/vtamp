@@ -622,6 +622,7 @@ pub async fn run(args: Args) -> Result<()> {
                     title,
                     artist,
                     video_ids: None,
+                    source_title: None,
                     video,
                 };
                 request.validate()?;

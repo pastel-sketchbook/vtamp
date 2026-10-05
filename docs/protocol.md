@@ -561,11 +561,16 @@ while one runs returns `cover_refresh_in_progress` with its `job_id`.
 
 An import request has `url`, `playlist` and `video` (both default false), optional single-video
 `title`/`artist`, and optional `video_ids` to freeze a preview or retry subset.
+Optional `source_title` preserves the source video/playlist label across a frozen
+preview or retry; it never overrides track metadata. Omitted/null uses the source
+URL until a title is resolved. When supplied, it must be nonempty text of at most
+2048 Unicode characters without control characters. Old requests can omit it.
 An empty ID in a playlist represents an unavailable entry and is reported as a
 failure. Other IDs must be valid 11-character video IDs. A single video's frozen
 ID must match its URL. Playlists are capped at 10,000 entries. There are at most
 32 queued/running jobs, one download worker, and four auxiliary preview/metadata
 workers. Jobs run in submission order; configuration is captured at submission.
+Retries capture the current configuration rather than the original job's settings.
 
 Jobs carry `job_id`, normalized source URL, title, status/stage, nullable total
 and current item, added/skipped/failed counts, bytes/total/speed/ETA, timestamps,
@@ -582,6 +587,14 @@ An audio success plus video failure leaves the item completed/skipped, records t
 video failure, and makes the job partial. `import_retry` includes items whose
 requested video is not ready, preserving the video option. Successful video-only
 additions have item status `updated`; already complete imports remain skipped.
+Retries also copy the original job's title into `source_title`, so resolving a
+frozen subset cannot replace it with a generic label. On server startup, legacy
+`YouTube import` titles are repaired in one transaction before loading live jobs:
+use a retained source title for the same URL, or stored source/item information
+for a single video, otherwise the source URL. Only changed job titles and their
+revisions are updated; IDs, outcomes, items, and timestamps are preserved.
+Read-only queries never run this repair. It performs no network requests and
+requires no database schema change.
 Job history
 retains 100 terminal jobs. On startup all unfinished jobs become interrupted;
 only an explicit retry starts them again. Jobs optionally carry

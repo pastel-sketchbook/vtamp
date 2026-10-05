@@ -33,6 +33,10 @@ base=pathlib.Path(__file__).parent
 if '--version' in args:
  print('fake 1');sys.exit(0)
 with open(base/'calls','a') as f: f.write(json.dumps(args)+'\n')
+if (base/'expected_cookies').exists():
+ assert args[args.index('--cookies-from-browser')+1]==(base/'expected_cookies').read_text()
+else:
+ assert '--cookies-from-browser' not in args
 url=args[-1]
 video=url.split('v=')[-1]
 if (base/'slow').exists(): time.sleep(60)
@@ -53,7 +57,8 @@ if '-f' in args and args[args.index('-f')+1]=='bestvideo[height<=480]/best[heigh
  pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','webm')).write_bytes(b'SILENT VIDEO')
  sys.exit(0)
 assert '-f' in args and args[args.index('-f')+1]=='bestaudio[ext=m4a]/bestaudio'
-assert '--cookies-from-browser' not in args
+if (base/'require_cookies').exists() and '--cookies-from-browser' not in args:
+ print('ERROR: unable to download video data: HTTP Error 403: Forbidden',file=sys.stderr);sys.exit(1)
 out=pathlib.Path(args[args.index('-o')+1].replace('%(ext)s','m4a'))
 shutil.copyfile({fixture},out)
 if not (base/'nothumb').exists(): shutil.copyfile(base/'art.png',out.with_suffix('.png'))
@@ -334,6 +339,7 @@ fn playlist_partial_failure_and_retry_only_unfinished() {
     let id = j["job_id"].as_str().unwrap();
     let result = h.wait(id);
     assert_eq!(result["job"]["status"], "partial");
+    assert_eq!(result["job"]["title"], "Test playlist");
     assert_eq!(result["job"]["added"], 2);
     assert_eq!(result["job"]["failed"], 1);
     assert_eq!(
@@ -362,6 +368,7 @@ fn playlist_partial_failure_and_retry_only_unfinished() {
     fs::write(h.home.path().join("bin/repair"), b"").unwrap();
     let retry = h.ok(&["library", "import-retry", id]);
     let r = h.wait(retry["job_id"].as_str().unwrap());
+    assert_eq!(r["job"]["title"], "Test playlist");
     assert_eq!(r["job"]["added"], 1);
     assert_eq!(r["job"]["total"], 1);
     assert_eq!(r["job"]["first_added_track_id"], r["items"][0]["track_id"]);
@@ -382,6 +389,121 @@ fn cancellation_keeps_server_responsive_and_stops_child() {
     fs::remove_file(h.home.path().join("bin/slow")).unwrap();
     let retry = h.ok(&["library", "import-retry", id]);
     assert_eq!(h.wait(retry["job_id"].as_str().unwrap())["job"]["added"], 1);
+}
+
+#[test]
+fn retries_keep_source_titles_and_pick_up_new_cookie_settings() {
+    for profile in [None, Some("Profile 1")] {
+        let h = Harness::new();
+        h.ok(&["server", "start", "--headless"]);
+        h.ok(&["volume", "0"]);
+        let bin = h.home.path().join("bin");
+        fs::write(bin.join("require_cookies"), b"").unwrap();
+        let first = h.ok(&["library", "add", URL, "--title", "My saved title"]);
+        let failed = h.wait(first["job_id"].as_str().unwrap());
+        assert_eq!(failed["job"]["status"], "failed");
+        let source_title = &failed["job"]["title"];
+        assert_eq!(source_title, "이승환 + 정준일 '어떻게 사랑이 그래요'");
+        assert!(
+            failed["items"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("403")
+        );
+
+        // A second failure must retain the source title, too.
+        let retry = h.ok(&["library", "import-retry", first["job_id"].as_str().unwrap()]);
+        let failed_again = h.wait(retry["job_id"].as_str().unwrap());
+        assert_eq!(failed_again["job"]["status"], "failed");
+        assert_eq!(&failed_again["job"]["title"], source_title);
+
+        let settings = h.home.path().join("imports.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        config["youtube"]["chrome_cookies"] = json!(true);
+        config["youtube"]["chrome_profile"] = json!(profile);
+        fs::write(settings, serde_json::to_vec(&config).unwrap()).unwrap();
+        let browser = profile
+            .map(|p| format!("chrome:{p}"))
+            .unwrap_or_else(|| "chrome".into());
+        fs::write(bin.join("expected_cookies"), &browser).unwrap();
+        fs::write(bin.join("calls"), b"").unwrap();
+
+        // No restart: retry captures the new configuration at submission.
+        let retry = h.ok(&["library", "import-retry", retry["job_id"].as_str().unwrap()]);
+        let done = h.wait(retry["job_id"].as_str().unwrap());
+        assert_eq!(done["job"]["status"], "completed");
+        assert_eq!(&done["job"]["title"], source_title);
+        assert_eq!(done["items"][0]["title"], "My saved title");
+        let calls = fs::read_to_string(bin.join("calls")).unwrap();
+        assert_eq!(calls.matches("bestaudio[ext=m4a]/bestaudio").count(), 1);
+        for line in calls.lines() {
+            let args: Vec<String> = serde_json::from_str(line).unwrap();
+            let position = args
+                .iter()
+                .position(|a| a == "--cookies-from-browser")
+                .unwrap();
+            assert_eq!(args[position + 1], browser);
+        }
+    }
+}
+
+#[tokio::test]
+async fn frozen_playlist_titles_survive_queueing_and_resolution_failures() {
+    let h = Harness::new();
+    h.ok(&["server", "start", "--headless"]);
+    h.ok(&["volume", "0"]);
+    let slow = h.home.path().join("bin/slow");
+    fs::write(&slow, b"").unwrap();
+    let blocker = h.ok(&["library", "add", URL]);
+    let client = vtamp::client::Client::new(vtamp::platform::Paths {
+        data: h.home.path().into(),
+        runtime: h.home.path().join("run"),
+        cache: h.home.path().join("covers"),
+    });
+    let queued = client
+        .request(vtamp::model::Command::ImportStart {
+            request: vtamp::imports::ImportRequest {
+                url: "https://www.youtube.com/playlist?list=PLtest".into(),
+                playlist: true,
+                video_ids: Some(vec!["FAILED00001".into()]),
+                source_title: Some("Confirmed playlist".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .into_data()
+        .unwrap();
+    let id = queued["job_id"].as_str().unwrap();
+    let status = h.ok(&["library", "import-status", id]);
+    assert_eq!(status["job"]["status"], "queued");
+    assert_eq!(status["job"]["title"], "Confirmed playlist");
+    // Cancelling before a plan is saved must not lose the preview title.
+    let cancelled = h.ok(&["library", "import-cancel", id]);
+    assert_eq!(cancelled["title"], "Confirmed playlist");
+    let queued_retry = h.ok(&["library", "import-retry", id]);
+    let id = queued_retry["job_id"].as_str().unwrap();
+    assert_eq!(
+        h.ok(&["library", "import-status", id])["job"]["title"],
+        "Confirmed playlist"
+    );
+    fs::remove_file(slow).unwrap();
+    h.ok(&[
+        "library",
+        "import-cancel",
+        blocker["job_id"].as_str().unwrap(),
+    ]);
+    h.wait(blocker["job_id"].as_str().unwrap());
+    let failed = h.wait(id);
+    assert_eq!(failed["job"]["status"], "failed");
+    assert_eq!(failed["job"]["title"], "Confirmed playlist");
+    let retry = h.ok(&["library", "import-retry", id]);
+    let again = h.wait(retry["job_id"].as_str().unwrap());
+    assert_eq!(again["job"]["title"], "Confirmed playlist");
+    assert_eq!(again["job"]["total"], 1);
+    assert_eq!(again["items"][0]["video_id"], "FAILED00001");
+    let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
+    assert!(!calls.contains("--flat-playlist"));
 }
 #[test]
 fn absent_downloader_keeps_optional_features_out_of_help() {
@@ -702,6 +824,7 @@ fn failed_video_keeps_audio_and_retry_only_downloads_video() {
     let done = h.wait(retry["job_id"].as_str().unwrap());
     assert_eq!(done["job"]["status"], "completed");
     assert_eq!(done["job"]["updated"], 1);
+    assert_eq!(done["job"]["title"], result["job"]["title"]);
     assert_eq!(done["items"][0]["track_id"], result["items"][0]["track_id"]);
     let calls = fs::read_to_string(h.home.path().join("bin/calls")).unwrap();
     assert_eq!(calls.matches("bestaudio[ext=m4a]/bestaudio").count(), 1);

@@ -120,6 +120,7 @@ pub async fn run(
     crate::deletion::recover(&paths, &store)?;
     crate::archive::recover(&paths, &store)?;
     store.interrupt_scans(unix_ms())?;
+    store.repair_import_titles()?;
     store.interrupt_imports()?;
     if paths.data.join("imports/youtube").is_dir() {
         store.add_root(&paths.data.join("imports/youtube"))?;

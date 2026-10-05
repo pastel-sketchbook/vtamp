@@ -69,6 +69,14 @@ leaves the audio playable and gives the job a partial result. There is one downl
 queued/running jobs, and 100 retained terminal reports. Restart marks unfinished
 jobs interrupted; explicit retry is required. Completed tracks remain available.
 
+Retries keep the original video or playlist title, including while queued or
+when another attempt fails. Confirmed playlist previews keep their source title,
+too; a track's edited title does not rename its import job. Until a source title
+is known, the job shows its URL. On server startup, older `YouTube import` labels
+are repaired from retained history and stored source/track information. A
+playlist whose title was never saved falls back to its URL. This repair makes no
+network requests and does not retry downloads or change their outcomes.
+
 `library cover refresh` re-fetches the thumbnail of every managed YouTube import
 and rewrites its `cover.jpg` with the current thumbnail pipeline, so imports from
 an older pipeline can be repaired without re-importing audio. Omitting the track
@@ -299,3 +307,9 @@ affect availability. A logged-in browser alone does not enable this option.
 `youtube status` checks executables only; an explicit preview/import exercises
 the selected authentication path. Disable `chrome_cookies` to return to public
 unauthenticated extraction.
+
+Settings are captured when each job is submitted. After enabling cookies,
+retry the failed job (`r` in Imports or `library import-retry JOB_ID`) to use the
+new setting without restarting the server. Already queued or running jobs keep
+their earlier settings. Cookies can help with authentication-related failures;
+an HTTP 403 alone does not establish the cause or guarantee that cookies fix it.

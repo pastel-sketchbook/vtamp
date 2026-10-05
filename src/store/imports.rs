@@ -107,12 +107,82 @@ impl Store {
         }
         Ok(())
     }
+    /// Repair old placeholder labels before the server loads its live job cache.
+    /// Queries stay read-only; startup owns this bounded, local-only repair.
+    pub fn repair_import_titles(&mut self) -> Result<()> {
+        let history = self
+            .import_jobs()?
+            .into_iter()
+            .map(|job| {
+                self.import_request(&job.job_id)
+                    .map(|request| (job, request))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut repaired = Vec::new();
+        for (old, request) in &history {
+            if old.title != "YouTube import" {
+                continue;
+            }
+            let usable = |title: &str| {
+                !title.trim().is_empty() && title != "YouTube import" && title != old.url
+            };
+            let mut title = request
+                .source_title
+                .clone()
+                .filter(|t| usable(t))
+                .or_else(|| {
+                    history
+                        .iter()
+                        .find(|(job, r)| {
+                            job.url == old.url
+                                && r.playlist == request.playlist
+                                && usable(&job.title)
+                        })
+                        .map(|(job, _)| job.title.clone())
+                });
+            if title.is_none() && !request.playlist {
+                let url = url::Url::parse(&old.url)?;
+                let video_id = url
+                    .query_pairs()
+                    .find(|(key, _)| key == "v")
+                    .map(|(_, id)| id);
+                if let Some(id) = &video_id {
+                    title = self
+                        .video_record(id)?
+                        .and_then(|r| r.track.source)
+                        .map(|s| s.original_title)
+                        .filter(|t| usable(t));
+                }
+                if title.is_none() {
+                    title = self
+                        .import_items(&old.job_id, 0, 1)?
+                        .into_iter()
+                        .map(|item| item.title)
+                        .chain(old.current_title.clone())
+                        .find(|t| usable(t) && video_id.as_deref() != Some(t.as_str()));
+                }
+            }
+            let mut job = old.clone();
+            job.title = title.unwrap_or_else(|| old.url.clone());
+            job.revision += 1;
+            repaired.push(job);
+        }
+        if !repaired.is_empty() {
+            let tx = self.db.transaction()?;
+            for job in repaired {
+                save_job(&tx, &job)?;
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
     pub fn retry_import(&self, id: &str) -> Result<ImportRequest> {
         let job = self.import_job(id)?;
         if !job.terminal() {
             bail!("Import is still running");
         }
         let mut request = self.import_request(id)?;
+        request.source_title = Some(job.title);
         let strings = self
             .db
             .prepare("SELECT json FROM import_items WHERE job_id=?1 ORDER BY position")?
@@ -337,6 +407,156 @@ pub(super) fn migrate_albums(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_import_titles_recover_locally_without_changing_outcomes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("state.db")).unwrap();
+        let cases = [
+            (
+                false,
+                Some("Original video"),
+                Some("Saved song"),
+                "Original video",
+            ),
+            (
+                true,
+                Some("Original playlist"),
+                Some("Last song"),
+                "Original playlist",
+            ),
+            (true, None, Some("Last song"), ""),
+            (false, None, Some("Known song"), "Known song"),
+            (false, None, None, ""),
+        ];
+        let mut expected = Vec::new();
+        for (index, (playlist, original, current, wanted)) in cases.into_iter().enumerate() {
+            let id = format!("VIDEO{index:06}");
+            let url = if playlist {
+                format!("https://www.youtube.com/playlist?list=PL{index}")
+            } else {
+                crate::youtube::video_url(&id)
+            };
+            let request = ImportRequest {
+                url: url.clone(),
+                playlist,
+                ..Default::default()
+            };
+            if let Some(title) = original {
+                let mut job = ImportJob::new(&request);
+                job.title = title.into();
+                job.finish("failed");
+                store.create_import(&job, &request).unwrap();
+                store.save_import(&job, None).unwrap();
+            }
+            let mut job = ImportJob::new(&request);
+            job.title = "YouTube import".into();
+            job.total = Some(1);
+            job.failed = 1;
+            job.current_title = current.map(str::to_owned);
+            job.finish("failed");
+            let item = ImportItem {
+                index: 0,
+                video_id: id.clone(),
+                title: current.unwrap_or(&id).into(),
+                status: "failed".into(),
+                track_id: None,
+                error: Some("HTTP Error 403: Forbidden".into()),
+                metadata: None,
+                video_status: None,
+                video_error: None,
+            };
+            store.create_import(&job, &request).unwrap();
+            store.save_import(&job, Some(&item)).unwrap();
+            expected.push((
+                job,
+                item,
+                if wanted.is_empty() {
+                    url
+                } else {
+                    wanted.into()
+                },
+            ));
+        }
+        // A failure partway through the repair must roll back every title.
+        store.db.execute_batch(&format!(
+            "CREATE TRIGGER fail_title_repair BEFORE UPDATE ON import_jobs WHEN NEW.id = '{}' BEGIN SELECT RAISE(FAIL, 'injected repair failure'); END;",
+            expected[0].0.job_id
+        )).unwrap();
+        assert!(store.repair_import_titles().is_err());
+        for (job, _, _) in &expected {
+            assert_eq!(json!(store.import_job(&job.job_id).unwrap()), json!(job));
+        }
+        store
+            .db
+            .execute_batch("DROP TRIGGER fail_title_repair")
+            .unwrap();
+        store.repair_import_titles().unwrap();
+        for (mut job, item, title) in expected {
+            job.title = title;
+            job.revision += 1;
+            assert_eq!(json!(store.import_job(&job.job_id).unwrap()), json!(job));
+            assert_eq!(
+                json!(store.import_items(&job.job_id, 0, 1).unwrap()),
+                json!([item])
+            );
+            let request = store.retry_import(&job.job_id).unwrap();
+            assert_eq!(request.source_title.as_deref(), Some(job.title.as_str()));
+            assert_eq!(ImportJob::new(&request).title, job.title);
+            assert!(
+                store
+                    .import_request(&job.job_id)
+                    .unwrap()
+                    .source_title
+                    .is_none()
+            );
+        }
+        let once = json!(store.import_jobs().unwrap());
+        store.repair_import_titles().unwrap();
+        assert_eq!(json!(store.import_jobs().unwrap()), once);
+    }
+
+    #[test]
+    fn legacy_single_video_title_prefers_stored_source_over_saved_song_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("state.db")).unwrap();
+        let id = "lO3lG-qXU14";
+        let request = ImportRequest {
+            url: crate::youtube::video_url(id),
+            ..Default::default()
+        };
+        let manifest = crate::imports::Manifest {
+            track_id: "track".into(),
+            source: crate::youtube::Source {
+                video_id: id.into(),
+                video_url: request.url.clone(),
+                original_title: "Artist - Original video (Live)".into(),
+                ..Default::default()
+            },
+            metadata: Metadata {
+                title: "Saved song".into(),
+                ..Default::default()
+            },
+            title_override: None,
+            artist_override: None,
+        };
+        store.db.execute(
+            "INSERT INTO track_metadata(id,video_id,manifest,metadata) VALUES('track',?1,?2,?3)",
+            params![id, serde_json::to_string(&manifest).unwrap(), serde_json::to_string(&manifest.metadata).unwrap()],
+        ).unwrap();
+        let mut job = ImportJob::new(&request);
+        job.title = "YouTube import".into();
+        job.current_title = Some("Saved song".into());
+        job.finish("failed");
+        store.create_import(&job, &request).unwrap();
+        store.save_import(&job, None).unwrap();
+        store.repair_import_titles().unwrap();
+        assert_eq!(
+            store.import_job(&job.job_id).unwrap().title,
+            manifest.source.original_title
+        );
+    }
+
     #[test]
     fn v3_migration_cleans_albums_and_preserves_queue_and_overrides() {
         let directory = tempfile::tempdir().unwrap();

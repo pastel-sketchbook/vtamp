@@ -347,6 +347,7 @@ impl App {
                     let mut request = request.clone();
                     request.video_ids =
                         Some(preview.items.iter().map(|i| i.video_id.clone()).collect());
+                    request.source_title = Some(preview.title.clone());
                     self.import_ui.modal = None;
                     self.send(commands, Command::ImportStart { request });
                 } else if matches!(key.code, KeyCode::Tab | KeyCode::Char(' ')) {
