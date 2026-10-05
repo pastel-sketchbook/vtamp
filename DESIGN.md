@@ -388,3 +388,10 @@ with image uploads taking about 1.2 s. tmux defers pending redraws while its cli
 output buffer is nonempty, so the next candidate allows a 150 ms output pause
 after a slow upload. This tests whether continuous image traffic prevents a
 pending swap redraw from settling; the causal link is not yet established.
+
+The user's next trace also reproduced the stall with these output pauses active:
+writes stayed near 35 ms per 16 KiB and uploads took roughly 0.8–1.1 s. The pause
+did not restore throughput, so draining a pending redraw is not a demonstrated
+fix. The next investigation captures symbolized debug-client and tmux stacks
+during slow output, together with read-only pane and termios state, and compares
+them with recovery. Do not claim a root cause from the timing trace alone.
