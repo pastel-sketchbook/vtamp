@@ -164,6 +164,12 @@ Never send synchronized-update holds or releases through tmux passthrough:
 tmux does not track those holds, and a later redraw cannot be relied on to
 release them after a window or pane swap. tmux owns synchronization of its client
 terminal; vtamp owns only its pane transaction. Kitty uploads still pass through.
+Send tmux Kitty uploads and virtual placements before beginning the pane's
+synchronized update; keep only placeholder, text, and caret drawing inside it.
+Large uploads can otherwise leave the pane in sync mode while passthrough resets
+the outer cursor. Upload even when the placeholder cells are unchanged, and keep
+their styles and cell widths intact. Direct Kitty and Sixel keep their existing
+rendering path.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -337,8 +343,10 @@ is not established by this trace alone. No video pixel-rate capture accompanied
 these samples. Isolated swap/focus trials did not reproduce the persistent issue;
 neither a deadlock nor a synchronized-update timeout has been established.
 
-Investigation is deferred. On resumption, capture simultaneous TUI, tmux, and
-Ghostty samples during a confirmed slow episode before changing focus. Compare
-with recovery and check whether large uploads inside the pane's synchronized
-update delay output. Moving uploads outside that transaction remains an unverified
-proposal, not a shipped fix. Keep live playback untouched and scope fixes to vtamp.
+The user also observed the cursor rapidly alternating between Ghostty's origin
+and the lower-left corner of pane 5 during a slow episode. The first mitigation
+to test moves Kitty uploads and virtual placements outside the pane's synchronized
+update, allowing tmux to restore cursor state while transmitting them. This is
+not yet a confirmed fix for the slowdown. At the user's request, validation proceeds
+by testing each candidate build in their own swap workflow, rather than further
+isolated GUI trials. Keep live playback untouched and scope fixes to vtamp.

@@ -77,11 +77,15 @@ struct Presentation {
 /// Never open a passthrough update in the outer terminal: tmux cannot track it,
 /// and a window swap can suppress the redraw we would need to release it.
 trait PresentationBackend: Backend {
+    fn upload_graphics(&mut self, sequence: &str) -> Result<(), Self::Error>;
     fn begin_update(&mut self) -> Result<(), Self::Error>;
     fn end_update(&mut self) -> Result<(), Self::Error>;
 }
 
 impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBackend<W> {
+    fn upload_graphics(&mut self, sequence: &str) -> Result<(), Self::Error> {
+        crossterm::queue!(self, crossterm::style::Print(sequence))
+    }
     fn begin_update(&mut self) -> Result<(), Self::Error> {
         crossterm::execute!(self, crossterm::terminal::BeginSynchronizedUpdate)
     }
@@ -92,12 +96,35 @@ impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBacke
 
 #[cfg(test)]
 impl PresentationBackend for ratatui::backend::TestBackend {
+    fn upload_graphics(&mut self, _sequence: &str) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn begin_update(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
     fn end_update(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+}
+
+/// Kitty uploads are out-of-band in tmux. Keep them out of its pane hold:
+/// parsing a large upload can span many reads, during which tmux otherwise
+/// preserves the outer cursor that passthrough invalidated at the origin.
+/// Only strip the encoder's upload prefix; keep placeholder styles and width.
+fn take_tmux_graphics(buffer: &mut Buffer) -> Vec<String> {
+    let mut uploads = vec![];
+    for cell in &mut buffer.content {
+        let symbol = cell.symbol();
+        if symbol.starts_with("\x1bPtmux;\x1b\x1b_G")
+            && let Some(end) = symbol.find('\u{10eeee}')
+            && symbol[..end].ends_with("\x1b\\")
+        {
+            uploads.push(symbol[..end].to_owned());
+            let placeholder = symbol[end..].to_owned();
+            cell.set_symbol(&placeholder);
+        }
+    }
+    uploads
 }
 
 impl Presentation {
@@ -129,7 +156,9 @@ impl Presentation {
         terminal.autoresize()?;
         let caret = render(&mut terminal.get_frame());
         let next = terminal.current_buffer_mut();
-        let changed = caret != self.caret
+        let uploads = take_tmux_graphics(next);
+        let changed = !uploads.is_empty()
+            || caret != self.caret
             || self.previous.as_ref().is_none_or(|previous| {
                 previous.area != next.area || previous.diff_iter(next).next().is_some()
             });
@@ -142,6 +171,14 @@ impl Presentation {
             None => self.previous = Some(next.clone()),
         }
         self.caret = caret;
+        // Finish potentially large passthrough writes before opening MODE_SYNC.
+        // tmux must be free to restore the pane cursor after each raw packet.
+        if !uploads.is_empty() {
+            terminal.hide_cursor()?;
+            for upload in &uploads {
+                terminal.backend_mut().upload_graphics(upload)?;
+            }
+        }
         let result = (|| {
             terminal.backend_mut().begin_update()?;
             // Also hide during drawing on terminals that ignore synchronized
@@ -7268,6 +7305,102 @@ mod tests {
             );
         }
         assert_eq!(output.windows(6).filter(|w| *w == b"\x1b[?25l").count(), 2);
+    }
+
+    #[test]
+    fn tmux_kitty_uploads_precede_sync_even_when_placeholders_are_unchanged() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        use ratatui_image::protocol::{Protocol, kitty::Kitty};
+
+        let mut output = Vec::new();
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut output),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            let mut presentation = Presentation::default();
+            for value in [0, 255] {
+                // Same image ID and placement, different pixels: the second
+                // upload must reach the terminal even with an empty cell diff.
+                let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                    80,
+                    40,
+                    image::Rgba([value, 0, 0, 255]),
+                ));
+                let protocol = Protocol::Kitty(
+                    Kitty::new(image, Rect::new(0, 0, 3, 2).as_size(), 42, true, false).unwrap(),
+                );
+                let render = |frame: &mut Frame| {
+                    frame
+                        .render_widget(ratatui_image::Image::new(&protocol), Rect::new(4, 2, 3, 2));
+                    Some(Position::new(10, 8))
+                };
+                assert!(presentation.draw(&mut terminal, render).unwrap());
+                assert!(!presentation.draw(&mut terminal, render).unwrap());
+            }
+        }
+        let output = String::from_utf8(output).unwrap();
+        let frames: Vec<_> = output.split("\x1b[?2026l").collect();
+        assert_eq!(frames.len(), 3);
+        for frame in &frames[..2] {
+            let (upload, text) = frame.split_once("\x1b[?2026h").unwrap();
+            assert!(upload.starts_with("\x1b[?25l\x1bPtmux;"));
+            assert_eq!(upload.matches("a=T").count(), 1);
+            assert!(!upload.contains('\u{10eeee}'));
+            assert!(!text.contains("\x1bPtmux;"));
+            assert!(text.ends_with("\x1b[9;11H\x1b[?25h"));
+        }
+        assert!(frames[0].contains('\u{10eeee}'));
+        assert!(!frames[1].contains('\u{10eeee}'));
+    }
+
+    #[test]
+    fn graphics_extraction_preserves_placeholder_cells_and_other_protocols() {
+        use ratatui::widgets::Widget;
+        use ratatui_image::protocol::{Protocol, kitty::Kitty};
+
+        for tmux in [false, true] {
+            let protocol = Protocol::Kitty(
+                Kitty::new(
+                    image::DynamicImage::new_rgb8(4, 4),
+                    Rect::new(0, 0, 3, 2).as_size(),
+                    42,
+                    tmux,
+                    true,
+                )
+                .unwrap(),
+            );
+            let mut first = Buffer::empty(Rect::new(0, 0, 3, 2));
+            ratatui_image::Image::new(&protocol).render(first.area, &mut first);
+            let original = first.clone();
+            let uploads = take_tmux_graphics(&mut first);
+            if tmux {
+                let mut placeholders = Buffer::empty(first.area);
+                ratatui_image::Image::new(&protocol).render(placeholders.area, &mut placeholders);
+                assert_eq!(first, placeholders, "styles and cell widths must survive");
+                assert_eq!(uploads.len(), 1);
+                assert_eq!(
+                    format!("{}{}", uploads[0], first[(0, 0)].symbol()),
+                    original[(0, 0)].symbol()
+                );
+            } else {
+                assert!(uploads.is_empty());
+                assert_eq!(first, original);
+            }
+        }
+        for symbol in [
+            "\x1bPqSIXEL\x1b\\",
+            "\x1bPtmux;\x1b\x1b_Gincomplete",
+            "plain text",
+        ] {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+            buffer[(0, 0)].set_symbol(symbol);
+            assert!(take_tmux_graphics(&mut buffer).is_empty());
+            assert_eq!(buffer[(0, 0)].symbol(), symbol);
+        }
     }
 
     #[test]
