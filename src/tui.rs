@@ -1,5 +1,6 @@
 mod diagnostics;
 mod imports;
+mod output;
 mod streams;
 mod video;
 use crate::{
@@ -75,6 +76,7 @@ struct Presentation {
     // Once Kitty passthrough is in use, leave client synchronization to tmux.
     // Keep this across plain-text frames and overlays in the same attachment.
     tmux_graphics: bool,
+    graphics_output: Option<output::Tty>,
 }
 
 /// Synchronize terminals that are not using tmux Kitty passthrough, with an
@@ -82,13 +84,26 @@ struct Presentation {
 /// Never open a passthrough update in the outer terminal: tmux cannot track it,
 /// and a window swap can suppress the redraw we would need to release it.
 trait PresentationBackend: Backend {
-    fn upload_graphics(&mut self, sequence: &str) -> Result<(), Self::Error>;
+    fn upload_graphics(
+        &mut self,
+        sequence: &str,
+        output: Option<&mut output::Tty>,
+    ) -> Result<(), Self::Error>;
     fn begin_update(&mut self) -> Result<(), Self::Error>;
     fn end_update(&mut self) -> Result<(), Self::Error>;
 }
 
 impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBackend<W> {
-    fn upload_graphics(&mut self, sequence: &str) -> Result<(), Self::Error> {
+    fn upload_graphics(
+        &mut self,
+        sequence: &str,
+        output: Option<&mut output::Tty>,
+    ) -> Result<(), Self::Error> {
+        if let Some(output) = output {
+            // Drain buffered cursor/style bytes before switching descriptors.
+            std::io::Write::flush(self)?;
+            return output.upload(sequence.as_bytes());
+        }
         // Bound individual PTY write requests rather than asking the kernel to
         // drain an entire image in one blocking call. This does not split or
         // rewrite Kitty/tmux commands; the terminal receives identical bytes.
@@ -109,7 +124,11 @@ impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBacke
 
 #[cfg(test)]
 impl PresentationBackend for ratatui::backend::TestBackend {
-    fn upload_graphics(&mut self, _sequence: &str) -> Result<(), Self::Error> {
+    fn upload_graphics(
+        &mut self,
+        _sequence: &str,
+        _output: Option<&mut output::Tty>,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
     fn begin_update(&mut self) -> Result<(), Self::Error> {
@@ -206,7 +225,9 @@ impl Presentation {
             });
             terminal.hide_cursor()?;
             for upload in &uploads {
-                terminal.backend_mut().upload_graphics(upload)?;
+                terminal
+                    .backend_mut()
+                    .upload_graphics(upload, self.graphics_output.as_mut())?;
             }
         }
         let result = (|| {
@@ -711,7 +732,10 @@ pub async fn run(
         }
     });
     let result = async {
-        let mut presentation = Presentation::default();
+        let mut presentation = Presentation {
+            graphics_output: output::Tty::open_tmux()?,
+            ..Presentation::default()
+        };
         let mut last_draw = Instant::now();
         let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
@@ -7397,7 +7421,7 @@ mod tests {
         );
         let mut output = Output::default();
         CrosstermBackend::new(&mut output)
-            .upload_graphics(&sequence)
+            .upload_graphics(&sequence, None)
             .unwrap();
         assert_eq!(output.bytes, sequence.as_bytes());
         assert!(output.sizes.len() > 1);
