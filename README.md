@@ -993,6 +993,10 @@ Core tests use a fake audio backend. Process integration tests run isolated real
 Headless cast tests wait for published Ogg pages separately from playback
 completion: encoding and page buffering can make them observable at different times.
 
+The terminal-reply PTY test acknowledges each fragment before sending the next
+to exercise real Crossterm read boundaries. Filter deadlines use an explicit test
+clock, so scheduler delays cannot turn a valid fragmented reply into a timeout.
+
 With tmux and Python 3 installed, `python3 -m unittest discover -s scripts -p 'test_*.py'`
 also checks screenshot publication and the status-bar plugin. Plugin tests use
 private tmux servers and a pseudo-terminal to check actual rendering, reloads,

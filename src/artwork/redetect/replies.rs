@@ -259,14 +259,35 @@ mod tests {
         let mut filter = ReplyFilter::default();
         let mut forwarded = vec![];
         let mut replies = vec![];
+        // Exercise real read boundaries independently of scheduler delays.
+        // Timeout behavior is checked separately with explicit clock advances.
+        let mut now = Instant::now();
         let end = Instant::now() + Duration::from_secs(4);
         while Instant::now() < end {
-            forwarded.extend(filter.expire(Instant::now()));
+            forwarded.extend(filter.expire(now));
             if crossterm::event::poll(Duration::from_millis(5)).unwrap() {
-                let (events, reply) =
-                    filter.push(crossterm::event::read().unwrap(), Instant::now());
+                let event = crossterm::event::read().unwrap();
+                let old_reply_next = event == key(KeyCode::Char('k'));
+                let checkpoint = match &event {
+                    Event::Paste(_) => Some("GRAPHICS_PASTE".to_owned()),
+                    Event::Key(key)
+                        if matches!(key.code, KeyCode::Esc | KeyCode::Char(';' | 'P' | 'k')) =>
+                    {
+                        Some(format!("GRAPHICS_KEY {:?}", key.code))
+                    }
+                    _ => None,
+                };
+                let (events, reply) = filter.push(event, now);
                 forwarded.extend(events);
                 replies.extend(reply);
+                // Advance beyond the probe timeout before the old reply.
+                if old_reply_next {
+                    now += PROBE_TIMEOUT + Duration::from_millis(20);
+                }
+                if let Some(checkpoint) = checkpoint {
+                    println!("{checkpoint}");
+                    std::io::stdout().flush().unwrap();
+                }
                 if forwarded.last() == Some(&key(KeyCode::Char('!'))) {
                     break;
                 }
@@ -295,8 +316,22 @@ mod tests {
             io::{BufRead, BufReader, Write},
             os::fd::FromRawFd,
             process::{Command, Stdio},
-            thread,
         };
+
+        fn wait_for(output: &mut impl BufRead, checkpoint: &str) {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                assert!(
+                    output.read_line(&mut line).unwrap() > 0,
+                    "reader exited before {checkpoint}"
+                );
+                if line.trim() == checkpoint {
+                    return;
+                }
+            }
+        }
+
         let (mut master, mut slave) = (-1, -1);
         // SAFETY: openpty initializes both owned descriptors on success.
         assert_eq!(
@@ -325,27 +360,25 @@ mod tests {
             .spawn()
             .unwrap();
         let mut output = BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        loop {
-            line.clear();
-            assert!(
-                output.read_line(&mut line).unwrap() > 0,
-                "reader failed to start"
-            );
-            if line.contains("GRAPHICS_READY") {
-                break;
-            }
-        }
+        wait_for(&mut output, "GRAPHICS_READY");
         master
             .write_all(b"j\x1b_Gi=500;OK\x1b\\\x1b[200~\xed\x95\x9c\xea\xb8\x80\x1b[201~")
             .unwrap();
-        for bytes in [b"\x1b".as_slice(), b"_Gi=501;", b"ENOTSUP", b"\x1b", b"\\k"] {
+        wait_for(&mut output, "GRAPHICS_PASTE");
+        // Acknowledgements force each fragment through a separate tty read;
+        // sleeping neither guarantees that boundary nor a sub-25-ms wakeup.
+        for (bytes, checkpoint) in [
+            (b"\x1b".as_slice(), "GRAPHICS_KEY Esc"),
+            (b"_Gi=501;", "GRAPHICS_KEY Char(';')"),
+            (b"ENOTSUP", "GRAPHICS_KEY Char('P')"),
+            (b"\x1b", "GRAPHICS_KEY Esc"),
+            (b"\\k", "GRAPHICS_KEY Char('k')"),
+        ] {
             master.write_all(bytes).unwrap();
-            thread::sleep(Duration::from_millis(5));
+            wait_for(&mut output, checkpoint);
         }
         // An old complete reply arriving after the probe timeout is still
         // consumed; only the detector decides whether its ID is current.
-        thread::sleep(PROBE_TIMEOUT + Duration::from_millis(20));
         master.write_all(b"\x1b_Gi=400;OK\x1b\\!").unwrap();
         let status = child.wait().unwrap();
         if !status.success() {
