@@ -156,20 +156,21 @@ The social preview cards `site/og.png` and `site/og-ko.png` (1200 × 630, compos
 
 The theme picker lists the nine built-ins followed by custom themes sorted by ID. Read custom files once on attachment; existing clients keep their loaded palettes until reattach. Fit long display names by terminal cell width, retaining mode and swatches. Invalid custom files produce status warnings and do not hide valid choices; user palettes below the text contrast target remain usable with a warning. The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Search and folder prompts keep the cover visible: they center over the browser area, sized to their label instead of the pane. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter keeps it (empty clears the filter), while Esc restores the filter and page that were applied before the prompt opened. Results follow a live draft as it is typed: the queue filter is local and instant, and the library waits out a short debounce so a fast typist starts one server search rather than one per keystroke. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
 
-Frame updates use a paired synchronized begin/end for the current terminal or
-tmux pane. Attempt the end even if beginning or drawing fails. Hide the cursor
+Frame updates use a paired synchronized begin/end, except for tmux Kitty
+attachments, which leave synchronization entirely to tmux. Attempt the end even
+if beginning or drawing fails when using a pair. Hide the cursor
 before drawing and move it back to the active field before showing it, including
 on terminals without synchronized updates. Unchanged frames emit no commands.
 Never send synchronized-update holds or releases through tmux passthrough:
 tmux does not track those holds, and a later redraw cannot be relied on to
 release them after a window or pane swap. tmux owns synchronization of its client
-terminal; vtamp owns only its pane transaction. Kitty uploads still pass through.
-Send tmux Kitty uploads and virtual placements before beginning the pane's
-synchronized update; keep only placeholder, text, and caret drawing inside it.
-Large uploads can otherwise leave the pane in sync mode while passthrough resets
-the outer cursor. Upload even when the placeholder cells are unchanged, and keep
-their styles and cell widths intact. Direct Kitty and Sixel keep their existing
-rendering path.
+terminal. Kitty uploads still pass through. After the first tmux Kitty upload,
+send no pane synchronized-update begin/end commands for the rest of that
+attachment, including text-only frames and overlays. Send uploads and virtual
+placements before drawing placeholders, text, and the caret. This excludes pane
+sync timeout behavior while preserving the upload ordering that reduced cursor
+flicker. Upload even when placeholder cells are unchanged, and keep their styles
+and cell widths intact. Direct Kitty and Sixel keep their existing rendering path.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -344,9 +345,12 @@ these samples. Isolated swap/focus trials did not reproduce the persistent issue
 neither a deadlock nor a synchronized-update timeout has been established.
 
 The user also observed the cursor rapidly alternating between Ghostty's origin
-and the lower-left corner of pane 5 during a slow episode. The first mitigation
-to test moves Kitty uploads and virtual placements outside the pane's synchronized
-update, allowing tmux to restore cursor state while transmitting them. This is
-not yet a confirmed fix for the slowdown. At the user's request, validation proceeds
-by testing each candidate build in their own swap workflow, rather than further
-isolated GUI trials. Keep live playback untouched and scope fixes to vtamp.
+and the lower-left corner of pane 5 during a slow episode. Moving uploads outside
+pane synchronization (`dee2430`) removed that flicker in five user trials, but
+one trial still fell to 1 fps; any key immediately restored the frame rate.
+The next candidate removes the remaining pane synchronization for tmux Kitty
+attachments, including text-only frames, to exclude the pane's one-second sync
+timeout path. Its effect on the slowdown is unconfirmed. At the user's request,
+validation proceeds by testing each candidate build in their own swap workflow,
+rather than further isolated GUI trials. Keep live playback untouched and scope
+fixes to vtamp.

@@ -499,8 +499,10 @@ If forced Sixel shows `SIXEL IMAGE` or rows of `+`, tmux is substituting its tex
 
 For Kitty graphics, vtamp temporarily enables `allow-passthrough on` **only for its own pane**, and restores the previous setting on normal detach or failed detection. Existing `on`/`all` settings are preserved. Global options and configuration files are never changed. Pixel uploads use passthrough; Unicode placeholders let tmux keep the image positioned with its cells.
 
-Frame synchronization stays inside the tmux pane, with an explicit end for each
-begin. vtamp does not hold the outer terminal through passthrough and wait for a
+With Kitty inside tmux, vtamp leaves frame synchronization to tmux and sends no
+pane synchronized-update commands after its first Kitty upload. Other graphics
+paths pair each synchronized begin with an explicit end. vtamp does not hold the
+outer terminal through passthrough and wait for a
 later tmux redraw to release it; that could leave video and spectrum frozen after
 `swap-pane` while audio continued. Covers and video use compression when the
 terminal confirms support. Some tmux versions briefly show the cursor at the top
@@ -510,15 +512,16 @@ Video uploads group complete Kitty commands into bounded tmux passthrough
 packets (up to 256 KiB). Kitty's 4 KiB chunks are preserved, but tmux no longer
 resets the outer cursor for every chunk. This reduces CPU spikes and frame-rate
 collapse in large multi-pane windows after `swap-pane`, without moving focus.
-Kitty uploads and virtual placements are sent before the pane's synchronized
-update begins; only placeholders, text, and the input caret are drawn inside it.
-This avoids holding pane synchronization throughout a large graphics transfer.
+Kitty uploads and virtual placements are sent before placeholders, text, and the
+input caret. Neither uploads nor subsequent text-only frames open a pane hold.
 
 **Known unresolved issue:** video can still intermittently remain near 1 fps
 after returning with `swap-pane` in Ghostty + tmux, while audio continues.
 Moving focus to another pane has restored the frame rate, but focusing the video
-pane again can bring the slowdown back. Upload ordering is a mitigation awaiting
-confirmation in the affected workflow; batching alone did not eliminate this issue.
+pane again can bring the slowdown back. Upload ordering removed cursor flicker
+in user trials, but the slowdown recurred once in five attempts and recovered on
+any key. Disabling the remaining pane synchronization is the next mitigation
+awaiting confirmation in that workflow.
 See the investigation note in [DESIGN.md](DESIGN.md#unresolved-swap-pane-slowdown).
 
 In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.

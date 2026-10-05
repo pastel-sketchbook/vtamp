@@ -71,9 +71,13 @@ struct HelpScroll {
 struct Presentation {
     previous: Option<Buffer>,
     caret: Option<Position>,
+    // Once Kitty passthrough is in use, leave client synchronization to tmux.
+    // Keep this across plain-text frames and overlays in the same attachment.
+    tmux_graphics: bool,
 }
 
-/// Synchronize the current terminal (or tmux pane), with an explicit end.
+/// Synchronize terminals that are not using tmux Kitty passthrough, with an
+/// explicit end. tmux Kitty attachments leave synchronization to tmux itself.
 /// Never open a passthrough update in the outer terminal: tmux cannot track it,
 /// and a window swap can suppress the redraw we would need to release it.
 trait PresentationBackend: Backend {
@@ -157,6 +161,7 @@ impl Presentation {
         let caret = render(&mut terminal.get_frame());
         let next = terminal.current_buffer_mut();
         let uploads = take_tmux_graphics(next);
+        self.tmux_graphics |= !uploads.is_empty();
         let changed = !uploads.is_empty()
             || caret != self.caret
             || self.previous.as_ref().is_none_or(|previous| {
@@ -171,8 +176,9 @@ impl Presentation {
             None => self.previous = Some(next.clone()),
         }
         self.caret = caret;
-        // Finish potentially large passthrough writes before opening MODE_SYNC.
-        // tmux must be free to restore the pane cursor after each raw packet.
+        // Finish graphics writes before drawing their placeholders. Do not open
+        // MODE_SYNC for this attachment, excluding tmux's one-second pane-sync
+        // timeout path as a source of stalls after a swap.
         if !uploads.is_empty() {
             terminal.hide_cursor()?;
             for upload in &uploads {
@@ -180,7 +186,9 @@ impl Presentation {
             }
         }
         let result = (|| {
-            terminal.backend_mut().begin_update()?;
+            if !self.tmux_graphics {
+                terminal.backend_mut().begin_update()?;
+            }
             // Also hide during drawing on terminals that ignore synchronized
             // updates. Never show the cursor at the last painted cell.
             terminal.hide_cursor()?;
@@ -194,7 +202,11 @@ impl Presentation {
         })();
         // Even a failed begin/flush may have delivered the hold to the terminal.
         // Always attempt its release, preserving the original drawing error.
-        let end = terminal.backend_mut().end_update();
+        let end = if self.tmux_graphics {
+            Ok(())
+        } else {
+            terminal.backend_mut().end_update()
+        };
         result?;
         end?;
         Ok(true)
@@ -7308,7 +7320,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_kitty_uploads_precede_sync_even_when_placeholders_are_unchanged() {
+    fn tmux_kitty_frames_and_later_text_draw_without_pane_sync() {
         use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
         use ratatui_image::protocol::{Protocol, kitty::Kitty};
 
@@ -7341,20 +7353,31 @@ mod tests {
                 assert!(presentation.draw(&mut terminal, render).unwrap());
                 assert!(!presentation.draw(&mut terminal, render).unwrap());
             }
+            // An overlay/text-only frame must not reintroduce a pane hold.
+            assert!(
+                presentation
+                    .draw(&mut terminal, |frame| {
+                        frame.render_widget("text overlay", frame.area());
+                        Some(Position::new(10, 8))
+                    })
+                    .unwrap()
+            );
         }
         let output = String::from_utf8(output).unwrap();
-        let frames: Vec<_> = output.split("\x1b[?2026l").collect();
-        assert_eq!(frames.len(), 3);
+        assert!(!output.contains("\x1b[?2026"), "no pane or outer holds");
+        let frames: Vec<_> = output.split("\x1b[9;11H\x1b[?25h").collect();
+        assert_eq!(frames.len(), 4);
         for frame in &frames[..2] {
-            let (upload, text) = frame.split_once("\x1b[?2026h").unwrap();
+            let (upload, text) = frame.rsplit_once("\x1b[?25l").unwrap();
             assert!(upload.starts_with("\x1b[?25l\x1bPtmux;"));
             assert_eq!(upload.matches("a=T").count(), 1);
             assert!(!upload.contains('\u{10eeee}'));
             assert!(!text.contains("\x1bPtmux;"));
-            assert!(text.ends_with("\x1b[9;11H\x1b[?25h"));
         }
         assert!(frames[0].contains('\u{10eeee}'));
         assert!(!frames[1].contains('\u{10eeee}'));
+        assert!(frames[2].starts_with("\x1b[?25l"));
+        assert!(frames[2].contains("overlay"));
     }
 
     #[test]
