@@ -178,6 +178,9 @@ struct Request {
 struct Packet {
     generation: u64,
     ended: bool,
+    // A visibility transition clears pixels temporarily; missing video and
+    // decode failures are terminal outcomes for the current request instead.
+    waiting: bool,
     result: Result<Option<Picture>, String>,
 }
 struct Picture {
@@ -347,7 +350,7 @@ impl Mailbox {
             serde_json::json!({
                 "generation":packet.generation,
                 "position_ms":packet.result.as_ref().ok().and_then(|p| p.as_ref()).map(|p| p.position),
-                "ended":packet.ended,"error":packet.result.is_err(),
+                "ended":packet.ended,"waiting":packet.waiting,"error":packet.result.is_err(),
             })
         });
         *self.packet.lock().unwrap() = Some(packet);
@@ -374,6 +377,7 @@ pub(super) struct View {
     pub area: Rect,
     pub epoch: u64,
     pub ended: bool,
+    waiting: bool,
     frame: Option<Picture>,
     generation: u64,
     request: Option<Request>,
@@ -392,6 +396,7 @@ impl Default for View {
             area: Rect::default(),
             epoch: 0,
             ended: false,
+            waiting: false,
             frame: None,
             generation: 0,
             request: None,
@@ -405,6 +410,12 @@ impl Default for View {
     }
 }
 impl View {
+    #[cfg(test)]
+    pub(super) fn with_test_waiting() -> Self {
+        let mut view = Self::default();
+        view.waiting = true;
+        view
+    }
     #[cfg(test)]
     pub(super) fn with_test_frame() -> Self {
         let graphics = VideoGraphics {
@@ -448,6 +459,7 @@ impl View {
         self.clear_images();
         self.generation = self.generation.wrapping_add(1);
         self.frame = None;
+        self.waiting = false;
         self.aspect = None;
         self.notice_key = None;
         self.graphics = graphics;
@@ -485,6 +497,9 @@ impl View {
     }
     pub fn has_frame(&self) -> bool {
         self.frame.is_some()
+    }
+    pub fn reserves_area(&self) -> bool {
+        self.enabled && (self.waiting || self.frame.is_some())
     }
     pub fn mailbox(&self) -> Arc<Mailbox> {
         self.mailbox.clone()
@@ -527,6 +542,7 @@ impl View {
                 .is_some_and(|r| r.clock.position().abs_diff(position) > DRIFT_MS);
         if changed {
             self.ended = false;
+            self.waiting = key.is_some();
             let previous = self.request.take();
             if let Some(request) = &previous {
                 request.cancel.store(true, Ordering::Relaxed);
@@ -622,14 +638,19 @@ impl View {
                     || serde_json::json!({"generation":packet.generation,"position_ms":picture.position}),
                 );
                 self.aspect = Some(picture.aspect);
+                self.waiting = false;
                 self.frame = Some(picture);
             }
             Ok(None) => {
                 self.frame = None;
-                self.aspect = None;
+                self.waiting = packet.waiting;
+                if !packet.waiting {
+                    self.aspect = None;
+                }
             }
             Err(error) => {
                 self.frame = None;
+                self.waiting = false;
                 self.aspect = None;
                 let key = self.request.as_ref().unwrap().key.entry.clone();
                 if self.notice_key.as_ref() != Some(&key) {
@@ -907,6 +928,7 @@ fn worker(
                 decoder = None;
                 attempted = false;
                 mailbox.put(Packet {
+                    waiting: true,
                     ended: false,
                     generation: r.generation,
                     result: Ok(None),
@@ -939,6 +961,7 @@ fn worker(
                     // release it when the sidecar is gone or the target is past
                     // its end, rather than mistaking absence for decoder startup.
                     mailbox.put(Packet {
+                        waiting: false,
                         ended: asset.is_some(),
                         generation: r.generation,
                         result: Ok(None),
@@ -991,6 +1014,7 @@ fn worker(
             Ok(Some(picture)) => {
                 if !r.cancel.load(Ordering::Relaxed) {
                     mailbox.put(Packet {
+                        waiting: false,
                         ended: false,
                         generation: r.generation,
                         result: Ok(Some(picture)),
@@ -1011,6 +1035,7 @@ fn worker(
                 });
                 if !r.cancel.load(Ordering::Relaxed) {
                     mailbox.put(Packet {
+                        waiting: false,
                         ended: false,
                         generation: r.generation,
                         result: Err(format!("{error:#}")),
@@ -1021,6 +1046,7 @@ fn worker(
         if decoder.as_ref().is_some_and(|d| d.eof) {
             decoder = None;
             mailbox.put(Packet {
+                waiting: false,
                 ended: true,
                 generation: r.generation,
                 result: Ok(None),
@@ -1346,6 +1372,7 @@ mod tests {
         assert_eq!(view.request.as_ref().unwrap().clock.position(), 12_345);
         assert_ne!(view.generation, old.generation);
         mailbox.put(Packet {
+            waiting: false,
             generation: old.generation,
             ended: true,
             result: Ok(View::with_test_frame().frame.take()),
@@ -1354,6 +1381,57 @@ mod tests {
         assert!(!view.has_frame());
         assert!(!view.ended);
     }
+    #[test]
+    fn waiting_for_video_does_not_mean_missing_video() {
+        let (sender, _rx) = watch::channel(None);
+        let mut view = View::default();
+        view.sender = Some(sender);
+        view.area = Rect::new(0, 0, 16, 5);
+        let track = item();
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Paused,
+            true,
+            true,
+            0,
+            Rgba([0; 4]),
+        );
+        assert!(view.reserves_area());
+        view.aspect = Some(16.0 / 9.0);
+        // A parked pane loses its current picture temporarily, not its video.
+        view.mailbox.put(Packet {
+            generation: view.generation,
+            waiting: true,
+            ended: false,
+            result: Ok(None),
+        });
+        assert!(view.accept().is_none());
+        assert!(view.reserves_area());
+        assert_eq!(view.aspect, Some(16.0 / 9.0));
+        // Confirmed absence and errors release the area back to the cover.
+        for result in [Ok(None), Err("decoder failed".into())] {
+            view.waiting = true;
+            view.mailbox.put(Packet {
+                generation: view.generation,
+                waiting: false,
+                ended: false,
+                result,
+            });
+            view.accept();
+            assert!(!view.reserves_area());
+        }
+        view.waiting = true;
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Stopped,
+            true,
+            true,
+            0,
+            Rgba([0; 4]),
+        );
+        assert!(!view.reserves_area());
+    }
+
     #[test]
     fn seeking_holds_the_displayed_frame_until_the_latest_target_is_ready() {
         let (sender, _rx) = watch::channel(None);
@@ -1386,6 +1464,7 @@ mod tests {
             let mut stale = View::with_test_frame().frame.take().unwrap();
             stale.position = position;
             view.mailbox.put(Packet {
+                waiting: false,
                 generation: previous.generation,
                 ended: false,
                 result: Ok(Some(stale)),
@@ -1396,6 +1475,7 @@ mod tests {
         let mut target = View::with_test_frame().frame.take().unwrap();
         target.position = 10_000;
         view.mailbox.put(Packet {
+            waiting: false,
             generation: view.generation,
             ended: false,
             result: Ok(Some(target)),
@@ -1411,6 +1491,7 @@ mod tests {
         for failed in [false, true] {
             view.frame = View::with_test_frame().frame.take();
             view.mailbox.put(Packet {
+                waiting: false,
                 generation: view.generation,
                 ended: !failed,
                 result: if failed {
@@ -1445,6 +1526,7 @@ mod tests {
         assert!(first.cancel.load(Ordering::Relaxed));
         assert_ne!(view.generation, first.generation);
         view.mailbox.put(Packet {
+            waiting: false,
             ended: false,
             generation: first.generation,
             result: Err("stale".into()),
@@ -1494,6 +1576,7 @@ mod tests {
         let mailbox = Mailbox::default();
         for generation in 0..1000 {
             mailbox.put(Packet {
+                waiting: false,
                 ended: false,
                 generation,
                 result: Ok(None),

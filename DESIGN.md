@@ -314,6 +314,13 @@ holds to obtain this improvement. Audio belongs to the server. Pause freezes
 the picture. Seeking within the same video holds the last displayed frame until
 the target frame is ready, including while paused; never flash the cover between
 seek positions. Reject obsolete decoder results after rapid seeks.
+When video is being prepared and no compatible frame is available, leave its
+picture area blank, including fullscreen. Do not temporarily render the cover,
+"No album art", or loading text after a swap, resize, or visibility transition.
+Keep the last known video aspect while a temporary visibility update clears its
+pixels. Distinguish waiting for a frame from confirmed missing video, end, or
+failure; those outcomes, stop, and explicit cover mode still restore the cover.
+Do not start cover encoding or uploads just to fill a video preparation gap.
 Covering overlays suspend decoding and hide pixels, and close/resize/reattach
 resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
 Video failure uses a single notice and the existing cover, without interrupting
@@ -337,6 +344,7 @@ setup falls back to direct transmission. No recovery sleep or output pause is ad
 
 Repeated user tests in local Ghostty + tmux, including release builds, did not
 reproduce sustained 1 fps playback with file transmission and retired-file cleanup.
-Covers still use direct transmission, so brief swap/resize upload stalls remain.
+Covers still use direct transmission, so deliberate cover display/resizing can
+briefly stall. Video preparation gaps no longer trigger those uploads.
 The underlying bulk PTY issue is not considered resolved. Evidence, discarded
 experiments, and diagnostic instructions are in [docs/tmux-video.md](docs/tmux-video.md).

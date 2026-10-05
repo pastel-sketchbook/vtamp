@@ -69,9 +69,13 @@ not a guarantee for other terminals or remote sessions.
 
 ## Remaining limitation and diagnostics
 
-Covers still use direct pixel uploads and can briefly stall during swap/resize;
-the final captured run included cover transfers taking about 1.14 s. Direct
-video transmission can still exhibit the original throughput issue.
+Covers still use direct pixel uploads and can briefly stall when deliberately
+displayed or resized in cover mode. Earlier video swap/resize transitions also
+uploaded a temporary cover while waiting for the next video frame; those cover
+transfers took up to about 1.14 s in the captured run. The TUI now leaves pending
+video blank, including fullscreen, so that transition no longer requests cover
+encoding or transmission. Confirmed missing/failed video still restores the
+cover. Direct video transmission can still exhibit the original throughput issue.
 
 `VTAMP_TUI_TRACE=/tmp/vtamp-tui-trace.jsonl` enables optional timing records.
 Use a debug client for symbolized stack sampling. Compare `output.upload` and

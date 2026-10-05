@@ -2652,14 +2652,7 @@ impl App {
             height,
         );
         self.video.area = target;
-        if !self.video.render(frame, target) {
-            frame.render_widget(
-                Paragraph::new("Loading video…")
-                    .centered()
-                    .style(Style::default().fg(p.muted)),
-                Rect::new(picture.x, picture.y + picture.height / 2, picture.width, 1),
-            );
-        }
+        self.video.render(frame, target);
         let space = if self.state.status == PlaybackStatus::Paused {
             "Space resume"
         } else {
@@ -2813,8 +2806,9 @@ impl App {
             // Pixel payloads cannot be clipped around dialogs. Preserve their
             // space, hide for help/themes, and redraw when they close.
             if !self.cover_hidden() {
-                if self.video.render(frame, cover) {
-                    // The frame was already encoded on the video worker.
+                if self.video.render(frame, cover) || self.video.reserves_area() {
+                    // Leave pending/resizing video blank. Sending a temporary
+                    // cover here both flashes a thumbnail and can stall output.
                 } else if self.cover.has_image() {
                     frame.render_stateful_widget(
                         StatefulImage::new().resize(crate::cover::COVER_RESIZE.clone()),
@@ -7864,6 +7858,76 @@ mod tests {
             (rect.width, rect.height),
             "the cover must fill its rect"
         );
+    }
+
+    #[test]
+    fn waiting_or_resizing_video_never_starts_a_cover_upload() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use ratatui_image::{FontSize, picker::ProtocolType};
+        for (width, height) in [(120, 28), (99, 24), (99, 12), (40, 12)] {
+            let mut app = app();
+            app.show_art = true;
+            app.artwork = Artwork::Native {
+                protocol: ProtocolType::Kitty,
+                font_size: FontSize::new(10, 20),
+                tmux: true,
+                compress: false,
+            };
+            let (tx, rx) = sync_mpsc::channel();
+            app.cover = Cover::new(tx, None);
+            app.cover_image = Some(image::DynamicImage::new_rgb8(64, 64));
+            app.rebuild_cover();
+            app.video = video::View::with_test_waiting();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(
+                rx.try_recv().is_err(),
+                "waiting video must not encode a cover"
+            );
+            assert!(
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .all(|cell| !cell.symbol().contains('\x1b'))
+            );
+            // A ready picture with the old size must not flash a cover before
+            // the new render area reaches the decoder on the next loop pass.
+            app.video = video::View::with_test_frame();
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            assert!(
+                rx.try_recv().is_err(),
+                "resizing video must not encode a cover"
+            );
+            app.video = video::View::default();
+            app.video.enabled = false;
+            terminal.draw(|frame| app.draw(frame)).unwrap();
+            if !app.video.area.is_empty() {
+                let request = rx.try_recv().expect("cover mode must still encode artwork");
+                app.cover.update_resized_protocol(request.resize_encode());
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+                assert!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .any(|cell| cell.symbol().contains("\x1bPtmux;"))
+                );
+            }
+            app.video = video::View::with_test_waiting();
+            terminal
+                .draw(|frame| app.draw_video_fullscreen(frame, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for y in 0..height - 1 {
+                assert!(
+                    (0..width).all(|x| buffer[(x, y)].symbol() == " "),
+                    "fullscreen waits with a blank picture area"
+                );
+            }
+        }
     }
 
     #[test]

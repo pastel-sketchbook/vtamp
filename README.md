@@ -533,8 +533,11 @@ tmux server is later accessed remotely without those SSH variables, use `0`.
 A failed temporary-directory setup also falls back to direct transmission.
 Outside tmux and with other graphics protocols, transport is unchanged.
 
-Covers still use direct transmission and can briefly stall after a swap or
-resize. The underlying bulk PTY throughput issue remains unresolved; direct video
+Covers still use direct transmission and can briefly stall when displayed or
+resized in cover mode. While a video frame is being prepared after a swap or
+resize, its area stays blank instead of uploading a temporary thumbnail. Missing
+or failed video and explicit cover mode still show the cover. The underlying bulk
+PTY throughput issue remains unresolved; direct video
 transmission can still exhibit it. See [the transport investigation](docs/tmux-video.md)
 for evidence and the optional [TUI timing trace](#trace-a-tui-stall) for diagnostics.
 
