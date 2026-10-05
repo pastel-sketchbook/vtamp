@@ -516,31 +516,27 @@ Kitty uploads and virtual placements are sent before placeholders, text, and the
 input caret. Neither uploads nor subsequent text-only frames open a pane hold.
 The application writes this stream in pieces of at most 16 KiB; these write
 boundaries do not change the Kitty commands or the 256 KiB tmux packet limit.
-After a tmux Kitty upload takes 200 ms or longer, vtamp pauses subsequent frame
-output for 150 ms to let pending terminal output drain. Input and frame reception
-continue; a timer draws the latest state afterward without requiring a keypress.
+Video in local tmux Kitty sessions uses temporary-file transmission by default.
+The video worker writes the original pixels to a private temporary directory;
+only short file-path and placement commands travel through the PTY. The terminal
+removes consumed files, and the worker cleans skipped or retired frames and
+removes the directory on shutdown. Current frames are protected; at most 32 files
+are retained. This avoids the sustained 1 fps slowdown reproduced with bulk
+pixel uploads in Ghostty + tmux, and was validated in repeated debug and release
+swap tests.
 
-For local Ghostty + tmux diagnosis, `VTAMP_KITTY_VIDEO_FILE=1` sends video pixels
-through Kitty temporary files instead of the terminal byte stream. Both processes
-must share the same filesystem; leave it unset for SSH or other terminals.
-Only short file-path and placement commands travel through the PTY. Files are
-written on the video worker, deleted by the terminal after reading, and cleaned
-on client shutdown. Skipped frames are removed by the worker. Retired frames
-that tmux never forwarded are reclaimed after a two-second grace period, or
-sooner when the 32-file limit is reached; current frames are protected. Covers keep
-their existing transport. The maintainer reported no recurrence over more than
-three minutes and 15 swaps with this mode after the file cleanup fix. This result
-is specific to the tested local Ghostty + tmux setup; direct transfer remains the
-default. Brief cover-upload delays during swaps remain.
+`VTAMP_KITTY_VIDEO_FILE=0` selects direct transmission. When `SSH_CONNECTION`,
+`SSH_CLIENT`, or `SSH_TTY` is set, direct transmission is the default because the
+terminal may be on another machine. `VTAMP_KITTY_VIDEO_FILE=1` explicitly enables
+file transmission when both sides share the same filesystem. If a locally started
+tmux server is later accessed remotely without those SSH variables, use `0`.
+A failed temporary-directory setup also falls back to direct transmission.
+Outside tmux and with other graphics protocols, transport is unchanged.
 
-**Known unresolved issue with direct transfer:** video can still intermittently remain near 1 fps
-after returning with `swap-pane` in Ghostty + tmux, while audio continues.
-Moving focus to another pane has restored the frame rate, but focusing the video
-pane again can bring the slowdown back. Upload ordering removed cursor flicker
-in user trials, but the slowdown recurred once in five attempts and recovered on
-any key. Disabling the remaining pane synchronization did not eliminate it either.
-Use the optional [TUI timing trace](#trace-a-tui-stall) to diagnose a recurrence.
-See the investigation note in [DESIGN.md](DESIGN.md#unresolved-swap-pane-slowdown).
+Covers still use direct transmission and can briefly stall after a swap or
+resize. The underlying bulk PTY throughput issue remains unresolved; direct video
+transmission can still exhibit it. See [the transport investigation](docs/tmux-video.md)
+for evidence and the optional [TUI timing trace](#trace-a-tui-stall) for diagnostics.
 
 In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.
 
@@ -1073,7 +1069,6 @@ upload bytes, video readiness/acceptance/drop reasons, and paired timing spans.
 `output.upload`, individual `output.write` calls, and `output.draw` distinguish terminal-output waiting from
 `ui.wait`, `ui.render`, `video.sync`, `video.visibility`, and `video.encode`.
 A span begin with no matching end yet identifies an operation still in progress.
-`ui.output_pause` marks a recovery pause following a slow upload.
 No key values, pasted text, terminal payloads, or media metadata are recorded.
 
 A separate writer flushes about every 200 ms, including while the UI is blocked.

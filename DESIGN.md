@@ -174,11 +174,6 @@ and cell widths intact. Direct Kitty and Sixel keep their existing rendering pat
 Bound individual tmux Kitty stream writes to 16 KiB without inserting bytes or
 changing protocol packet boundaries. This is a separate limit from the 256 KiB
 passthrough packet size.
-If a tmux Kitty upload takes at least 200 ms, defer subsequent frame output for
-150 ms to give pending tmux redraws a chance to drain. Keep processing input,
-server events, and replacement video frames; do not sleep on the UI thread or
-consume a frame's one-time upload until drawing resumes. A timer resumes output
-without a keypress. This recovery pause is a mitigation under user testing.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -324,115 +319,24 @@ resynchronize. Use existing theme tokens, layout breakpoints and cursor rules.
 Video failure uses a single notice and the existing cover, without interrupting
 music. Import details distinguish audio added, video added, and video failure.
 
-### Unresolved swap-pane slowdown
+### tmux video transport
 
-Open as of 2026-10-05, after the Kitty batching change (`04c3eb8`). In Ghostty
-1.3.1 + tmux next-3.9, returning video with `swap-pane` can intermittently leave
-it near 1 fps while audio continues. The user reports immediate recovery when
-focus moves to another pane; refocusing video can bring the slowdown back.
-Earlier episodes also exposed a blinking cursor at the outer terminal's origin,
-not the pane's origin. The user's rotation performs two sequential swaps without
-`-d` between a parked window and a slot in a multi-pane window.
+Local tmux Kitty video uses temporary-file transmission by default, preserving
+original RGBA pixels, resolution, image IDs, and Unicode placeholders. The video
+worker owns a private temporary directory and all file I/O. UI rendering only
+marks handoff. The terminal deletes consumed files; the worker removes abandoned
+frames and retired files after a two-second grace period. At the 32-file cap,
+reclaim an older retired frame rather than stopping video. Never evict a frame
+still held by the UI or mailbox. Remove the directory when the worker stops.
 
-A follow-up live observation on 2026-10-05 captured a slow output interval while
-the user reproduced and reported the symptom. At 18:14:44 CEST, simultaneous
-two-second samples found the TUI main thread in `write()` in all 1745 samples,
-while Ghostty's input reader waited in `poll()` in 1641 of 1681 samples. About
-half of tmux's main-thread samples involved pane-activity event dispatch. In an
-earlier user-confirmed normal interval, TUI write waiting was about 24% and tmux
-mostly waited for events. This points investigation toward delivery through tmux,
-but does not establish activity hooks as the cause: a later sample also showed
-high event-dispatch overhead with much less TUI write waiting.
+SSH environments (`SSH_CONNECTION`, `SSH_CLIENT`, or `SSH_TTY`) default to direct
+transmission. `VTAMP_KITTY_VIDEO_FILE=0` forces direct transport and `1` enables
+file transport when the terminal shares the same filesystem. Other protocols
+and direct Kitty sessions keep their existing transport. Failed temporary-directory
+setup falls back to direct transmission. No recovery sleep or output pause is added.
 
-A 55-second read-only trace recorded roughly 0.5 MB/s of client output during
-the initial active-pane slowdown, then roughly 8–9 MB/s across the transition to
-another active pane. These are whole-client bytes, not video FPS. Output began
-recovering about one second before the recorded focus change, so focus causality
-is not established by this trace alone. No video pixel-rate capture accompanied
-these samples. Isolated swap/focus trials did not reproduce the persistent issue;
-neither a deadlock nor a synchronized-update timeout has been established.
-
-The user also observed the cursor rapidly alternating between Ghostty's origin
-and the lower-left corner of pane 5 during a slow episode. Moving uploads outside
-pane synchronization (`dee2430`) removed that flicker in five user trials, but
-one trial still fell to 1 fps; any key immediately restored the frame rate.
-Removing the remaining pane synchronization (`f194eb0`) did not eliminate the
-slowdown in the user's next trial, so pane synchronization alone does not explain
-it. Opt-in `VTAMP_TUI_TRACE` diagnostics record timings for
-UI wakes, rendering, terminal uploads/drawing, video delivery, and visibility.
-Write logs off the UI/decoder threads through a bounded, nonblocking queue; never
-log key contents or media metadata. Use a debug client with symbols and retain
-begin/end records so an in-progress stall is observable before it recovers.
-At the user's request, validation proceeds in their own swap workflow rather than
-further isolated GUI trials. Keep live playback untouched and scope fixes to vtamp.
-
-The first debug trace captured a sustained slow interval approximately 5–23 s
-after attachment: image uploads of about 350–390 KB took 750–880 ms instead of
-roughly 7 ms. Video encoding continued near 15 fps (typically 55 ms per frame),
-while the UI accepted only about six frames per five seconds. UI waits stayed
-under 103 ms; ordinary drawing was much shorter than the uploads. No trace
-records were dropped. This localizes the delay to blocking image output, not
-frame production or a one-second UI timer. It does not identify the underlying
-PTY/tmux cause. The next trial bounded individual writes to 16 KiB and added
-`output.write` timings without changing the terminal stream.
-
-The 16 KiB write trial still slowed down: individual writes rose from about
-0.3 ms to 35–36 ms. A subsequent nonblocking `/dev/tty` trial (`376df29`)
-terminated during its first readiness wait, about 0.24 s after startup, and was
-reverted. Its socket-based tests did not establish PTY readiness compatibility.
-Keep the known-starting blocking output path and diagnostics while investigating
-the remaining throughput problem; the nonblocking trial is not a usable fix.
-
-The next user trace reproduced the same per-write slowdown after the rollback,
-with image uploads taking about 1.2 s. tmux defers pending redraws while its client
-output buffer is nonempty, so the next candidate allows a 150 ms output pause
-after a slow upload. This tests whether continuous image traffic prevents a
-pending swap redraw from settling; the causal link is not yet established.
-
-The user's next trace also reproduced the stall with these output pauses active:
-writes stayed near 35 ms per 16 KiB and uploads took roughly 0.8–1.1 s. The pause
-did not restore throughput, so draining a pending redraw is not a demonstrated
-fix. The next investigation captures symbolized debug-client and tmux stacks
-during slow output, together with read-only pane and termios state, and compares
-them with recovery. Do not claim a root cause from the timing trace alone.
-
-The automatic capture succeeded at 19:06:58 CEST: 1178 of 1433 TUI main-thread
-samples were in the actual kernel `write()` below `upload_graphics`, not a Rust
-stdout lock. Ghostty's reader waited in `poll()` in 1713 of 1729 samples. tmux
-spent 634 of 1717 samples in pane-activity dispatch, but that alone does not
-establish its cause. The next opt-in comparison, `VTAMP_KITTY_VIDEO_FILE=1`,
-bypasses bulk PTY traffic for video using Kitty `t=t` temporary-file transmission,
-which Ghostty 1.3.1 supports. Direct transmission remains the default.
-
-This local-only mode writes original RGBA pixels on the video worker and sends
-only the base64-encoded absolute file path, image dimensions, and placement
-commands through tmux. Preserve the same image IDs, Unicode placeholders, and
-resolution. The worker owns a private temporary directory, cleans unrendered
-frames, and retains handed-off files while the frame is still held by the UI or
-mailbox. Reclaim retired files after the terminal unlinks them or a two-second
-grace period; tmux can discard passthrough from hidden panes, leaving files the
-terminal will never see. At the 32-file cap, evict an older retired frame rather
-than failing all future frames. Never evict a current frame to make room, and
-remove the directory on worker shutdown. UI rendering
-only marks handoff; it does no file I/O. Covers and other protocols retain their
-existing transport. Validation is scoped to the local setup described below.
-
-The first file-transport user run sent most video frames as 272-byte commands
-in about 0.026 ms, compared with the earlier bulk-upload stalls. Covers shown
-during swaps still used direct uploads and sometimes took about 1.17 s. Around
-145 s, the run began reporting video errors and the user confirmed that playback
-of the picture stopped. The original trace did not include an error category.
-The next fix reclaims unconsumed retired files so lost hidden-pane commands cannot
-exhaust the file queue; new `video.file_queue`, `video.file_limit`, and `video.error`
-records distinguish this condition from decoder/encoder errors.
-
-After the cleanup fix (`56624f2`), the user reported more than three minutes and
-15 swap attempts without recurrence. The latest captured session spans 137 s:
-1497 small uploads had a median of 0.018 ms, a 95th percentile of 0.027 ms, and a
-maximum of 0.041 ms. The pending file count peaked at 15, with no file-limit
-errors and no error packets delivered to the UI. Four internal decode/encode
-errors were logged for cancelled work and were not published as video errors.
-This validates the opt-in file transport as a mitigation in the user's local
-Ghostty + tmux workflow; it does not establish the cause of the original PTY
-throughput collapse or guarantee other terminals. Direct cover uploads still
-reached about 1.14 s during swaps. Keep the opt-in requirement explicit.
+Repeated user tests in local Ghostty + tmux, including release builds, did not
+reproduce sustained 1 fps playback with file transmission and retired-file cleanup.
+Covers still use direct transmission, so brief swap/resize upload stalls remain.
+The underlying bulk PTY issue is not considered resolved. Evidence, discarded
+experiments, and diagnostic instructions are in [docs/tmux-video.md](docs/tmux-video.md).

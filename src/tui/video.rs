@@ -37,7 +37,17 @@ use tokio::sync::{Notify, watch};
 const DEFAULT_FPS: u32 = 15;
 const DRIFT_MS: u64 = 500;
 
-// Opt-in local transport. The worker owns all file cleanup; the UI only marks
+fn use_file_transport(graphics: VideoGraphics, setting: Option<&str>, ssh: bool) -> bool {
+    graphics.tmux
+        && graphics.kind == ProtocolType::Kitty
+        && match setting {
+            Some("0") => false,
+            Some("1") => true,
+            _ => !ssh,
+        }
+}
+
+// Default local tmux transport. The worker owns all file cleanup; the UI only marks
 // a transfer as handed to the terminal. Ghostty removes t=t files after reading.
 struct FileTransfers {
     directory: tempfile::TempDir,
@@ -110,9 +120,7 @@ impl FileTransfers {
                     "video.file_limit",
                     || serde_json::json!({"pending":self.pending.len()}),
                 );
-                bail!(
-                    "Kitty temporary files are not being consumed; disable VTAMP_KITTY_VIDEO_FILE"
-                );
+                bail!("Kitty temporary files are not being consumed; set VTAMP_KITTY_VIDEO_FILE=0");
             }
         }
         let mut file = tempfile::Builder::new()
@@ -824,9 +832,11 @@ fn worker(
         youtube: crate::import_config::YoutubeConfig::load(&paths).unwrap_or_default(),
         ..Default::default()
     };
-    let requested_files = graphics.tmux
-        && graphics.kind == ProtocolType::Kitty
-        && std::env::var("VTAMP_KITTY_VIDEO_FILE").is_ok_and(|v| v == "1");
+    let setting = std::env::var("VTAMP_KITTY_VIDEO_FILE").ok();
+    let ssh = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some());
+    let requested_files = use_file_transport(graphics, setting.as_deref(), ssh);
     let mut file_transfers = requested_files
         .then(FileTransfers::new)
         .and_then(Result::ok);
@@ -1063,6 +1073,31 @@ mod tests {
             }),
         })
     }
+    #[test]
+    fn file_transport_defaults_to_local_tmux_kitty_and_supports_overrides() {
+        for kind in [
+            ProtocolType::Kitty,
+            ProtocolType::Sixel,
+            ProtocolType::Halfblocks,
+        ] {
+            for tmux in [false, true] {
+                let graphics = VideoGraphics {
+                    kind,
+                    tmux,
+                    compress: false,
+                    font: ratatui_image::FontSize::new(10, 20),
+                };
+                let supported = tmux && kind == ProtocolType::Kitty;
+                assert_eq!(use_file_transport(graphics, None, false), supported);
+                assert!(!use_file_transport(graphics, None, true));
+                for ssh in [false, true] {
+                    assert!(!use_file_transport(graphics, Some("0"), ssh));
+                    assert_eq!(use_file_transport(graphics, Some("1"), ssh), supported);
+                }
+            }
+        }
+    }
+
     #[test]
     fn kitty_file_transfer_preserves_pixels_and_owns_pending_files() {
         let mut files = FileTransfers::new().unwrap();
