@@ -294,7 +294,13 @@ attachment-only mode. Never zoom tmux or alter the OS window.
 Layout transitions clear and redraw without querying the terminal cursor;
 delayed terminal replies must not detach the client on a track change.
 Kitty scales the bounded source pixels in the terminal and uses compression only
-after a positive capability reply. Audio belongs to the server. Pause freezes
+after a positive capability reply. In tmux, prepare video uploads on the encoding
+worker and batch complete Kitty commands into passthrough packets no larger than
+256 KiB, below tmux's 1 MiB input buffer. Preserve Kitty's 4096-byte base64 chunks
+and place the image before its Unicode placeholders. This reduces tmux's outer
+cursor resets per frame, especially when the video pane is active after a swap
+in a large multi-pane window. Do not change focus or add outer synchronization
+holds to obtain this improvement. Audio belongs to the server. Pause freezes
 the picture. Seeking within the same video holds the last displayed frame until
 the target frame is ready, including while paused; never flash the cover between
 seek positions. Reject obsolete decoder results after rapid seeks.

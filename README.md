@@ -506,6 +506,10 @@ later tmux redraw to release it; that could leave video and spectrum frozen afte
 terminal confirms support. Some tmux versions briefly show the cursor at the top
 left during Kitty uploads; the input field still uses the real pane cursor for
 IME composition. This tmux cursor limitation is not hidden with an outer hold.
+Video uploads group complete Kitty commands into bounded tmux passthrough
+packets (up to 256 KiB). Kitty's 4 KiB chunks are preserved, but tmux no longer
+resets the outer cursor for every chunk. This reduces CPU spikes and frame-rate
+collapse in large multi-pane windows after `swap-pane`, without moving focus.
 
 In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.
 
