@@ -415,7 +415,7 @@ terminal will never see. At the 32-file cap, evict an older retired frame rather
 than failing all future frames. Never evict a current frame to make room, and
 remove the directory on worker shutdown. UI rendering
 only marks handoff; it does no file I/O. Covers and other protocols retain their
-existing transport. No improvement claim is made until user validation.
+existing transport. Validation is scoped to the local setup described below.
 
 The first file-transport user run sent most video frames as 272-byte commands
 in about 0.026 ms, compared with the earlier bulk-upload stalls. Covers shown
@@ -424,5 +424,15 @@ during swaps still used direct uploads and sometimes took about 1.17 s. Around
 of the picture stopped. The original trace did not include an error category.
 The next fix reclaims unconsumed retired files so lost hidden-pane commands cannot
 exhaust the file queue; new `video.file_queue`, `video.file_limit`, and `video.error`
-records distinguish this condition from decoder/encoder errors. The reported
-freeze still needs validation against that fix.
+records distinguish this condition from decoder/encoder errors.
+
+After the cleanup fix (`56624f2`), the user reported more than three minutes and
+15 swap attempts without recurrence. The latest captured session spans 137 s:
+1497 small uploads had a median of 0.018 ms, a 95th percentile of 0.027 ms, and a
+maximum of 0.041 ms. The pending file count peaked at 15, with no file-limit
+errors and no error packets delivered to the UI. Four internal decode/encode
+errors were logged for cancelled work and were not published as video errors.
+This validates the opt-in file transport as a mitigation in the user's local
+Ghostty + tmux workflow; it does not establish the cause of the original PTY
+throughput collapse or guarantee other terminals. Direct cover uploads still
+reached about 1.14 s during swaps. Keep the opt-in requirement explicit.

@@ -527,10 +527,13 @@ Only short file-path and placement commands travel through the PTY. Files are
 written on the video worker, deleted by the terminal after reading, and cleaned
 on client shutdown. Skipped frames are removed by the worker. Retired frames
 that tmux never forwarded are reclaimed after a two-second grace period, or
-sooner when the 32-file limit is reached; current frames are protected. Covers keep their existing
-transport. This opt-in mode is under investigation; direct transfer is the default.
+sooner when the 32-file limit is reached; current frames are protected. Covers keep
+their existing transport. The maintainer reported no recurrence over more than
+three minutes and 15 swaps with this mode after the file cleanup fix. This result
+is specific to the tested local Ghostty + tmux setup; direct transfer remains the
+default. Brief cover-upload delays during swaps remain.
 
-**Known unresolved issue:** video can still intermittently remain near 1 fps
+**Known unresolved issue with direct transfer:** video can still intermittently remain near 1 fps
 after returning with `swap-pane` in Ghostty + tmux, while audio continues.
 Moving focus to another pane has restored the frame rate, but focusing the video
 pane again can bring the slowdown back. Upload ordering removed cursor flicker
