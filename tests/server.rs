@@ -390,7 +390,20 @@ fn agent_cli_search_scan_queue_and_timer_contracts() {
         .unwrap(),
     )
     .unwrap();
-    let before = server.ok(&["status"]);
+    // Scanning queues background normalization work, which legitimately changes
+    // status/revision independently of the dry run. Wait for it before taking
+    // the exact snapshot so this assertion still catches every dry-run mutation.
+    let before = (0..250)
+        .find_map(|_| {
+            let status = server.ok(&["status"]);
+            if status["normalization"]["pending"] == 0 {
+                Some(status)
+            } else {
+                std::thread::sleep(Duration::from_millis(20));
+                None
+            }
+        })
+        .expect("background normalization did not finish before the dry-run check");
     assert_eq!(
         server.ok(&[
             "queue",
