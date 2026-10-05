@@ -174,12 +174,6 @@ and cell widths intact. Direct Kitty and Sixel keep their existing rendering pat
 Bound individual tmux Kitty stream writes to 16 KiB without inserting bytes or
 changing protocol packet boundaries. This is a separate limit from the 256 KiB
 passthrough packet size.
-Use a separately opened nonblocking terminal handle for tmux Kitty transfers;
-never set nonblocking flags on stdin or the existing stdout descriptor. Flush
-buffered cursor/style output before switching handles. Preserve short writes and
-wait for writable readiness on `WouldBlock`, retaining the same complete stream
-before drawing placeholders. This still waits for each transfer on the UI thread;
-it changes the kernel write path, not the rendering/threading model.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -374,9 +368,12 @@ while the UI accepted only about six frames per five seconds. UI waits stayed
 under 103 ms; ordinary drawing was much shorter than the uploads. No trace
 records were dropped. This localizes the delay to blocking image output, not
 frame production or a one-second UI timer. It does not identify the underlying
-PTY/tmux cause. Bounding writes to 16 KiB (`00fff87`) did not resolve it: each
-write rose from about 0.3 ms to 35–36 ms throughout the slow interval, maintaining
-roughly 0.46 MB/s. Larger images then took about 1.2–1.3 s to upload. No trace
-records were lost. The next candidate uses a separate nonblocking output handle
-with readiness waits, recording `output.ready_wait` separately from `output.write`.
-Its effect on the slowdown remains unconfirmed; the terminal bytes are unchanged.
+PTY/tmux cause. The next trial bounded individual writes to 16 KiB and added
+`output.write` timings without changing the terminal stream.
+
+The 16 KiB write trial still slowed down: individual writes rose from about
+0.3 ms to 35–36 ms. A subsequent nonblocking `/dev/tty` trial (`376df29`)
+terminated during its first readiness wait, about 0.24 s after startup, and was
+reverted. Its socket-based tests did not establish PTY readiness compatibility.
+Keep the known-starting blocking output path and diagnostics while investigating
+the remaining throughput problem; the nonblocking trial is not a usable fix.
