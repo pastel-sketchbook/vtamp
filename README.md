@@ -525,8 +525,9 @@ through Kitty temporary files instead of the terminal byte stream. Both processe
 must share the same filesystem; leave it unset for SSH or other terminals.
 Only short file-path and placement commands travel through the PTY. Files are
 written on the video worker, deleted by the terminal after reading, and cleaned
-on client shutdown. Skipped frames are removed by the worker; at most 32 files
-can await consumption before video reports an error. Covers keep their existing
+on client shutdown. Skipped frames are removed by the worker. Retired frames
+that tmux never forwarded are reclaimed after a two-second grace period, or
+sooner when the 32-file limit is reached; current frames are protected. Covers keep their existing
 transport. This opt-in mode is under investigation; direct transfer is the default.
 
 **Known unresolved issue:** video can still intermittently remain near 1 fps

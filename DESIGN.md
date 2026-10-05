@@ -408,7 +408,21 @@ This local-only mode writes original RGBA pixels on the video worker and sends
 only the base64-encoded absolute file path, image dimensions, and placement
 commands through tmux. Preserve the same image IDs, Unicode placeholders, and
 resolution. The worker owns a private temporary directory, cleans unrendered
-frames, and retains handed-off files until the terminal unlinks them. Limit
-unconsumed files to 32, and remove the directory on worker shutdown. UI rendering
+frames, and retains handed-off files while the frame is still held by the UI or
+mailbox. Reclaim retired files after the terminal unlinks them or a two-second
+grace period; tmux can discard passthrough from hidden panes, leaving files the
+terminal will never see. At the 32-file cap, evict an older retired frame rather
+than failing all future frames. Never evict a current frame to make room, and
+remove the directory on worker shutdown. UI rendering
 only marks handoff; it does no file I/O. Covers and other protocols retain their
 existing transport. No improvement claim is made until user validation.
+
+The first file-transport user run sent most video frames as 272-byte commands
+in about 0.026 ms, compared with the earlier bulk-upload stalls. Covers shown
+during swaps still used direct uploads and sometimes took about 1.17 s. Around
+145 s, the run began reporting video errors and the user confirmed that playback
+of the picture stopped. The original trace did not include an error category.
+The next fix reclaims unconsumed retired files so lost hidden-pane commands cannot
+exhaust the file queue; new `video.file_queue`, `video.file_limit`, and `video.error`
+records distinguish this condition from decoder/encoder errors. The reported
+freeze still needs validation against that fix.

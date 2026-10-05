@@ -41,7 +41,7 @@ const DRIFT_MS: u64 = 500;
 // a transfer as handed to the terminal. Ghostty removes t=t files after reading.
 struct FileTransfers {
     directory: tempfile::TempDir,
-    pending: Vec<(tempfile::TempPath, Arc<AtomicU8>)>,
+    pending: Vec<(tempfile::TempPath, Arc<AtomicU8>, Option<Instant>)>,
 }
 struct FileTransfer(Arc<AtomicU8>);
 impl FileTransfer {
@@ -68,17 +68,52 @@ impl FileTransfers {
         })
     }
     fn collect(&mut self) {
-        self.pending
-            .retain(|(path, state)| match state.load(Ordering::Acquire) {
+        self.collect_at(Instant::now());
+    }
+    fn collect_at(&mut self, now: Instant) {
+        self.pending.retain_mut(
+            |(path, state, retired)| match state.load(Ordering::Acquire) {
                 0 => true,
-                1 => path.exists(),
+                // A hidden pane's passthrough command can be discarded by
+                // tmux, leaving a file the terminal will never consume.
+                1 => {
+                    path.exists()
+                        && (Arc::strong_count(state) > 1
+                            || now.saturating_duration_since(*retired.get_or_insert(now))
+                                < Duration::from_secs(2))
+                }
                 _ => false,
-            });
+            },
+        );
     }
     fn prepare(&mut self, image: &DynamicImage, id: u32) -> Result<(String, FileTransfer)> {
         self.collect();
+        super::diagnostics::record(
+            "video.file_queue",
+            || serde_json::json!({"pending":self.pending.len()}),
+        );
         if self.pending.len() >= 32 {
-            bail!("Kitty temporary files are not being consumed; disable VTAMP_KITTY_VIDEO_FILE");
+            if let Some(index) = self
+                .pending
+                .iter()
+                .position(|(_, state, _)| Arc::strong_count(state) == 1)
+            {
+                // Retire only frames no longer held by the UI/mailbox. A lost
+                // command must not poison every later frame in this attachment.
+                self.pending.remove(index);
+                super::diagnostics::record(
+                    "video.file_retired",
+                    || serde_json::json!({"reason":"capacity"}),
+                );
+            } else {
+                super::diagnostics::record(
+                    "video.file_limit",
+                    || serde_json::json!({"pending":self.pending.len()}),
+                );
+                bail!(
+                    "Kitty temporary files are not being consumed; disable VTAMP_KITTY_VIDEO_FILE"
+                );
+            }
         }
         let mut file = tempfile::Builder::new()
             .suffix(".rgba")
@@ -92,7 +127,7 @@ impl FileTransfers {
             image.height()
         );
         let handed_off = Arc::new(AtomicU8::new(0));
-        self.pending.push((path, handed_off.clone()));
+        self.pending.push((path, handed_off.clone(), None));
         Ok((sequence, FileTransfer(handed_off)))
     }
 }
@@ -958,6 +993,12 @@ fn worker(
             Ok(None) => (),
             Err(error) => {
                 decoder = None;
+                super::diagnostics::record("video.error", || {
+                    serde_json::json!({
+                        "kind":if error.to_string().starts_with("Kitty temporary files") { "file_queue_full" } else { "decode_or_encode" },
+                        "generation":r.generation,
+                    })
+                });
                 if !r.cancel.load(Ordering::Relaxed) {
                     mailbox.put(Packet {
                         ended: false,
@@ -1079,11 +1120,24 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         files.collect();
         assert!(files.pending.is_empty());
+        let mut held = vec![];
         for _ in 0..32 {
             let (_, handed_off) = files.prepare(&DynamicImage::new_rgba8(1, 1), 42).unwrap();
             handed_off.hand_off();
+            held.push(handed_off);
         }
         assert!(files.prepare(&DynamicImage::new_rgba8(1, 1), 42).is_err());
+        drop(held);
+        // A discarded hidden-pane command must not block all future uploads.
+        let oldest = files.pending[0].0.to_path_buf();
+        let (_, newest) = files.prepare(&DynamicImage::new_rgba8(1, 1), 42).unwrap();
+        assert!(!oldest.exists());
+        assert_eq!(files.pending.len(), 32);
+        files.collect_at(Instant::now() + Duration::from_secs(3));
+        assert_eq!(files.pending.len(), 1, "keep the still-owned newest frame");
+        drop(newest);
+        files.collect();
+        assert!(files.pending.is_empty());
         drop(files);
         assert!(
             !root.exists(),
