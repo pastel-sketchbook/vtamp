@@ -160,6 +160,34 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn protocol_upgrade_rejects_old_work_and_uploads_kitty() {
+        for original in [ProtocolType::Halfblocks, ProtocolType::Sixel] {
+            let make = |kind| {
+                Artwork::Native {
+                    protocol: kind,
+                    font_size: FontSize::new(17, 34),
+                    tmux: true,
+                    compress: false,
+                }
+                .new_resize_protocol(image::DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
+            };
+            let (tx, rx) = mpsc::channel();
+            let mut cover = Cover::new(tx, Some(make(original)));
+            let area = Rect::new(0, 0, 8, 4);
+            cover.resize_encode(&COVER_RESIZE, area.into());
+            let old = rx.recv().unwrap().resize_encode();
+            cover.empty_protocol();
+            cover.replace_protocol(make(ProtocolType::Kitty));
+            assert!(!cover.update_resized_protocol(old));
+            cover.resize_encode(&COVER_RESIZE, area.into());
+            assert!(cover.update_resized_protocol(rx.recv().unwrap().resize_encode()));
+            let mut buffer = Buffer::empty(area);
+            cover.render(area, &mut buffer);
+            assert!(buffer[(0, 0)].symbol().starts_with("\x1bPtmux;\x1b\x1b_G"));
+        }
+    }
+
+    #[test]
     fn keep_visible_cover_until_replacement_is_ready_and_reject_obsolete_work() {
         for kind in [
             ProtocolType::Halfblocks,

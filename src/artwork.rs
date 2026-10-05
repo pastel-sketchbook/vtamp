@@ -1,5 +1,7 @@
 //! Terminal graphics selection. Native Sixel belongs to the current pane, so tmux
 //! can retain it when switching windows; it must not be sent through passthrough.
+pub(crate) mod redetect;
+
 use crate::cli::Art;
 use image::{DynamicImage, Rgba};
 use ratatui_image::{
@@ -16,7 +18,7 @@ use ratatui_image::{
 use std::{
     io::{self, IsTerminal, Write},
     os::fd::AsRawFd,
-    process::{Command, Stdio},
+    process::Command,
     time::{Duration, Instant},
 };
 
@@ -40,22 +42,17 @@ impl Artwork {
         if matches!(art, Art::None | Art::Halfblocks) {
             return (Self::native(art, false, Capabilities::default()), None);
         }
-        let tmux = std::env::var_os("TMUX").is_some()
-            || std::env::var("TERM").is_ok_and(|s| s.starts_with("tmux"))
-            || std::env::var("TERM_PROGRAM").is_ok_and(|s| s == "tmux");
+        let tmux = in_tmux();
+        // Auto detection in tmux runs through the live event reader. In
+        // particular, a parked window must not query somebody else's pane.
+        if tmux && matches!(art, Art::Auto) {
+            return (Self::native(art, true, Capabilities::default()), None);
+        }
         let multiplexer = tmux || std::env::var("TERM").is_ok_and(|s| s.starts_with("screen"));
         if multiplexer || matches!(art, Art::Sixel) {
             let mut caps = probe(false).unwrap_or_default();
-            if tmux && matches!(art, Art::Auto) {
-                // tmux's DA1 describes its parser, not the attached terminal.
-                // Without end-to-end support tmux draws a '+' placeholder.
-                caps.restrict_to_tmux_clients(&tmux_client_features().unwrap_or_default());
-            }
             let mut passthrough = None;
-            if tmux
-                && (matches!(art, Art::Kitty)
-                    || (matches!(art, Art::Auto) && !(caps.sixel && caps.font_size.is_some())))
-            {
+            if tmux && matches!(art, Art::Kitty) {
                 passthrough = TmuxPassthrough::enable();
                 if let Some(guard) = &passthrough
                     && guard.pane_is_active()
@@ -66,9 +63,6 @@ impl Artwork {
                     caps.kitty = outer.kitty;
                     caps.compress = outer.compress;
                     caps.font_size = caps.font_size.or(outer.font_size);
-                }
-                if matches!(art, Art::Auto) && !(caps.kitty && caps.font_size.is_some()) {
-                    passthrough = None; // Restore the pane option on failed detection.
                 }
             }
             return (Self::native(art, tmux, caps), passthrough);
@@ -88,8 +82,8 @@ impl Artwork {
         let protocol = match art {
             Art::Sixel => ProtocolType::Sixel,
             Art::Kitty => ProtocolType::Kitty,
-            Art::Auto if caps.sixel && caps.font_size.is_some() => ProtocolType::Sixel,
             Art::Auto if caps.kitty && caps.font_size.is_some() => ProtocolType::Kitty,
+            Art::Auto if caps.sixel && caps.font_size.is_some() => ProtocolType::Sixel,
             _ => ProtocolType::Halfblocks,
         };
         Self::Native {
@@ -164,13 +158,31 @@ impl Artwork {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct VideoGraphics {
     pub kind: ProtocolType,
     pub font: FontSize,
     pub tmux: bool,
     pub compress: bool,
 }
+impl PartialEq for VideoGraphics {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            self.kind,
+            self.font.width,
+            self.font.height,
+            self.tmux,
+            self.compress,
+        ) == (
+            other.kind,
+            other.font.width,
+            other.font.height,
+            other.tmux,
+            other.compress,
+        )
+    }
+}
+impl Eq for VideoGraphics {}
 impl VideoGraphics {
     pub fn protocol(self, image: DynamicImage, background: Rgba<u8>, id: u32) -> StatefulProtocol {
         let protocol = match self.kind {
@@ -238,16 +250,29 @@ impl Capabilities {
 }
 
 fn tmux_query(args: &[&str]) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+    let output = crate::subprocess::run(
+        Command::new("tmux").args(args),
+        None,
+        &crate::subprocess::cancel(),
+        PROBE_TIMEOUT,
+        |_| {},
+    )
+    .ok()?;
+    String::from_utf8(output).ok()
+}
+
+fn in_tmux() -> bool {
+    std::env::var_os("TMUX").is_some()
+        || std::env::var("TERM").is_ok_and(|s| s.starts_with("tmux"))
+        || std::env::var("TERM_PROGRAM").is_ok_and(|s| s == "tmux")
+}
+
+fn pane_active(report: &str) -> bool {
+    let fields: Vec<_> = report.split_whitespace().collect();
+    fields.len() >= 3
+        && fields[0].parse::<u32>().is_ok_and(|n| n > 0)
+        && fields[1] == "1"
+        && fields[2] == "1"
 }
 
 /// Kitty image uploads need passthrough; scope it to this pane and this attach.
@@ -295,8 +320,14 @@ impl TmuxPassthrough {
     }
 
     fn pane_is_active(&self) -> bool {
-        tmux_query(&["display-message", "-p", "-t", &self.pane, "#{pane_active}"])
-            .is_some_and(|s| s.trim() == "1")
+        tmux_query(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.pane,
+            "#{session_attached} #{window_active} #{pane_active}",
+        ])
+        .is_some_and(|s| pane_active(&s))
     }
 }
 
@@ -530,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_kitty_detection_falls_back_and_native_sixel_takes_priority() {
+    fn failed_kitty_detection_falls_back_and_kitty_takes_priority() {
         for reply in [
             "\x1b_Gi=31;ENOTSUP\x1b\\\x1b[6;34;17t\x1b[0n",
             "\x1b_Gi=31;OK\x1b\\\x1b[0n",
@@ -549,7 +580,7 @@ mod tests {
             renderer
                 .new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]))
                 .protocol_type(),
-            StatefulProtocolType::Sixel(_)
+            StatefulProtocolType::Kitty(_)
         ));
     }
 

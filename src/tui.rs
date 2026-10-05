@@ -2,7 +2,10 @@ mod imports;
 mod streams;
 mod video;
 use crate::{
-    artwork::Artwork,
+    artwork::{
+        Artwork,
+        redetect::{Detector, ReplyFilter, Update as GraphicsUpdate},
+    },
     cli::Art,
     client::Client,
     cover::{Cover, ResizeRequest, ResizeResponse},
@@ -385,6 +388,7 @@ struct App {
 struct TerminalGuard {
     tmux_passthrough: bool,
     _passthrough: Option<crate::artwork::TmuxPassthrough>,
+    detector: Detector,
 }
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -398,7 +402,11 @@ impl Drop for TerminalGuard {
                 crossterm::style::Print("\x1bPtmux;\x1b\x1b[?2026l\x1b\\")
             );
         }
-        let _ = crossterm::execute!(std::io::stdout(), event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            event::DisableBracketedPaste,
+            event::DisableFocusChange
+        );
         if std::env::var_os("TMUX").is_some() {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::style::Print("\x1b[>4;0m"));
         } else {
@@ -441,8 +449,13 @@ pub async fn run(
     let mut guard = TerminalGuard {
         tmux_passthrough: false,
         _passthrough: None,
+        detector: Detector::start(art),
     };
-    crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)?;
+    crossterm::execute!(
+        std::io::stdout(),
+        event::EnableBracketedPaste,
+        event::EnableFocusChange
+    )?;
     let (artwork, passthrough) = Artwork::detect(art);
     guard.tmux_passthrough = passthrough
         .as_ref()
@@ -529,6 +542,7 @@ pub async fn run(
     app.video
         .start(client.paths.clone(), app.artwork.video_graphics());
     let video_mailbox = app.video.mailbox();
+    let graphics_paths = client.paths.clone();
     let watch_client = client.clone();
     let watch_messages = messages.clone();
     let watch_task = tokio::spawn(async move {
@@ -644,6 +658,7 @@ pub async fn run(
         let mut last_draw = Instant::now();
         let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
+        let mut graphics_replies = ReplyFilter::default();
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut interrupt =
@@ -654,6 +669,7 @@ pub async fn run(
             } else {
                 app.next_redraw(last_draw)
             };
+            let deadline = deadline.into_iter().chain(graphics_replies.deadline()).min();
             let previous_cover_hidden = app.cover_hidden();
             let previous_fullscreen = app.video_fullscreen.clone();
             let terminal_event = tokio::select! {
@@ -688,6 +704,22 @@ pub async fn run(
                     app.message(message, &messages, &commands);
                     None
                 },
+                Some(update) = guard.detector.updates.recv() => {
+                    match update {
+                        GraphicsUpdate::Query { id, expires } if Instant::now() < expires => {
+                            crossterm::execute!(std::io::stdout(), crossterm::style::Print(Detector::query(id)))?;
+                        }
+                        GraphicsUpdate::Graphics { artwork, synchronized } => {
+                            guard.tmux_passthrough = synchronized;
+                            presentation.tmux_passthrough = synchronized;
+                            if app.change_artwork(artwork, &graphics_paths) {
+                                presentation.clear(&mut terminal)?;
+                            }
+                        }
+                        _ => (),
+                    }
+                    None
+                },
                 event = terminal_events.next() => match event {
                     Some(event) => Some(event?),
                     None => return Ok(()),
@@ -698,8 +730,19 @@ pub async fn run(
             while let Ok(message) = incoming.try_recv() {
                 app.message(message, &messages, &commands);
             }
+            let now = Instant::now();
+            let mut events = graphics_replies.expire(now);
             if let Some(event) = terminal_event {
+                if guard.detector.enabled() {
+                    let (forwarded, reply) = graphics_replies.push(event, now);
+                    events.extend(forwarded);
+                    if let Some(reply) = reply { guard.detector.reply(reply); }
+                } else { events.push(event); }
+            }
+            for event in events {
                 match event {
+                    TerminalEvent::FocusGained => guard.detector.focus(true),
+                    TerminalEvent::FocusLost => guard.detector.focus(false),
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let cover_hidden = app.cover_hidden();
                         let theme = app.theme.clone();
@@ -989,6 +1032,23 @@ impl App {
             self.artwork
                 .new_resize_protocol(image, cover_background(palette)),
         );
+    }
+    fn change_artwork(&mut self, artwork: Artwork, paths: &crate::platform::Paths) -> bool {
+        let before = self.artwork.font_size();
+        let after = artwork.font_size();
+        if self.artwork.video_graphics() == artwork.video_graphics()
+            && (before.width, before.height) == (after.width, after.height)
+        {
+            return false;
+        }
+        self.artwork = artwork;
+        // A previous Sixel/halfblock protocol must not redraw after clearing
+        // the screen. Generation checks reject any encoding still in flight.
+        self.cover.empty_protocol();
+        self.rebuild_cover();
+        self.video
+            .start(paths.clone(), self.artwork.video_graphics());
+        true
     }
     fn apply_theme(&mut self, theme: impl Into<ResolvedTheme>) {
         let theme = theme.into();

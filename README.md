@@ -42,7 +42,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Managed YouTube download deletion with confirmation; queued copies are removed together, and local originals are protected.
 - Read-only audio spectrum with ten rendering styles (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks); press `v` to toggle and `V` to change the style.
 - Nine built-in color themes plus custom JSON palettes, with live previews and saved preferences.
-- High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
+- High-resolution album art via Kitty graphics, with Sixel and color halfblock fallbacks.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
 - macOS media keys and Now Playing metadata, including album art, after detaching.
 - Agent-friendly CLI: compact now-playing JSON, field filters, atomic queue edits with retry receipts, scan reports, and server-owned stop timers.
@@ -476,11 +476,11 @@ switching is not supported.
 
 ## Covers, terminals, and tmux
 
-Album covers render as high-resolution pixel images through Sixel or Kitty graphics when supported. vtamp detects graphics support when you attach. Inside tmux, it first checks native Sixel support in **both tmux and the terminals attached to the pane's session**. Otherwise, it queries the outer terminal for Kitty graphics support. Ghostty + tmux uses this Kitty path for high-resolution covers. Color halfblocks are the fallback when neither graphics path is available.
+Album covers prefer high-resolution Kitty graphics. Inside tmux, vtamp queries the outer terminal for Kitty support first, even when Sixel is available. If Kitty is unavailable, it uses native Sixel only when **both tmux and all terminals attached to the pane's session** support it. Color halfblocks are the final fallback. Pixel graphics require valid cell dimensions. Outside tmux, existing terminal-specific compatibility handling (including iTerm2) still applies.
 
 | Option | Rendering |
 | --- | --- |
-| `--art auto` | Native Sixel or detected Kitty graphics in tmux; detected graphics protocol elsewhere; halfblocks as fallback |
+| `--art auto` | Kitty first, native Sixel next, halfblocks last in tmux; detected compatible graphics elsewhere |
 | `--art halfblocks` | Unicode upper/lower blocks with foreground and background colors |
 | `--art sixel` | Force native Sixel graphics when support is known but automatic detection fails |
 | `--art kitty` | Explicit Kitty graphics protocol; requires terminal/multiplexer support |
@@ -497,11 +497,13 @@ Sixel is sent directly to the current terminal or tmux pane, without passthrough
 
 If forced Sixel shows `SIXEL IMAGE` or rows of `+`, tmux is substituting its text placeholder because its client cannot render Sixel. Use `--art auto` to select a compatible protocol. Building tmux with Sixel support does not add that protocol to the outer terminal. Ghostty supports the [Kitty graphics protocol](https://ghostty.org/docs/features), which automatic mode detects through tmux passthrough.
 
-For Kitty graphics, vtamp temporarily enables `allow-passthrough on` **only for its own pane**, and restores the previous setting on normal detach or failed detection. Existing `on`/`all` settings are preserved. Global options and configuration files are never changed. Pixel uploads use passthrough; Unicode placeholders let tmux keep the image positioned with its cells. Automatic Kitty detection runs only in the active pane because terminal replies are routed there; launch from the pane you are using, or explicitly select `--art kitty` for a known-compatible setup.
+For Kitty graphics, vtamp temporarily enables `allow-passthrough on` **only for its own pane**, and restores the previous setting on normal detach or failed detection. Existing `on`/`all` settings are preserved. Global options and configuration files are never changed. Pixel uploads use passthrough; Unicode placeholders let tmux keep the image positioned with its cells.
+
+In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.
 
 Halfblocks need no graphics passthrough. Use `--art halfblocks` if graphics are unavailable in your terminal or multiplexer version. For true color, configure your terminal and tmux for RGB color if necessary.
 
-Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Artwork is cached at up to 512 pixels on the long side and keeps its own shape, as imported YouTube thumbnails do; the player sizes the cover area to the image and scales the artwork to fill it, so a wide thumbnail is drawn in full without bars or losing pixels. Missing or undecodable art uses a built-in image. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
+Artwork comes from the embedded front cover first, then the first embedded picture, then `cover.jpg`, `cover.png`, `cover.jpeg`, `folder.jpg`, `folder.png`, `Folder.jpg`, or `Cover.jpg` beside the audio. Artwork is cached at up to 512 pixels on the long side and keeps its own shape, as imported YouTube thumbnails do; the player sizes the cover area to the image and scales the artwork to fill it, so a wide thumbnail is drawn in full without bars or losing pixels. Missing or undecodable art shows “No album art”. Image decoding, resizing, and Sixel encoding run outside the UI input loop.
 
 YouTube imports can optionally save video up to 480p (`library add URL --video`).
 The TUI asks before downloading video and automatically plays saved video in the

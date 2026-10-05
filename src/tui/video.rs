@@ -239,10 +239,36 @@ impl View {
         view
     }
     pub fn start(&mut self, paths: Paths, graphics: Option<VideoGraphics>) {
+        if self.graphics == graphics {
+            return;
+        }
+        if let Some(request) = self.request.take() {
+            request.cancel.store(true, Ordering::Relaxed);
+        }
+        self.sender = None;
+        let previous = self.runtime.take();
+        if let Some(runtime) = &previous {
+            runtime.stop.store(true, Ordering::Relaxed);
+            if let Some(thread) = &runtime.thread {
+                thread.thread().unpark();
+            }
+        }
+        self.clear_images();
+        self.generation = self.generation.wrapping_add(1);
+        self.frame = None;
+        self.aspect = None;
+        self.notice_key = None;
+        self.graphics = graphics;
+        self.mailbox.packet.lock().unwrap().take();
         let Some(graphics) = graphics else {
+            if previous.is_some() {
+                self.runtime = Some(Runtime {
+                    stop: subprocess::cancel(),
+                    thread: Some(thread::spawn(move || drop(previous))),
+                });
+            }
             return;
         };
-        self.graphics = Some(graphics);
         let first = rand::random::<u32>().max(1);
         self.ids = [first, first.wrapping_add(1).max(1)];
         let (sender, requests) = watch::channel(None);
@@ -254,6 +280,9 @@ impl View {
         self.runtime = Some(Runtime {
             stop,
             thread: Some(thread::spawn(move || {
+                // Join the cancelled decoder off the input loop, before the
+                // replacement can publish into the same stable mailbox.
+                drop(previous);
                 worker(paths, graphics, ids, requests, mailbox, worker_stop)
             })),
         });
@@ -872,6 +901,63 @@ mod tests {
             1000
         );
         assert_eq!(clock.position_at(at - Duration::from_secs(1)), 1000);
+    }
+    #[test]
+    fn graphics_change_preserves_mailbox_and_rejects_old_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            data: dir.path().into(),
+            runtime: dir.path().into(),
+            cache: dir.path().into(),
+        };
+        let (sender, _rx) = watch::channel(None);
+        let mut view = View::default();
+        view.sender = Some(sender);
+        view.area = Rect::new(0, 0, 16, 5);
+        let track = item();
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Paused,
+            true,
+            true,
+            12_345,
+            Rgba([0; 4]),
+        );
+        let old = view.request.clone().unwrap();
+        let mailbox = view.mailbox();
+        let graphics = VideoGraphics {
+            kind: ProtocolType::Sixel,
+            font: ratatui_image::FontSize::new(17, 34),
+            tmux: true,
+            compress: false,
+        };
+        view.start(paths, Some(graphics));
+        assert!(old.cancel.load(Ordering::Relaxed));
+        assert!(Arc::ptr_eq(&mailbox, &view.mailbox()));
+        assert!(view.enabled);
+        // Disconnect the real worker; clock requests below are inspected only.
+        view.sender = None;
+        view.runtime.take();
+        let (sender, _rx) = watch::channel(None);
+        view.sender = Some(sender);
+        view.sync(
+            Some(&track),
+            PlaybackStatus::Paused,
+            true,
+            true,
+            12_345,
+            Rgba([0; 4]),
+        );
+        assert_eq!(view.request.as_ref().unwrap().clock.position(), 12_345);
+        assert_ne!(view.generation, old.generation);
+        mailbox.put(Packet {
+            generation: old.generation,
+            ended: true,
+            result: Ok(View::with_test_frame().frame.take()),
+        });
+        assert!(view.accept().is_none());
+        assert!(!view.has_frame());
+        assert!(!view.ended);
     }
     #[test]
     fn seeking_holds_the_displayed_frame_until_the_latest_target_is_ready() {

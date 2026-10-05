@@ -26,7 +26,7 @@ pub struct Args {
     /// Emit structured JSON (watch emits newline-delimited JSON).
     #[arg(long, global = true)]
     pub json: bool,
-    /// Cover rendering; auto detects Sixel or Kitty graphics, with a halfblock fallback.
+    /// Cover rendering; auto prefers Kitty, then Sixel, with a halfblock fallback.
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub art: Art,
     /// Theme for this attachment only; otherwise use the saved preference.

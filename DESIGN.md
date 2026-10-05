@@ -166,6 +166,17 @@ uploads as well: tmux resets the outer cursor after each raw graphics chunk.
 Enable this only when all attached clients advertise tmux's `sync` capability;
 tmux's final redraw restores the pane cursor and releases the outer update.
 
+Automatic tmux artwork prefers Kitty, then end-to-end native Sixel, then
+halfblocks. A parked window starts with halfblocks: probe the outer terminal
+only with an attached client and an active window and pane. Focus events and
+500 ms background visibility checks allow promotion without reattaching;
+timeouts get one delayed retry per activation. Stop checking after Kitty succeeds.
+The existing input stream separates Kitty replies from keys; detection must
+never introduce another stdin reader or block input on tmux subprocesses.
+On promotion, rebuild cover protocols and resynchronize video at the current
+audio position, rejecting obsolete worker results and clearing previous pixels.
+Keep passthrough changes pane-local and restore them on failed detection or exit.
+
 Help scrolls through wrapped text at small pane sizes. When scrolling is needed,
 keep scroll/page controls, close keys, and the visible row range in a fixed
 two-line footer. When all text fits, show only a one-line close hint. Arrow keys and
