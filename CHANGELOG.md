@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-10-05
+
+Video playback in local Ghostty + tmux avoids bulk terminal uploads and stays
+responsive through repeated pane swaps. Video preparation no longer flashes a
+thumbnail while the next frame is loading.
+
+### Changed
+
+- Local tmux Kitty video uses temporary-file transmission by default, preserving
+  resolution while sending only short path and placement commands through the
+  terminal. The worker bounds and cleans up pending files, including transfers
+  discarded while a pane is hidden. Repeated debug and release swap tests no
+  longer reproduced the sustained 1 fps slowdown in the tested environment.
+- Automatic graphics selection inside tmux prefers Kitty, then native Sixel,
+  then halfblocks. Clients started in parked windows retry detection when the
+  window and pane become active, without requiring a new attachment.
+- Pending or resized video leaves its picture area blank, including fullscreen,
+  instead of briefly uploading cover art or displaying loading text. Missing,
+  failed, or ended video and explicit cover mode still show the cover.
+
+### Fixed
+
+- Video and spectrum no longer depend on an outer synchronized-update hold being
+  released by a later tmux redraw. Graphics uploads precede text and caret drawing;
+  tmux owns synchronization for its Kitty attachments.
+- Batched Kitty commands and separated graphics uploads reduce cursor flicker
+  and repeated outer-cursor resets during playback.
+- Retired temporary files left by hidden-pane swaps no longer exhaust the file
+  queue and stop subsequent video frames.
+
+### Added
+
+- Optional `VTAMP_TUI_TRACE` timing logs for UI wakes, graphics writes, and video
+  delivery. Logging runs on a separate thread and excludes key contents and
+  media metadata.
+
+### Upgrade notes
+
+- Protocol remains **11** and database version remains **7**. Upgrading from
+  v0.4.2 requires no migration or playback-server restart for these TUI changes;
+  upgrade the binary and reattach the TUI. Existing audio can keep playing.
+- SSH environments retain direct video transmission. Use
+  `VTAMP_KITTY_VIDEO_FILE=0` to force direct transfer, or `1` when the terminal
+  and TUI share a filesystem. The validated default is local Ghostty + tmux;
+  direct cover display can still briefly stall on a large upload.
+- Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux tested on
+  Ubuntu 24.04 (glibc 2.39+). Linux remains a headless server without terminal
+  video, device playback, relay, media keys, or radio.
+
 ## [0.4.2] — 2026-10-05
 
 Changes since v0.4.1. Custom JSON themes join the existing palettes, file
@@ -212,7 +261,8 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
-[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/rath/vtamp/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/rath/vtamp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/rath/vtamp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rath/vtamp/compare/v0.3.0...v0.4.0
