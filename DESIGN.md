@@ -395,3 +395,20 @@ did not restore throughput, so draining a pending redraw is not a demonstrated
 fix. The next investigation captures symbolized debug-client and tmux stacks
 during slow output, together with read-only pane and termios state, and compares
 them with recovery. Do not claim a root cause from the timing trace alone.
+
+The automatic capture succeeded at 19:06:58 CEST: 1178 of 1433 TUI main-thread
+samples were in the actual kernel `write()` below `upload_graphics`, not a Rust
+stdout lock. Ghostty's reader waited in `poll()` in 1713 of 1729 samples. tmux
+spent 634 of 1717 samples in pane-activity dispatch, but that alone does not
+establish its cause. The next opt-in comparison, `VTAMP_KITTY_VIDEO_FILE=1`,
+bypasses bulk PTY traffic for video using Kitty `t=t` temporary-file transmission,
+which Ghostty 1.3.1 supports. Direct transmission remains the default.
+
+This local-only mode writes original RGBA pixels on the video worker and sends
+only the base64-encoded absolute file path, image dimensions, and placement
+commands through tmux. Preserve the same image IDs, Unicode placeholders, and
+resolution. The worker owns a private temporary directory, cleans unrendered
+frames, and retains handed-off files until the terminal unlinks them. Limit
+unconsumed files to 32, and remove the directory on worker shutdown. UI rendering
+only marks handoff; it does no file I/O. Covers and other protocols retain their
+existing transport. No improvement claim is made until user validation.

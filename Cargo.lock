@@ -3565,6 +3565,7 @@ name = "vtamp"
 version = "0.4.2"
 dependencies = [
  "anyhow",
+ "base64",
  "block2",
  "clap",
  "crossbeam-queue",

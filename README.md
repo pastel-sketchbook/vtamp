@@ -520,6 +520,15 @@ After a tmux Kitty upload takes 200 ms or longer, vtamp pauses subsequent frame
 output for 150 ms to let pending terminal output drain. Input and frame reception
 continue; a timer draws the latest state afterward without requiring a keypress.
 
+For local Ghostty + tmux diagnosis, `VTAMP_KITTY_VIDEO_FILE=1` sends video pixels
+through Kitty temporary files instead of the terminal byte stream. Both processes
+must share the same filesystem; leave it unset for SSH or other terminals.
+Only short file-path and placement commands travel through the PTY. Files are
+written on the video worker, deleted by the terminal after reading, and cleaned
+on client shutdown. Skipped frames are removed by the worker; at most 32 files
+can await consumption before video reports an error. Covers keep their existing
+transport. This opt-in mode is under investigation; direct transfer is the default.
+
 **Known unresolved issue:** video can still intermittently remain near 1 fps
 after returning with `swap-pane` in Ghostty + tmux, while audio continues.
 Moving focus to another pane has restored the frame rate, but focusing the video

@@ -9,6 +9,7 @@ use crate::{
     video,
 };
 use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use image::{DynamicImage, RgbImage, Rgba};
 use ratatui::{Frame, buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui_image::{
@@ -18,10 +19,16 @@ use ratatui_image::{
 };
 use std::{
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::process::CommandExt},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, process::CommandExt},
+    },
     path::PathBuf,
     process::{Child, ChildStderr, ChildStdout, Command, Stdio},
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -29,6 +36,66 @@ use tokio::sync::{Notify, watch};
 
 const DEFAULT_FPS: u32 = 15;
 const DRIFT_MS: u64 = 500;
+
+// Opt-in local transport. The worker owns all file cleanup; the UI only marks
+// a transfer as handed to the terminal. Ghostty removes t=t files after reading.
+struct FileTransfers {
+    directory: tempfile::TempDir,
+    pending: Vec<(tempfile::TempPath, Arc<AtomicU8>)>,
+}
+struct FileTransfer(Arc<AtomicU8>);
+impl FileTransfer {
+    fn hand_off(&self) {
+        self.0.store(1, Ordering::Release);
+    }
+}
+impl Drop for FileTransfer {
+    fn drop(&mut self) {
+        // Mark only unrendered frames abandoned. A handed-off file must survive
+        // replacement of the frame until the terminal opens and unlinks it.
+        let _ = self
+            .0
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+impl FileTransfers {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            directory: tempfile::Builder::new()
+                .prefix("tty-graphics-protocol-vtamp-")
+                .tempdir()?,
+            pending: vec![],
+        })
+    }
+    fn collect(&mut self) {
+        self.pending
+            .retain(|(path, state)| match state.load(Ordering::Acquire) {
+                0 => true,
+                1 => path.exists(),
+                _ => false,
+            });
+    }
+    fn prepare(&mut self, image: &DynamicImage, id: u32) -> Result<(String, FileTransfer)> {
+        self.collect();
+        if self.pending.len() >= 32 {
+            bail!("Kitty temporary files are not being consumed; disable VTAMP_KITTY_VIDEO_FILE");
+        }
+        let mut file = tempfile::Builder::new()
+            .suffix(".rgba")
+            .tempfile_in(self.directory.path())?;
+        file.write_all(image.to_rgba8().as_raw())?;
+        let path = file.into_temp_path();
+        let name = BASE64.encode(path.as_os_str().as_bytes());
+        let sequence = format!(
+            "\x1b_Ga=T,U=1,t=t,f=32,s={},v={},i={id},q=2;{name}\x1b\\",
+            image.width(),
+            image.height()
+        );
+        let handed_off = Arc::new(AtomicU8::new(0));
+        self.pending.push((path, handed_off.clone()));
+        Ok((sequence, FileTransfer(handed_off)))
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Clock {
@@ -81,6 +148,7 @@ enum PictureProtocol {
     Kitty {
         image: Protocol,
         upload: Option<String>,
+        file_transfer: Option<FileTransfer>,
         area: Rect,
     },
     Sixel(StatefulProtocol),
@@ -92,8 +160,20 @@ impl PictureProtocol {
         background: Rgba<u8>,
         id: u32,
         area: Rect,
+        files: Option<&mut FileTransfers>,
     ) -> Result<Self> {
         if graphics.kind == ProtocolType::Kitty {
+            let transfer = files
+                .filter(|_| graphics.tmux)
+                .map(|files| files.prepare(&image, id))
+                .transpose()?;
+            // Only the placeholder state is needed from ratatui-image for file
+            // transport; never encode the full image into an unused base64 string.
+            let image = if transfer.is_some() {
+                DynamicImage::new_rgba8(1, 1)
+            } else {
+                image
+            };
             let image = Protocol::Kitty(Kitty::new(
                 image,
                 area.as_size(),
@@ -111,6 +191,14 @@ impl PictureProtocol {
                 .symbol()
                 .split_once('\u{10eeee}')
                 .context("Kitty upload is missing its placeholder")?;
+            let (upload, file_transfer) = if let Some((sequence, handed_off)) = transfer {
+                (
+                    format!("\x1bPtmux;{}\x1b\\", sequence.replace('\x1b', "\x1b\x1b")),
+                    Some(handed_off),
+                )
+            } else {
+                (upload.to_owned(), None)
+            };
             let placement = format!(
                 "\x1b_Ga=d,d=i,i={id},q=2;\x1b\\\x1b_Ga=p,U=1,i={id},p=1,c={},r={},q=2;\x1b\\",
                 area.width, area.height
@@ -129,6 +217,7 @@ impl PictureProtocol {
             Ok(Self::Kitty {
                 image,
                 upload: Some(upload),
+                file_transfer,
                 area,
             })
         } else {
@@ -145,6 +234,7 @@ impl PictureProtocol {
             Self::Kitty {
                 image,
                 upload,
+                file_transfer,
                 area: encoded,
             } => {
                 if area != *encoded {
@@ -156,6 +246,9 @@ impl PictureProtocol {
                     && let Some(cell) = buffer.cell_mut((area.x, area.y))
                 {
                     cell.set_symbol(&format!("{upload}{}", cell.symbol()));
+                    if let Some(handed_off) = file_transfer {
+                        handed_off.hand_off();
+                    }
                 }
             }
             Self::Sixel(protocol) => {
@@ -286,6 +379,7 @@ impl View {
                 Rgba([0; 4]),
                 1,
                 Rect::new(0, 0, 16, 5),
+                None,
             )
             .unwrap(),
             aspect: 16.0 / 9.0,
@@ -695,6 +789,16 @@ fn worker(
         youtube: crate::import_config::YoutubeConfig::load(&paths).unwrap_or_default(),
         ..Default::default()
     };
+    let requested_files = graphics.tmux
+        && graphics.kind == ProtocolType::Kitty
+        && std::env::var("VTAMP_KITTY_VIDEO_FILE").is_ok_and(|v| v == "1");
+    let mut file_transfers = requested_files
+        .then(FileTransfers::new)
+        .and_then(Result::ok);
+    super::diagnostics::record(
+        "video.transport",
+        || serde_json::json!({"requested_file":requested_files,"file":file_transfers.is_some()}),
+    );
     let fps = std::env::var("VTAMP_VIDEO_FPS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
@@ -826,6 +930,7 @@ fn worker(
                     Rgba(r.key.background),
                     ids[slot],
                     r.key.area,
+                    file_transfers.as_mut(),
                 )?;
                 slot ^= 1;
                 let info = asset.as_ref().unwrap().1;
@@ -918,6 +1023,75 @@ mod tests {
         })
     }
     #[test]
+    fn kitty_file_transfer_preserves_pixels_and_owns_pending_files() {
+        let mut files = FileTransfers::new().unwrap();
+        let root = files.directory.path().to_owned();
+        let area = Rect::new(0, 0, 16, 5);
+        let graphics = VideoGraphics {
+            kind: ProtocolType::Kitty,
+            font: ratatui_image::FontSize::new(10, 20),
+            tmux: true,
+            compress: true,
+        };
+        let pixels = image::RgbaImage::from_pixel(160, 90, Rgba([12, 34, 56, 255]));
+        let encode = |files: &mut FileTransfers| {
+            PictureProtocol::encode(
+                DynamicImage::ImageRgba8(pixels.clone()),
+                graphics,
+                Rgba([0; 4]),
+                42,
+                area,
+                Some(files),
+            )
+            .unwrap()
+        };
+        let unsent = encode(&mut files);
+        let unused = files.pending[0].0.to_path_buf();
+        drop(unsent);
+        files.collect();
+        assert!(
+            !unused.exists(),
+            "discarded frames must be cleaned by the worker"
+        );
+        let mut picture = encode(&mut files);
+        let mut buffer = Buffer::empty(area);
+        assert!(picture.render(area, &mut buffer));
+        let first = buffer[(0, 0)].symbol();
+        assert!(first.len() < 1024, "pixels must not travel through the PTY");
+        assert!(first.contains("t=t,f=32,s=160,v=90"));
+        assert!(first.find("t=t").unwrap() < first.find("a=p").unwrap());
+        let name = first
+            .split_once("q=2;")
+            .unwrap()
+            .1
+            .split('\x1b')
+            .next()
+            .unwrap();
+        let path = PathBuf::from(String::from_utf8(BASE64.decode(name).unwrap()).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), pixels.as_raw().as_slice());
+        drop(picture);
+        files.collect();
+        assert!(
+            path.exists(),
+            "an emitted transfer survives frame replacement"
+        );
+        // Emulate the terminal consuming and unlinking its t=t file.
+        std::fs::remove_file(&path).unwrap();
+        files.collect();
+        assert!(files.pending.is_empty());
+        for _ in 0..32 {
+            let (_, handed_off) = files.prepare(&DynamicImage::new_rgba8(1, 1), 42).unwrap();
+            handed_off.hand_off();
+        }
+        assert!(files.prepare(&DynamicImage::new_rgba8(1, 1), 42).is_err());
+        drop(files);
+        assert!(
+            !root.exists(),
+            "unconsumed files must be removed on shutdown"
+        );
+    }
+
+    #[test]
     fn kitty_fullscreen_scales_placement_without_enlarging_or_retransmitting_pixels() {
         for compress in [false, true] {
             for tmux in [false, true] {
@@ -934,6 +1108,7 @@ mod tests {
                     Rgba([0; 4]),
                     42,
                     area,
+                    None,
                 )
                 .unwrap();
                 let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 28));
