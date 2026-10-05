@@ -140,7 +140,7 @@ impl Artwork {
                 protocol,
                 font_size,
                 tmux,
-                ..
+                compress,
             } => {
                 let protocol = match protocol {
                     // Always unwrapped: tmux's own Sixel support owns the image.
@@ -148,7 +148,7 @@ impl Artwork {
                     ProtocolType::Kitty => StatefulProtocolType::Kitty(StatefulKitty::new(
                         rand::random(),
                         *tmux,
-                        false,
+                        *compress,
                     )),
                     _ => StatefulProtocolType::Halfblocks(Halfblocks::default()),
                 };
@@ -283,19 +283,6 @@ pub(crate) struct TmuxPassthrough {
 }
 
 impl TmuxPassthrough {
-    /// An outer update is released by tmux's final redraw, so every attached
-    /// client must have tmux's synchronized-output capability enabled.
-    pub fn synchronized_updates(&self) -> bool {
-        tmux_client_features().is_some_and(|clients| {
-            !clients.trim().is_empty()
-                && clients.lines().all(|client| {
-                    client.split('\t').next().is_some_and(|features| {
-                        features.split(',').any(|feature| feature == "sync")
-                    })
-                })
-        })
-    }
-
     fn enable() -> Option<Self> {
         let pane = std::env::var("TMUX_PANE").ok()?;
         let local = tmux_query(&["show-options", "-p", "-v", "-t", &pane, "allow-passthrough"])?;
@@ -484,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn video_compression_requires_a_positive_terminal_reply() {
+    fn cover_and_video_compression_require_a_positive_terminal_reply() {
         for (reply, expected) in [
             ("\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;OK\x1b\\\x1b[0n", true),
             ("\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;EINVAL\x1b\\\x1b[0n", false),
@@ -492,6 +479,18 @@ mod tests {
         ] {
             let artwork = Artwork::native(Art::Kitty, true, capabilities(reply));
             assert_eq!(artwork.video_graphics().unwrap().compress, expected);
+            let mut cover =
+                artwork.new_resize_protocol(DynamicImage::new_rgb8(64, 64), Rgba([0, 0, 0, 255]));
+            let area = Rect::new(0, 0, 8, 4);
+            cover.resize_encode(&Resize::Scale(None), area.as_size());
+            cover.last_encoding_result().unwrap().unwrap();
+            let mut buffer = Buffer::empty(area);
+            cover.render(area, &mut buffer);
+            let upload = buffer[(0, 0)].symbol();
+            assert_eq!(upload.contains("o=z"), expected);
+            if expected {
+                assert!(upload.len() < 1024, "Compress uniform cover pixels");
+            }
         }
     }
     #[test]

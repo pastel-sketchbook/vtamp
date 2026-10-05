@@ -71,27 +71,18 @@ struct HelpScroll {
 struct Presentation {
     previous: Option<Buffer>,
     caret: Option<Position>,
-    tmux_passthrough: bool,
 }
 
-/// Keep text, graphics and the input caret in a single visible update.
+/// Synchronize the current terminal (or tmux pane), with an explicit end.
+/// Never open a passthrough update in the outer terminal: tmux cannot track it,
+/// and a window swap can suppress the redraw we would need to release it.
 trait PresentationBackend: Backend {
-    fn begin_update(&mut self, tmux_passthrough: bool) -> Result<(), Self::Error>;
+    fn begin_update(&mut self) -> Result<(), Self::Error>;
     fn end_update(&mut self) -> Result<(), Self::Error>;
 }
 
 impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBackend<W> {
-    fn begin_update(&mut self, tmux_passthrough: bool) -> Result<(), Self::Error> {
-        if tmux_passthrough {
-            // tmux forwards graphics immediately, outside its pane update, and
-            // resets the outer cursor to visible at (0, 0) after every chunk.
-            // Hold the outer display too; tmux's final synchronized redraw
-            // releases it after restoring the actual pane cursor.
-            crossterm::execute!(
-                self,
-                crossterm::style::Print("\x1bPtmux;\x1b\x1b[?2026h\x1b\\")
-            )?;
-        }
+    fn begin_update(&mut self) -> Result<(), Self::Error> {
         crossterm::execute!(self, crossterm::terminal::BeginSynchronizedUpdate)
     }
     fn end_update(&mut self) -> Result<(), Self::Error> {
@@ -101,7 +92,7 @@ impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBacke
 
 #[cfg(test)]
 impl PresentationBackend for ratatui::backend::TestBackend {
-    fn begin_update(&mut self, _tmux_passthrough: bool) -> Result<(), Self::Error> {
+    fn begin_update(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
     fn end_update(&mut self) -> Result<(), Self::Error> {
@@ -151,8 +142,8 @@ impl Presentation {
             None => self.previous = Some(next.clone()),
         }
         self.caret = caret;
-        terminal.backend_mut().begin_update(self.tmux_passthrough)?;
         let result = (|| {
+            terminal.backend_mut().begin_update()?;
             // Also hide during drawing on terminals that ignore synchronized
             // updates. Never show the cursor at the last painted cell.
             terminal.hide_cursor()?;
@@ -164,7 +155,8 @@ impl Presentation {
             terminal.swap_buffers();
             terminal.backend_mut().flush()
         })();
-        // Release the terminal's pending update even if drawing failed.
+        // Even a failed begin/flush may have delivered the hold to the terminal.
+        // Always attempt its release, preserving the original drawing error.
         let end = terminal.backend_mut().end_update();
         result?;
         end?;
@@ -386,7 +378,6 @@ struct App {
 }
 
 struct TerminalGuard {
-    tmux_passthrough: bool,
     _passthrough: Option<crate::artwork::TmuxPassthrough>,
     detector: Detector,
 }
@@ -396,12 +387,6 @@ impl Drop for TerminalGuard {
             std::io::stdout(),
             crossterm::terminal::EndSynchronizedUpdate
         );
-        if self.tmux_passthrough {
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                crossterm::style::Print("\x1bPtmux;\x1b\x1b[?2026l\x1b\\")
-            );
-        }
         let _ = crossterm::execute!(
             std::io::stdout(),
             event::DisableBracketedPaste,
@@ -447,7 +432,6 @@ pub async fn run(
 ) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     let mut guard = TerminalGuard {
-        tmux_passthrough: false,
         _passthrough: None,
         detector: Detector::start(art),
     };
@@ -457,9 +441,6 @@ pub async fn run(
         event::EnableFocusChange
     )?;
     let (artwork, passthrough) = Artwork::detect(art);
-    guard.tmux_passthrough = passthrough
-        .as_ref()
-        .is_some_and(|p| p.synchronized_updates());
     guard._passthrough = passthrough;
     // Request distinct modified Enter events without changing tmux configuration.
     if std::env::var_os("TMUX").is_some() {
@@ -651,10 +632,7 @@ pub async fn run(
         }
     });
     let result = async {
-        let mut presentation = Presentation {
-            tmux_passthrough: guard.tmux_passthrough,
-            ..Default::default()
-        };
+        let mut presentation = Presentation::default();
         let mut last_draw = Instant::now();
         let mut spectrum_stream_alive = true;
         let mut terminal_events = event::EventStream::new();
@@ -709,9 +687,7 @@ pub async fn run(
                         GraphicsUpdate::Query { id, expires } if Instant::now() < expires => {
                             crossterm::execute!(std::io::stdout(), crossterm::style::Print(Detector::query(id)))?;
                         }
-                        GraphicsUpdate::Graphics { artwork, synchronized } => {
-                            guard.tmux_passthrough = synchronized;
-                            presentation.tmux_passthrough = synchronized;
+                        GraphicsUpdate::Graphics { artwork } => {
                             if app.change_artwork(artwork, &graphics_paths) {
                                 presentation.clear(&mut terminal)?;
                             }
@@ -7321,6 +7297,10 @@ mod tests {
             }
         }
         let output = String::from_utf8(output).unwrap();
+        assert!(
+            !output.contains("\x1bPtmux;"),
+            "Never hold the outer terminal"
+        );
         let updates: Vec<_> = output.split("\x1b[?2026h").skip(1).collect();
         assert_eq!(updates.len(), 2);
         for update in updates {
@@ -7372,6 +7352,55 @@ mod tests {
         let output = String::from_utf8(output.0).unwrap();
         let (_, update) = output.split_once("\x1b[?2026h").unwrap();
         assert!(update.contains("\x1b[?2026l"));
+    }
+
+    #[test]
+    fn failed_begin_flush_still_attempts_to_release_output() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        use std::{cell::Cell, io, io::Write, rc::Rc};
+
+        struct FailFlush {
+            bytes: Vec<u8>,
+            fail: Rc<Cell<bool>>,
+        }
+        impl Write for FailFlush {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                if self.fail.replace(false) {
+                    Err(io::Error::other("injected begin flush failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let fail = Rc::new(Cell::new(false));
+        let mut output = FailFlush {
+            bytes: vec![],
+            fail: fail.clone(),
+        };
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut output),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            fail.set(true);
+            let error = Presentation::default()
+                .draw(&mut terminal, |frame| {
+                    frame.render_widget("X", frame.area());
+                    None
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("injected begin flush failure"));
+        }
+        let output = String::from_utf8(output.bytes).unwrap();
+        assert!(output.contains("\x1b[?2026h\x1b[?2026l"));
+        assert!(!output.contains('X'));
     }
 
     #[test]

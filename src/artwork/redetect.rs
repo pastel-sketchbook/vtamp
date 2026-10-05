@@ -15,14 +15,8 @@ pub(crate) struct Reply {
 }
 
 pub(crate) enum Update {
-    Query {
-        id: u32,
-        expires: Instant,
-    },
-    Graphics {
-        artwork: Artwork,
-        synchronized: bool,
-    },
+    Query { id: u32, expires: Instant },
+    Graphics { artwork: Artwork },
 }
 
 enum Control {
@@ -129,7 +123,6 @@ struct Pending {
     kitty: Option<bool>,
     compression: Option<bool>,
     caps: Capabilities,
-    synchronized: bool,
 }
 
 impl Pending {
@@ -159,7 +152,7 @@ fn pane_report(pane: &str) -> Option<String> {
     ])
 }
 
-fn snapshot(report: &str, clients: &str) -> (Capabilities, bool) {
+fn snapshot(report: &str, clients: &str) -> Capabilities {
     let mut caps = Capabilities {
         sixel: report.split_whitespace().nth(3) == Some("1"),
         ..Default::default()
@@ -176,19 +169,14 @@ fn snapshot(report: &str, clients: &str) -> (Capabilities, bool) {
             caps.font_size = Some(FontSize::new(w, h));
         }
     }
-    let (font, synchronized) = client_metrics(clients);
-    caps.font_size = caps.font_size.or(font);
-    (caps, synchronized)
+    caps.font_size = caps.font_size.or(client_font_size(clients));
+    caps
 }
 
-fn client_metrics(clients: &str) -> (Option<FontSize>, bool) {
+fn client_font_size(clients: &str) -> Option<FontSize> {
     let mut font = None;
-    let mut synchronized = !clients.trim().is_empty();
     for client in clients.lines() {
         let fields: Vec<_> = client.split('\t').collect();
-        synchronized &= fields
-            .first()
-            .is_some_and(|features| features.split(',').any(|f| f == "sync"));
         if let (Some(w), Some(h)) = (
             fields.get(1).and_then(|s| s.parse::<u16>().ok()),
             fields.get(2).and_then(|s| s.parse::<u16>().ok()),
@@ -201,7 +189,7 @@ fn client_metrics(clients: &str) -> (Option<FontSize>, bool) {
             }));
         }
     }
-    (font, synchronized)
+    font
 }
 
 fn worker(commands: mpsc::Receiver<Control>, updates: async_mpsc::UnboundedSender<Update>) {
@@ -262,7 +250,6 @@ fn worker(commands: mpsc::Receiver<Control>, updates: async_mpsc::UnboundedSende
             if updates
                 .send(Update::Graphics {
                     artwork: Artwork::native(Art::Auto, true, p.caps),
-                    synchronized: kitty && p.synchronized,
                 })
                 .is_err()
             {
@@ -280,7 +267,7 @@ fn worker(commands: mpsc::Receiver<Control>, updates: async_mpsc::UnboundedSende
             continue;
         }
         let clients = tmux_client_features().unwrap_or_default();
-        let (caps, synchronized) = snapshot(&report, &clients);
+        let caps = snapshot(&report, &clients);
         passthrough = TmuxPassthrough::enable();
         // Enabling the lease and collecting client features take time. Check
         // eligibility again immediately before asking the UI to send anything.
@@ -295,7 +282,6 @@ fn worker(commands: mpsc::Receiver<Control>, updates: async_mpsc::UnboundedSende
             if updates
                 .send(Update::Graphics {
                     artwork: Artwork::native(Art::Auto, true, caps),
-                    synchronized: false,
                 })
                 .is_err()
             {
@@ -311,7 +297,6 @@ fn worker(commands: mpsc::Receiver<Control>, updates: async_mpsc::UnboundedSende
             kitty: None,
             compression: None,
             caps,
-            synchronized,
         });
         if updates.send(Update::Query { id, expires }).is_err() {
             break;
@@ -361,18 +346,12 @@ mod tests {
     }
 
     #[test]
-    fn metrics_require_positive_dimensions_and_all_clients_for_sync() {
-        let metrics = |clients| {
-            let (font, sync) = client_metrics(clients);
-            (font.map(|f| (f.width, f.height)), sync)
-        };
-        assert_eq!(
-            metrics("RGB,sync\t17\t34\nsync\t10\t20"),
-            (Some((10, 20)), true)
-        );
-        assert!(!metrics("sync\t17\t34\nRGB\t10\t20").1);
+    fn font_size_requires_positive_dimensions_and_uses_smallest_client() {
+        let metrics = |clients| client_font_size(clients).map(|f| (f.width, f.height));
+        assert_eq!(metrics("RGB,sync\t17\t34\nsync\t10\t20"), Some((10, 20)));
+        assert_eq!(metrics("sync\t17\t34\nRGB\t10\t20"), Some((10, 20)));
         for clients in ["", "RGB\t0\t0", "RGB\t17\t", "RGB\t999999\t20"] {
-            assert_eq!(metrics(clients), (None, false));
+            assert_eq!(metrics(clients), None);
         }
     }
 
@@ -385,7 +364,6 @@ mod tests {
             kitty: None,
             compression: None,
             caps: Capabilities::default(),
-            synchronized: false,
         };
         p.accept(Reply { id: 98, ok: true });
         assert!(!p.ready(now));

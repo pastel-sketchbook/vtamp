@@ -499,6 +499,14 @@ If forced Sixel shows `SIXEL IMAGE` or rows of `+`, tmux is substituting its tex
 
 For Kitty graphics, vtamp temporarily enables `allow-passthrough on` **only for its own pane**, and restores the previous setting on normal detach or failed detection. Existing `on`/`all` settings are preserved. Global options and configuration files are never changed. Pixel uploads use passthrough; Unicode placeholders let tmux keep the image positioned with its cells.
 
+Frame synchronization stays inside the tmux pane, with an explicit end for each
+begin. vtamp does not hold the outer terminal through passthrough and wait for a
+later tmux redraw to release it; that could leave video and spectrum frozen after
+`swap-pane` while audio continued. Covers and video use compression when the
+terminal confirms support. Some tmux versions briefly show the cursor at the top
+left during Kitty uploads; the input field still uses the real pane cursor for
+IME composition. This tmux cursor limitation is not hidden with an outer hold.
+
 In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.
 
 Halfblocks need no graphics passthrough. Use `--art halfblocks` if graphics are unavailable in your terminal or multiplexer version. For true color, configure your terminal and tmux for RGB color if necessary.
@@ -1089,4 +1097,6 @@ single rate or `--output /tmp/vtamp-video-check` to choose the evidence director
 Add `--trace-terminal` to check input cursor motion in tmux's actual output to
 Ghostty and retain the raw trace. Pane captures alone cannot detect cursor resets
 caused by graphics passthrough.
+The trace check is strict: tmux versions that expose the cursor during raw
+passthrough can fail it even when pane caret checks and playback pass.
 The default suite does not prove terminal pixels or audible playback.

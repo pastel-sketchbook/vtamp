@@ -156,15 +156,19 @@ The social preview cards `site/og.png` and `site/og-ko.png` (1200 × 630, compos
 
 The theme picker lists the nine built-ins followed by custom themes sorted by ID. Read custom files once on attachment; existing clients keep their loaded palettes until reattach. Fit long display names by terminal cell width, retaining mode and swatches. Invalid custom files produce status warnings and do not hide valid choices; user palettes below the text contrast target remain usable with a warning. The theme picker opens with `t`, previews with arrows or j/k, saves with Enter, and restores the opening theme on Esc/q. It scrolls at small sizes. The theme picker stays within the browser area, keeping the player and album art visible throughout preview. It uses the full browser height on very small panes and scrolls its choices. Help and import overlays hide pixel art when they overlap it and restore it on close. Search and folder prompts keep the cover visible: they center over the browser area, sized to their label instead of the pane. `/` starts a blank search draft for the focused list: a server-side title/artist/album search on Library, or a client-side filter over queue entries matched against the same title/artist/album text. Enter keeps it (empty clears the filter), while Esc restores the filter and page that were applied before the prompt opened. Results follow a live draft as it is typed: the queue filter is local and instant, and the library waits out a short debounce so a fast typist starts one server search rather than one per keystroke. Outside the prompt, Esc clears that list's applied filter first, then the other list's, before it detaches. A filtered queue keeps original queue positions and disables `J`/`K` reordering. Text fields show the real terminal cursor at the caret so input methods (for example, Korean) compose inside the field; Ctrl-U clears the field. Theme selection is client-local; saved preferences apply to future attachments.
 
-Frame updates publish text, graphics and the input caret together using terminal
-synchronized updates. Hide the cursor before drawing and move it back to the
-active field before showing it, including on terminals without synchronized
-updates. Background video and progress redraws must never expose the drawing
-cursor away from the input field. Unchanged frames emit no terminal commands.
-With Kitty through tmux, start the outer terminal update before passthrough
-uploads as well: tmux resets the outer cursor after each raw graphics chunk.
-Enable this only when all attached clients advertise tmux's `sync` capability;
-tmux's final redraw restores the pane cursor and releases the outer update.
+Frame updates use a paired synchronized begin/end for the current terminal or
+tmux pane. Attempt the end even if beginning or drawing fails. Hide the cursor
+before drawing and move it back to the active field before showing it, including
+on terminals without synchronized updates. Unchanged frames emit no commands.
+Never send synchronized-update holds or releases through tmux passthrough:
+tmux does not track those holds, and a later redraw cannot be relied on to
+release them after a window or pane swap. tmux owns synchronization of its client
+terminal; vtamp owns only its pane transaction. Kitty uploads still pass through.
+Some tmux versions reset the outer cursor after each raw graphics chunk, which
+can briefly expose it at the origin during uploads. Preserve the real input caret
+in the pane, but do not conceal that tmux limitation with an untracked outer hold.
+Both covers and video use Kitty compression only after a positive capability
+reply, reducing upload stalls when a resized pane temporarily displays the cover.
 
 Automatic tmux artwork prefers Kitty, then end-to-end native Sixel, then
 halfblocks. A parked window starts with halfblocks: probe the outer terminal
