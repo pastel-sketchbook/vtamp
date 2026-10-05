@@ -1,0 +1,7 @@
+{
+  "api_version": 1,
+  "id": "pastel-transcript",
+  "name": "Pastel Transcript",
+  "exec": ["../../target/release/examples/pastel-transcript"],
+  "commands": [{"id": "show", "title": "Show transcript", "target": "playing"}]
+}

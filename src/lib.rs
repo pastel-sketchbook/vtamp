@@ -18,6 +18,7 @@ pub mod media_controls;
 pub mod metadata;
 pub mod model;
 pub mod platform;
+pub mod plugin;
 mod queue_edit;
 #[cfg(target_os = "macos")]
 pub mod relay;

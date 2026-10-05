@@ -359,3 +359,26 @@ Covers still use direct transmission, so deliberate cover display/resizing can
 briefly stall. Video preparation gaps no longer trigger those uploads.
 The underlying bulk PTY issue is not considered resolved. Evidence, discarded
 experiments, and diagnostic instructions are in [docs/tmux-video.md](docs/tmux-video.md).
+
+## Client extension panels
+
+`:` opens a searchable extension command menu inside the browser area, with a
+real cursor for IME composition. Up/Down selects and Enter runs; Esc closes.
+User-bound single keys cannot replace built-ins and are inactive in prompts and
+modals. Registration and bindings take effect on the next attachment.
+
+An extension owns a document/list panel in the same browser area, leaving Now
+Playing and album art visible. vtamp renders plain text using theme roles, wraps
+at grapheme boundaries, and handles list selection and scroll keys. `a` opens
+panel actions; Enter invokes the selected item; `f` resumes timed follow;
+Esc/q closes; `:` replaces the panel with the extension menu. Extension panels
+block deferred library reveals and consume their own keys without mutating the
+underlying list selection. Existing minimum size is 40×12.
+
+Timed items follow the host playback clock and stay near the middle of the
+window; manual navigation stops follow. Document layout is cached until text or
+width changes. Old-generation results are discarded on track changes; pinned
+selected-track commands do not follow selection changes. Process and JSON I/O
+run away from the input loop, with bounded queues and latest-view delivery.
+Loading, unavailable content, and errors remain closable. Detach or close stops
+only the associated plugin process group. See `docs/plugins.md` for API 1.

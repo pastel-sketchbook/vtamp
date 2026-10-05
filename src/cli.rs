@@ -1,4 +1,5 @@
 mod archive_progress;
+mod plugins;
 
 use crate::{
     client::{Client, Launch},
@@ -54,6 +55,11 @@ pub enum Switch {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Register and run client-side extensions.
+    Plugin {
+        #[command(subcommand)]
+        command: plugins::PluginAction,
+    },
     /// Configure an optional LLM provider (does not start playback).
     Llm {
         #[command(subcommand)]
@@ -524,6 +530,7 @@ pub async fn run(args: Args) -> Result<()> {
     let client = Client::new(paths.clone());
     let action = args.command.unwrap_or(Action::Attach);
     match action {
+        Action::Plugin { command } => return plugins::run(paths, command, args.json).await,
         Action::Library {
             command:
                 command @ (Library::Export { .. }

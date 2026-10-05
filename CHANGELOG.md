@@ -4,6 +4,13 @@
 
 ### Added
 
+- Optional client plugins: register local programs, open their document/list
+  panels with `:`, and run the same API from `plugin run --json`. The host owns
+  themes, scrolling, timed highlights, cancellation, and bounded process I/O.
+- A separately built Pastel Transcript example, adapted with credit from
+  pastel-sketchbook's `d4d0be3`, keeps provider-specific fetch/parse/caption logic
+  outside the default application.
+
 - Four spectrum styles: squares, smooth, trail, and stereo, following the existing
   ten in the `V` cycle. Each has its own renderer and uses the current theme.
   Trail retains the six latest frame tops while paused; stereo labels L/R and

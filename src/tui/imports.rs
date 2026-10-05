@@ -100,6 +100,7 @@ impl App {
 
     fn library_reveal_blocked(&self) -> bool {
         !self.connected
+            || self.extensions.active()
             || self.input.is_some()
             || self.help
             || self.theme_picker.is_some()

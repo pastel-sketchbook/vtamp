@@ -368,6 +368,7 @@ the desktop integration cannot initialize.
 | `v` | Toggle the read-only audio spectrum |
 | `V` | Switch to the next spectrum style while the spectrum is shown (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks, squares, smooth, trail, stereo) |
 | `t` | Preview and choose a color theme |
+| `:` | Search and run client plugin commands |
 | `?` | Show key reference |
 
 Help scrolls with `↑`/`↓` or `j`/`k`; `PageUp`/`PageDown` and `Ctrl-B`/`Ctrl-F`
@@ -978,6 +979,20 @@ This places data, covers, and the runtime socket under that directory. Keep the 
 - **Missing songs:** rescan with `vtamp library scan`, wait for `scanning` to become false, and inspect `last_error` or the server log. Only supported local formats are scanned.
 - **Client/server version mismatch after rebuilding:** stop the old server with its matching binary before replacing it. `doctor` reports paths; `server run` is also available as a foreground diagnostic command.
 - **Terminal looks wrong:** try `--art halfblocks` or `--art none`. Normal errors and panics restore terminal modes; after an uncatchable kill, your shell's `reset` command can restore the terminal.
+
+## Client plugins
+
+Personal commands and document/list panels can run as external programs without
+rebuilding vtamp. Register a local manifest with `vtamp plugin add PATH`, reattach,
+and press `:` to choose a command. Plugins run only while their client session is
+open; closing a panel or detaching stops its process group. Register programs you
+trust: plugins run with your user privileges, not in a sandbox.
+
+`vtamp plugin list --json` reports configuration errors and available commands.
+`vtamp plugin run PLUGIN:COMMAND --json` runs the same protocol without a TUI.
+Registration, listing, removal, and headless plugin execution never start a
+playback server. See [plugins](docs/plugins.md) for the API, optional key bindings,
+and the separately built Pastel Transcript example.
 
 ## Development
 

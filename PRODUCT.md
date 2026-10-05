@@ -58,6 +58,13 @@ Library Ctrl+Enter and CLI `play --no-queue` play one track outside the queue,
 then continue the existing queue. Queue contents and the previous playback cursor
 remain intact. Direct tracks also survive a server restart, restored paused.
 
+Personal extensions can add commands and document/list panels through an opt-in
+local plugin protocol. Each attached client owns its plugin processes; the server
+continues playing after they close. vtamp handles terminal rendering and timed
+text highlighting, while external programs supply content and actions. The first
+example is Pastel Transcript, built and registered separately. Plugins are trusted
+local programs, not sandboxed code; no background service or audio hooks are exposed.
+
 ## Brand Commitments
 
 Classic Winamp inspires the compact controls and legible type. The TUI offers nine built-in palettes and custom JSON themes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.

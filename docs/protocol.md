@@ -26,6 +26,13 @@ Custom palettes and saved UI preferences do not change the wire protocol or
 database schema. See [color themes](themes.md) for the JSON file format, CLI
 response fields, errors, and attachment behavior.
 
+Client plugin API 1 is a separate stdin/stdout NDJSON protocol. Registration and
+plugin UI state live in `plugins.json`, outside the server database. The TUI
+forwards its existing playback snapshots to plugins; headless `plugin run` uses
+read-only watch/lookups and never starts a server. Plugin registration, listing,
+and removal never connect. No wire or database version change is required.
+See [plugins](plugins.md) for messages, lifecycle, limits, and CLI behavior.
+
 The server has one state/SQLite owner and serializes received commands. Independent connections are ordered by arrival, not by wall-clock client invocation. Requests are not automatically retried. Only keyed `queue_edit` requests are deduplicated, as described below. For other non-idempotent operations, a disconnect after sending a command has an unknown result; check the state before retrying.
 
 `pause` and `resume` are idempotent. Queue entries have independent UUIDs even if their track IDs are equal. State revisions increase after mutations. Direct path imports complete asynchronously; the success reply means the imported entries have been appended. A library scan reply instead acknowledges the background job; wait for `library_changed` or `scanning: false` for its result.

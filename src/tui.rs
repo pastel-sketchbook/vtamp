@@ -1,5 +1,6 @@
 mod diagnostics;
 mod imports;
+mod plugins;
 mod streams;
 mod video;
 use crate::{
@@ -57,7 +58,7 @@ const QUEUE_LIMIT: usize = 10_000;
 /// The queue filter is local and applies at once.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
-const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove/delete   J/K Move queue   X Empty queue\n\nv / V   Toggle spectrum / style   t       Choose theme\n\nStop the server explicitly with: vtamp server stop";
+const HELP_TEXT: &str = "ATTACH / DETACH\nq / Esc / Ctrl+C   Close this interface. Music keeps playing.\n\nPLAYBACK\nSpace   Play / pause       n/> / b/<   Next / previous\n← / →   Seek 10 seconds    + / -   Volume    s Shuffle   r Cycle repeat\n\nLIBRARY & QUEUE\nTab     Switch panels     j / k   Move selection\ngg / G  First / last      Ctrl-F / Ctrl-B  Page down / up (10)\n/       Search / filter   a       Add folder / stream / playlist\nzz      Jump to now playing   A       Queue all matching\nEsc     Clear filter      Ctrl-U  Clear typed text\nR       Rescan folders    [ / ]   Library pages\nEnter Play selection   Ctrl-Enter Play without queue\ne Enqueue   x/d Remove/delete   J/K Move queue   X Empty queue\n\nv / V   Toggle spectrum / style   t Theme   : Extensions\n\nStop the server explicitly with: vtamp server stop";
 
 #[derive(Default)]
 struct HelpScroll {
@@ -401,6 +402,7 @@ struct ThemePicker {
 }
 
 struct App {
+    extensions: plugins::Extensions,
     import_ui: imports::ImportUi,
     library_reveal: Option<imports::LibraryReveal>,
     stream_dialog: Option<streams::Dialog>,
@@ -509,6 +511,12 @@ pub async fn run(
     settings_warning: Option<String>,
 ) -> Result<()> {
     let _diagnostics = diagnostics::start()?;
+    let plugin_paths = client.paths.clone();
+    let plugin_catalog =
+        tokio::task::spawn_blocking(move || crate::plugin::Catalog::load(&plugin_paths)).await?;
+    let mut warnings: Vec<_> = settings_warning.into_iter().collect();
+    warnings.extend(plugin_catalog.warnings.iter().cloned());
+    let settings_warning = (!warnings.is_empty()).then(|| warnings.join("; "));
     let mut terminal = ratatui::try_init()?;
     let mut guard = TerminalGuard {
         _passthrough: None,
@@ -550,6 +558,7 @@ pub async fn run(
         .unwrap_or((false, SpectrumStyle::Bars));
     let size = terminal.size()?;
     let mut app = App {
+        extensions: plugins::Extensions::new(plugin_catalog, client.paths.clone()),
         import_ui: imports::ImportUi::default(),
         library_reveal: None,
         stream_dialog: None,
@@ -602,6 +611,7 @@ pub async fn run(
     app.video
         .start(client.paths.clone(), app.artwork.video_graphics());
     let video_mailbox = app.video.mailbox();
+    let plugin_notify = app.extensions.notify.clone();
     let graphics_paths = client.paths.clone();
     let watch_client = client.clone();
     let watch_messages = messages.clone();
@@ -763,6 +773,11 @@ pub async fn run(
                     if let Some(notice) = app.video.accept() { app.video_fullscreen = None; app.notice(notice); }
                     None
                 },
+                _ = plugin_notify.notified() => {
+                    wake = "plugin";
+                    app.extension_updates();
+                    None
+                },
                 Some(message) = incoming.recv() => {
                     wake = "server";
                     app.message(message, &messages, &commands);
@@ -835,7 +850,7 @@ pub async fn run(
                         }
                     }
                     TerminalEvent::Paste(text) => {
-                        if let Some(draft) = app.import_paste(&text) {
+                        if !app.extension_paste(&text) && let Some(draft) = app.import_paste(&text) {
                             app.search_typed(draft);
                         }
                     }
@@ -866,6 +881,7 @@ pub async fn run(
         }
     }
     .await;
+    app.extensions.close().await;
     spectrum_task.abort();
     watch_task.abort();
     command_task.abort();
@@ -1676,6 +1692,7 @@ impl App {
         commands: &mpsc::Sender<Command>,
     ) {
         self.message_inner(message, messages, commands);
+        self.extension_context();
         self.reveal_library(commands);
     }
     fn message_inner(
@@ -1940,6 +1957,10 @@ impl App {
             self.help_key(key);
             return Ok(false);
         }
+        if self.extensions.active() {
+            self.extension_key(key);
+            return Ok(false);
+        }
         if let Some(mut input) = self.input.take() {
             let search = matches!(input, Input::Search(_));
             let text = match &mut input {
@@ -2052,6 +2073,18 @@ impl App {
                 key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
             } else if key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.pending_ctrl_w = true;
+                return Ok(false);
+            }
+        }
+        if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+            if key.code == KeyCode::Char(':') {
+                self.open_extensions();
+                return Ok(false);
+            }
+            if let KeyCode::Char(c) = key.code
+                && let Some(name) = self.extensions.catalog.bindings.get(&c).cloned()
+            {
+                self.start_extension(&name);
                 return Ok(false);
             }
         }
@@ -2592,6 +2625,9 @@ impl App {
                 "w video"
             });
         }
+        if !self.extensions.catalog.plugins.is_empty() {
+            groups.push(": extensions");
+        }
         while groups.len() > 2
             && groups.join(" ").chars().count() + " ? help q detach".len() > usize::from(area.width)
         {
@@ -2602,6 +2638,9 @@ impl App {
         let mut keys = format!(" {}", groups.join("  "));
         if keys.chars().count() > usize::from(area.width) {
             keys = groups.join(" ");
+        }
+        if self.extensions.active() {
+            keys = " Extension active · Esc returns".into();
         }
         frame.render_widget(
             Paragraph::new(keys).style(Style::default().bg(p.panel).fg(p.muted)),
@@ -2629,6 +2668,7 @@ impl App {
             draw_prompt(frame, p, &mut self.caret, content, label, text);
         }
         self.draw_imports(frame, area);
+        self.draw_extensions(frame, content);
         self.draw_stream_dialog(frame, area, content);
         self.draw_confirm(frame, area);
         if self.help {
@@ -5692,9 +5732,10 @@ mod tests {
         }
     }
 
-    fn app() -> App {
+    pub(super) fn app() -> App {
         let (tx, _rx) = sync_mpsc::channel();
         App {
+            extensions: plugins::Extensions::default(),
             import_ui: imports::ImportUi::default(),
             library_reveal: None,
             stream_dialog: None,
