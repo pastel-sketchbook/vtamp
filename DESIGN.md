@@ -174,6 +174,11 @@ and cell widths intact. Direct Kitty and Sixel keep their existing rendering pat
 Bound individual tmux Kitty stream writes to 16 KiB without inserting bytes or
 changing protocol packet boundaries. This is a separate limit from the 256 KiB
 passthrough packet size.
+If a tmux Kitty upload takes at least 200 ms, defer subsequent frame output for
+150 ms to give pending tmux redraws a chance to drain. Keep processing input,
+server events, and replacement video frames; do not sleep on the UI thread or
+consume a frame's one-time upload until drawing resumes. A timer resumes output
+without a keypress. This recovery pause is a mitigation under user testing.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -377,3 +382,9 @@ terminated during its first readiness wait, about 0.24 s after startup, and was
 reverted. Its socket-based tests did not establish PTY readiness compatibility.
 Keep the known-starting blocking output path and diagnostics while investigating
 the remaining throughput problem; the nonblocking trial is not a usable fix.
+
+The next user trace reproduced the same per-write slowdown after the rollback,
+with image uploads taking about 1.2 s. tmux defers pending redraws while its client
+output buffer is nonempty, so the next candidate allows a 150 ms output pause
+after a slow upload. This tests whether continuous image traffic prevents a
+pending swap redraw from settling; the causal link is not yet established.

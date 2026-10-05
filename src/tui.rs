@@ -75,6 +75,7 @@ struct Presentation {
     // Once Kitty passthrough is in use, leave client synchronization to tmux.
     // Keep this across plain-text frames and overlays in the same attachment.
     tmux_graphics: bool,
+    resume_output_at: Option<Instant>,
 }
 
 /// Synchronize terminals that are not using tmux Kitty passthrough, with an
@@ -141,6 +142,22 @@ fn take_tmux_graphics(buffer: &mut Buffer) -> Vec<String> {
 }
 
 impl Presentation {
+    fn output_deadline(&self, now: Instant) -> Option<Instant> {
+        self.resume_output_at.filter(|deadline| *deadline > now)
+    }
+
+    fn uploaded(&mut self, elapsed: Duration, now: Instant) {
+        if elapsed >= Duration::from_millis(200) {
+            // A swap redraw in tmux waits for its client output to drain. Do
+            // not immediately refill it after a stalled graphics transfer.
+            self.resume_output_at = Some(now + Duration::from_millis(150));
+            diagnostics::record(
+                "ui.output_pause",
+                || serde_json::json!({"duration_ms":150,"upload_ms":elapsed.as_millis()}),
+            );
+        }
+    }
+
     fn invalidate(&mut self) {
         self.previous = None;
     }
@@ -167,6 +184,10 @@ impl Presentation {
         terminal: &mut Terminal<B>,
         render: impl FnOnce(&mut Frame) -> Option<Position>,
     ) -> std::result::Result<bool, B::Error> {
+        if self.output_deadline(Instant::now()).is_some() {
+            // Do not call render: Kitty consumes its one-time upload there.
+            return Ok(false);
+        }
         terminal.autoresize()?;
         let caret = {
             let _span = diagnostics::span("ui.render", || serde_json::json!({}));
@@ -199,6 +220,7 @@ impl Presentation {
         // MODE_SYNC for this attachment, excluding tmux's one-second pane-sync
         // timeout path as a source of stalls after a swap.
         if !uploads.is_empty() {
+            let started = Instant::now();
             let _span = diagnostics::span("output.upload", || {
                 serde_json::json!({
                     "bytes":uploads.iter().map(String::len).sum::<usize>(),
@@ -208,6 +230,7 @@ impl Presentation {
             for upload in &uploads {
                 terminal.backend_mut().upload_graphics(upload)?;
             }
+            self.uploaded(started.elapsed(), Instant::now());
         }
         let result = (|| {
             let _span = diagnostics::span(
@@ -721,7 +744,9 @@ pub async fn run(
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         loop {
-            let deadline = if presentation.previous.is_none() {
+            let deadline = if let Some(deadline) = presentation.output_deadline(Instant::now()) {
+                Some(deadline)
+            } else if presentation.previous.is_none() {
                 Some(Instant::now())
             } else {
                 app.next_redraw(last_draw)
@@ -7370,6 +7395,55 @@ mod tests {
             );
         }
         assert_eq!(output.windows(6).filter(|w| *w == b"\x1b[?25l").count(), 2);
+    }
+
+    #[test]
+    fn slow_upload_defers_render_without_consuming_the_next_frame() {
+        use ratatui::{TerminalOptions, Viewport, backend::CrosstermBackend};
+        let now = Instant::now();
+        let mut presentation = Presentation::default();
+        presentation.uploaded(Duration::from_millis(10), now);
+        assert!(presentation.output_deadline(now).is_none());
+        // Use a future clock so the draw remains paused without a real sleep.
+        let start = now + Duration::from_secs(60);
+        presentation.uploaded(Duration::from_millis(800), start);
+        assert_eq!(
+            presentation.output_deadline(start),
+            Some(start + Duration::from_millis(150))
+        );
+        assert!(
+            presentation
+                .output_deadline(start + Duration::from_millis(150))
+                .is_none()
+        );
+        let mut bytes = vec![];
+        {
+            let mut terminal = Terminal::with_options(
+                CrosstermBackend::new(&mut bytes),
+                TerminalOptions {
+                    viewport: Viewport::Fixed(Rect::new(0, 0, 40, 12)),
+                },
+            )
+            .unwrap();
+            assert!(
+                !presentation
+                    .draw(&mut terminal, |_| panic!("must not consume pending image"))
+                    .unwrap()
+            );
+            assert!(presentation.previous.is_none());
+            // Expire the fake deadline; draw the latest state without replaying
+            // any skipped frames or needing a terminal input event.
+            presentation.resume_output_at = Some(now);
+            assert!(
+                presentation
+                    .draw(&mut terminal, |frame| {
+                        frame.render_widget("latest", frame.area());
+                        None
+                    })
+                    .unwrap()
+            );
+        }
+        assert!(String::from_utf8(bytes).unwrap().contains("latest"));
     }
 
     #[test]
