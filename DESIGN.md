@@ -319,11 +319,22 @@ Earlier episodes also exposed a blinking cursor at the outer terminal's origin,
 not the pane's origin. The user's rotation performs two sequential swaps without
 `-d` between a parked window and a slot in a multi-pane window.
 
-A three-second live sample found the TUI main thread in terminal `write()` in
-2604 of 2605 samples, consistent with output backpressure. That sample was not
-confirmed to coincide with the persistent 1 fps state, so it does not establish
-the cause. Isolated swap/focus trials did not reproduce the persistent slowdown.
-The remaining bottleneck in the TUI → PTY → tmux → Ghostty path is unconfirmed;
+A follow-up live observation on 2026-10-05 captured a slow output interval while
+the user reproduced and reported the symptom. At 18:14:44 CEST, simultaneous
+two-second samples found the TUI main thread in `write()` in all 1745 samples,
+while Ghostty's input reader waited in `poll()` in 1641 of 1681 samples. About
+half of tmux's main-thread samples involved pane-activity event dispatch. In an
+earlier user-confirmed normal interval, TUI write waiting was about 24% and tmux
+mostly waited for events. This points investigation toward delivery through tmux,
+but does not establish activity hooks as the cause: a later sample also showed
+high event-dispatch overhead with much less TUI write waiting.
+
+A 55-second read-only trace recorded roughly 0.5 MB/s of client output during
+the initial active-pane slowdown, then roughly 8–9 MB/s across the transition to
+another active pane. These are whole-client bytes, not video FPS. Output began
+recovering about one second before the recorded focus change, so focus causality
+is not established by this trace alone. No video pixel-rate capture accompanied
+these samples. Isolated swap/focus trials did not reproduce the persistent issue;
 neither a deadlock nor a synchronized-update timeout has been established.
 
 Investigation is deferred. On resumption, capture simultaneous TUI, tmux, and
