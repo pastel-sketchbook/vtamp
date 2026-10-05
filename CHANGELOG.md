@@ -7,6 +7,8 @@
 - Optional client plugins: register local programs, open their document/list
   panels with `:`, and run the same API from `plugin run --json`. The host owns
   themes, scrolling, timed highlights, cancellation, and bounded process I/O.
+- A minimal Hello Panel Python example and plugin authoring walkthrough, with
+  offline text/actions and a supported-video guide for the transcript example.
 - A separately built Pastel Transcript example, adapted with credit from
   pastel-sketchbook's `d4d0be3`, keeps provider-specific fetch/parse/caption logic
   outside the default application.

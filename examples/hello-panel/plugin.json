@@ -1,0 +1,7 @@
+{
+  "api_version": 1,
+  "id": "hello-panel",
+  "name": "Hello Panel",
+  "exec": ["python3", "main.py"],
+  "commands": [{"id": "show", "title": "Show greeting", "target": "none"}]
+}

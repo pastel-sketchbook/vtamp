@@ -61,9 +61,10 @@ remain intact. Direct tracks also survive a server restart, restored paused.
 Personal extensions can add commands and document/list panels through an opt-in
 local plugin protocol. Each attached client owns its plugin processes; the server
 continues playing after they close. vtamp handles terminal rendering and timed
-text highlighting, while external programs supply content and actions. The first
-example is Pastel Transcript, built and registered separately. Plugins are trusted
-local programs, not sandboxed code; no background service or audio hooks are exposed.
+text highlighting, while external programs supply content and actions. Examples
+cover an offline Python panel and an optional transcript provider; both use the
+same protocol. Plugins are trusted local programs, not sandboxed code; no
+background service or audio hooks are exposed.
 
 ## Brand Commitments
 

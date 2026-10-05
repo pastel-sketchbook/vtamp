@@ -991,8 +991,11 @@ trust: plugins run with your user privileges, not in a sandbox.
 `vtamp plugin list --json` reports configuration errors and available commands.
 `vtamp plugin run PLUGIN:COMMAND --json` runs the same protocol without a TUI.
 Registration, listing, removal, and headless plugin execution never start a
-playback server. See [plugins](docs/plugins.md) for the API, optional key bindings,
-and the separately built Pastel Transcript example.
+playback server. Start with the [Hello Panel walkthrough](docs/plugins.md#start-with-hello-panel):
+its small Python example displays text and an action without music or network
+access. The [authoring guide](docs/plugins.md#write-your-own-plugin) explains how
+to make your own plugin; the same document covers the API, optional key bindings,
+and the more advanced [Pastel Transcript example](docs/plugins.md#pastel-transcript-example).
 
 ## Development
 
