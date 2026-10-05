@@ -11,6 +11,8 @@
 - Optional stereo channel data alongside the unchanged combined spectrum in
   protocol 11. Existing clients and servers remain compatible; restart the server
   with the new binary to enable the channel data, and reattach for new styles.
+- Logarithmic frequency labels on horizontal spectrum graphs, positioned against
+  their rendered bands and omitted when crowded; radial retains LOW / HIGH.
 - Adapted from [Pastel Sketchbook's spectrum contribution](https://github.com/pastel-sketchbook/vtamp/commit/0ff7e02d114226c594e069e7c99c44fb3f4da3e8),
   preserving combined-channel analysis and correcting trail layering, fading,
   channel orientation, partial blocks, and narrow-pane band coverage.

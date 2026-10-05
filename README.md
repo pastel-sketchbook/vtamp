@@ -432,6 +432,9 @@ style takes its colors from the current theme:
 | `trail` | The six most recent frame tops, older ones fading toward the background; freezes while paused |
 | `stereo` | Independent L/R meters growing above and below the center, with channel labels |
 
+The axis labels `100`, `1k`, and `10k` mark frequencies in Hz on the logarithmic
+scale. Labels follow the rendered bands and skip overlaps. Narrow graphs retain
+`LOW / HIGH`; radial keeps those endpoints because its bands follow a ring.
 Smooth and stereo fall back to the combined bars when their shape cannot fit.
 Stereo also falls back with `stereo unavailable` in the title when attached to an
 older protocol-11 server without channel data. Reattach for the new TUI styles;

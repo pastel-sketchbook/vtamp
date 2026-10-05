@@ -156,7 +156,7 @@ every color from the active theme's roles, so they need no per-theme tuning.
 | `trail` | Six recent frame tops, newest drawn last | spectrum zones faded toward canvas by age |
 | `stereo` | Independent L/R meters around the center | spectrum zones by distance from center; muted channel labels |
 
-Channel labels use the muted role.
+Frequency labels and channel labels use the muted role.
 
 See `DESIGN.md` for the geometry of each style and the rules for pause, seek,
 and track changes.

@@ -1,4 +1,5 @@
 //! Terminal-only animation and drawing; no playback controls.
+mod axis;
 mod braille;
 mod fire;
 mod radial;
@@ -314,16 +315,18 @@ impl SpectrumView {
                     .draw(buf, body, &p, &self.levels, dt, &mut self.rng);
             }
         }
-        frame.render_widget(
-            Paragraph::new("LOW").style(Style::default().fg(p.muted)),
-            Rect::new(inner.x, inner.y + body.height, inner.width.min(3), 1),
-        );
-        if inner.width >= 9 {
-            frame.render_widget(
-                Paragraph::new("HIGH").style(Style::default().fg(p.muted)),
-                Rect::new(inner.right() - 4, inner.y + body.height, 4, 1),
-            );
-        }
+        let (graph, mapping) = match self.style {
+            SpectrumStyle::Radial => (body, axis::Mapping::Ends),
+            SpectrumStyle::Stereo if stereo::fits(body) && self.has_channels() => {
+                (stereo::graph(body), axis::Mapping::Bars)
+            }
+            SpectrumStyle::Smooth if smooth::fits(body) => (body, axis::Mapping::Continuous),
+            SpectrumStyle::Waterfall | SpectrumStyle::Fire | SpectrumStyle::Ridge => {
+                (body, axis::Mapping::Continuous)
+            }
+            _ => (body, axis::Mapping::Bars),
+        };
+        axis::draw(buf, graph, body.bottom(), &p, mapping, self.frame.as_ref());
     }
 
     fn has_channels(&self) -> bool {

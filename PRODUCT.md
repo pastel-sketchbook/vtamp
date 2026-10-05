@@ -34,7 +34,8 @@ An optional read-only spectrum visualizes the decoded music in one of fourteen s
 zoned bars, a gradient, a single accent color, mirrored bars, dot segments, a
 scrolling waterfall, petals around a ring, fire, stacked ridgelines, or bars that
 throw sparks, square segments, a smooth curve, recent-frame trails, or separate
-L/R meters. Every style uses the active theme's colors. It adapts to the
+L/R meters. Frequency labels follow horizontal graphs; radial retains LOW / HIGH.
+Every style uses the active theme's colors. It adapts to the
 available pane space and remembers visibility and style per client preference.
 It is not an equalizer and does not modify audio.
 
