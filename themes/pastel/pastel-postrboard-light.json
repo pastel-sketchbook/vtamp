@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Postrboard Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#fafafa",
+    "panel": "#f1f5f9",
+    "selection": "#e2e8f0",
+    "text": "#111827",
+    "muted": "#576579",
+    "accent": "#0270a9",
+    "border": "#cbd5e1",
+    "warning": "#c2410c",
+    "error": "#d52222",
+    "spectrum": [
+      "#4d7c0f",
+      "#c2410c",
+      "#dc2626"
+    ]
+  }
+}

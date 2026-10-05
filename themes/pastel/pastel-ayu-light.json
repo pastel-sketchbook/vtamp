@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Ayu Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#fcfcfc",
+    "panel": "#f2f2f2",
+    "selection": "#e6e6e6",
+    "text": "#5c6166",
+    "muted": "#60686e",
+    "accent": "#b05200",
+    "border": "#cfd1d2",
+    "warning": "#b05200",
+    "error": "#da1717",
+    "spectrum": [
+      "#85b304",
+      "#ff9940",
+      "#f07171"
+    ]
+  }
+}

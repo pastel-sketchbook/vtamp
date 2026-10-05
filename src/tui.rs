@@ -12,7 +12,7 @@ use crate::{
     settings::{Settings, SpectrumStyle},
     spectrum::SpectrumFrame,
     spectrum_view::SpectrumView,
-    theme::{Palette, Theme, channels},
+    theme::{Palette, ResolvedTheme, ThemeCatalog, channels},
     wire,
 };
 use anyhow::Result;
@@ -299,8 +299,30 @@ struct QueueAll {
     capacity: usize,
 }
 
+/// Fit names by terminal cells, including CJK and combining characters.
+fn theme_name(name: &str, width: usize) -> String {
+    let clipped = name.width() > width;
+    let limit = width.saturating_sub(usize::from(clipped));
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in name.graphemes(true) {
+        let cells = grapheme.width();
+        if used + cells > limit {
+            break;
+        }
+        result.push_str(grapheme);
+        used += cells;
+    }
+    if clipped && width > 0 {
+        result.push('…');
+        used += 1;
+    }
+    result.push_str(&" ".repeat(width.saturating_sub(used)));
+    result
+}
+
 struct ThemePicker {
-    original: Theme,
+    original: ResolvedTheme,
     selection: ListState,
     error: Option<String>,
 }
@@ -313,7 +335,8 @@ struct App {
     video: video::View,
     video_fullscreen: Option<String>,
     viewport: Rect,
-    theme: Theme,
+    theme: ResolvedTheme,
+    theme_catalog: ThemeCatalog,
     theme_picker: Option<ThemePicker>,
     settings_path: PathBuf,
     settings_warning: Option<String>,
@@ -385,28 +408,35 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn attachment_theme(
+pub(crate) fn attachment_theme(
     path: &std::path::Path,
-    override_theme: Option<Theme>,
-) -> (Theme, Option<String>) {
-    let (saved, settings_warning) = match Settings::load(path) {
-        Ok(settings) => (settings.theme, None),
-        Err(error) => (
-            Theme::default(),
-            Some(format!("{error:#}; press t to choose and save a theme.")),
-        ),
+    override_theme: Option<&str>,
+    catalog: &ThemeCatalog,
+) -> Result<(ResolvedTheme, Option<String>)> {
+    let mut warnings = catalog.warning_text().into_iter().collect::<Vec<_>>();
+    let saved = Settings::load(path).and_then(|settings| catalog.resolve(settings.theme.as_str()));
+    let saved = match saved {
+        Ok(theme) => theme,
+        Err(error) => {
+            warnings.push(format!("{error:#}; press t to choose and save a theme."));
+            ResolvedTheme::default()
+        }
     };
-    let theme = override_theme.unwrap_or(saved);
-    (theme, settings_warning)
+    let theme = match override_theme {
+        Some(id) => catalog.resolve(id)?,
+        None => saved,
+    };
+    Ok((theme, (!warnings.is_empty()).then(|| warnings.join("; "))))
 }
 
 pub async fn run(
     client: Client,
     art: Art,
-    override_theme: Option<Theme>,
+    theme: ResolvedTheme,
+    theme_catalog: ThemeCatalog,
     settings_path: PathBuf,
+    settings_warning: Option<String>,
 ) -> Result<()> {
-    let (theme, settings_warning) = attachment_theme(&settings_path, override_theme);
     let mut terminal = ratatui::try_init()?;
     let mut guard = TerminalGuard {
         tmux_passthrough: false,
@@ -455,6 +485,7 @@ pub async fn run(
         video_fullscreen: None,
         viewport: Rect::new(0, 0, size.width, size.height),
         theme,
+        theme_catalog,
         theme_picker: None,
         settings_path,
         settings_warning,
@@ -671,7 +702,7 @@ pub async fn run(
                 match event {
                     TerminalEvent::Key(key) if key.kind != KeyEventKind::Release => {
                         let cover_hidden = app.cover_hidden();
-                        let theme = app.theme;
+                        let theme = app.theme.clone();
                         let spectrum = app.spectrum.enabled;
                         let video = app.video.enabled;
                         if app.key(key, &commands)? {
@@ -959,7 +990,8 @@ impl App {
                 .new_resize_protocol(image, cover_background(palette)),
         );
     }
-    fn apply_theme(&mut self, theme: Theme) {
+    fn apply_theme(&mut self, theme: impl Into<ResolvedTheme>) {
+        let theme = theme.into();
         if self.theme != theme {
             self.theme = theme;
             self.rebuild_cover();
@@ -967,9 +999,13 @@ impl App {
     }
     fn open_theme_picker(&mut self) {
         self.theme_picker = Some(ThemePicker {
-            original: self.theme,
-            selection: ListState::default()
-                .with_selected(Theme::ALL.iter().position(|t| *t == self.theme)),
+            original: self.theme.clone(),
+            selection: ListState::default().with_selected(
+                self.theme_catalog
+                    .themes
+                    .iter()
+                    .position(|t| t.id() == self.theme.id()),
+            ),
             error: None,
         });
     }
@@ -979,10 +1015,11 @@ impl App {
                 let original = self.theme_picker.take().unwrap().original;
                 self.apply_theme(original);
             }
-            KeyCode::Enter => match Settings::set_theme(&self.settings_path, self.theme) {
+            KeyCode::Enter => match Settings::set_theme(&self.settings_path, self.theme.id.clone())
+            {
                 Ok(()) => {
                     self.theme_picker = None;
-                    self.settings_warning = None;
+                    self.settings_warning = self.theme_catalog.warning_text();
                     self.notice(format!(
                         "{} saved for future attachments.",
                         self.theme.name()
@@ -1005,11 +1042,11 @@ impl App {
                 let index = match key {
                     KeyCode::Up | KeyCode::Char('k') => selected.saturating_sub(1),
                     KeyCode::Home => 0,
-                    KeyCode::End => Theme::ALL.len() - 1,
-                    _ => (selected + 1).min(Theme::ALL.len() - 1),
+                    KeyCode::End => self.theme_catalog.themes.len() - 1,
+                    _ => (selected + 1).min(self.theme_catalog.themes.len() - 1),
                 };
                 picker.selection.select(Some(index));
-                self.apply_theme(Theme::ALL[index]);
+                self.apply_theme(self.theme_catalog.themes[index].clone());
             }
             _ => (),
         }
@@ -1041,12 +1078,19 @@ impl App {
             Constraint::Length(2),
         ])
         .areas(inner);
-        let items = Theme::ALL
+        let name_width = usize::from(list.width.saturating_sub(15)).max(1);
+        let items = self
+            .theme_catalog
+            .themes
             .iter()
             .map(|theme| {
                 let palette = theme.palette();
                 ListItem::new(Line::from(vec![
-                    Span::raw(format!("{:<19} {:<5} ", theme.name(), theme.mode())),
+                    Span::raw(format!(
+                        "{} {:<5} ",
+                        theme_name(theme.name(), name_width),
+                        theme.mode()
+                    )),
                     Span::styled("██", Style::default().fg(palette.accent)),
                     Span::styled("██", Style::default().fg(palette.text)),
                     Span::styled("██", Style::default().fg(palette.bg)),
@@ -3042,6 +3086,7 @@ fn cover_background(p: Palette) -> image::Rgba<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
 
     #[test]
     fn radio_prompts_work_without_downloader_and_keep_keys_local() {
@@ -3234,7 +3279,7 @@ mod tests {
         let (commands, mut requests) = mpsc::channel(16);
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         for theme in Theme::ALL {
-            app.theme = theme;
+            app.theme = theme.into();
             for (width, height) in [(40, 12), (72, 12), (100, 24), (72, 28), (120, 36)] {
                 app.spectrum.enabled = true;
                 let mut terminal =
@@ -3296,7 +3341,7 @@ mod tests {
         for style in SpectrumStyle::ALL {
             app.spectrum.set_style(style);
             for theme in [Theme::CatppuccinMocha, Theme::CatppuccinLatte] {
-                app.theme = theme;
+                app.theme = theme.into();
                 for (width, height) in [(40, 12), (72, 12), (100, 24), (72, 28), (120, 36)] {
                     app.spectrum.accept(SpectrumFrame {
                         active: true,
@@ -5097,7 +5142,7 @@ mod tests {
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         app.key(key(KeyCode::Char('t')), &tx).unwrap();
         app.key(key(KeyCode::Down), &tx).unwrap();
-        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        assert_eq!(app.theme.id(), Theme::CatppuccinLatte.id());
         for code in [
             KeyCode::Char('x'),
             KeyCode::Char(' '),
@@ -5111,22 +5156,22 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(!app.settings_path.exists());
         assert!(!app.key(key(KeyCode::Esc), &tx).unwrap());
-        assert_eq!(app.theme, Theme::CatppuccinMocha);
+        assert_eq!(app.theme.id(), Theme::CatppuccinMocha.id());
         assert!(app.theme_picker.is_none());
         assert!(!app.settings_path.exists());
         app.key(key(KeyCode::Char('t')), &tx).unwrap();
         app.key(key(KeyCode::Down), &tx).unwrap();
         app.key(key(KeyCode::Enter), &tx).unwrap();
         assert_eq!(
-            Settings::load(&app.settings_path).unwrap().theme,
-            Theme::CatppuccinLatte
+            Settings::load(&app.settings_path).unwrap().theme.as_str(),
+            Theme::CatppuccinLatte.id()
         );
         assert!(app.theme_picker.is_none());
         app.open_theme_picker();
         app.theme_key(KeyCode::End);
-        assert_eq!(app.theme, Theme::Classic);
+        assert_eq!(app.theme.id(), Theme::Classic.id());
         assert!(!app.key(key(KeyCode::Char('q')), &tx).unwrap());
-        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        assert_eq!(app.theme.id(), Theme::CatppuccinLatte.id());
         app.open_theme_picker();
         app.theme_key(KeyCode::End);
         assert!(
@@ -5137,9 +5182,123 @@ mod tests {
             .unwrap()
         );
         assert_eq!(
-            Settings::load(&app.settings_path).unwrap().theme,
-            Theme::CatppuccinLatte
+            Settings::load(&app.settings_path).unwrap().theme.as_str(),
+            Theme::CatppuccinLatte.id()
         );
+    }
+
+    #[test]
+    fn custom_theme_preview_save_and_missing_files_preserve_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir(&themes).unwrap();
+        let custom_path = themes.join("my-pastel.json");
+        std::fs::write(
+            &custom_path,
+            include_str!("../themes/pastel/pastel-default.json"),
+        )
+        .unwrap();
+        let mut app = app();
+        app.settings_path = dir.path().join("ui.json");
+        app.theme_catalog = ThemeCatalog::load(&themes);
+        Settings {
+            theme: Theme::Nord.into(),
+            spectrum: true,
+            spectrum_style: SpectrumStyle::Sparks,
+            video: false,
+        }
+        .save(&app.settings_path)
+        .unwrap();
+        let before = std::fs::read(&app.settings_path).unwrap();
+        let (override_theme, warning) =
+            attachment_theme(&app.settings_path, Some("my-pastel"), &app.theme_catalog).unwrap();
+        assert!(warning.is_none());
+        assert_eq!(override_theme.id(), "my-pastel");
+        // Toggling other preferences during an override preserves the saved ID.
+        Settings::set_video(&app.settings_path, true).unwrap();
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().theme.as_str(),
+            "nord"
+        );
+        std::fs::write(&app.settings_path, &before).unwrap();
+        app.open_theme_picker();
+        app.theme_key(KeyCode::End);
+        assert_eq!(app.theme.id(), "my-pastel");
+        let preview = app.theme.clone();
+        app.theme_key(KeyCode::Esc);
+        assert_eq!(app.theme.id(), "catppuccin-mocha");
+        assert_eq!(std::fs::read(&app.settings_path).unwrap(), before);
+        app.open_theme_picker();
+        app.theme_key(KeyCode::End);
+        app.theme_key(KeyCode::Enter);
+        let saved = Settings::load(&app.settings_path).unwrap();
+        assert_eq!(saved.theme.as_str(), "my-pastel");
+        assert!(saved.spectrum);
+        assert_eq!(saved.spectrum_style, SpectrumStyle::Sparks);
+        assert!(!saved.video);
+        std::fs::remove_file(&custom_path).unwrap();
+        // The attached catalog is a snapshot; cancel still restores its palette.
+        app.open_theme_picker();
+        app.theme_key(KeyCode::Home);
+        app.theme_key(KeyCode::Esc);
+        assert_eq!(app.theme, preview);
+        let next = ThemeCatalog::load(&themes);
+        let (fallback, warning) = attachment_theme(&app.settings_path, None, &next).unwrap();
+        assert_eq!(fallback.id(), "catppuccin-mocha");
+        assert!(warning.unwrap().contains("my-pastel"));
+        assert!(attachment_theme(&app.settings_path, Some("my-pastel"), &next).is_err());
+        Settings::set_spectrum(&app.settings_path, false).unwrap();
+        Settings::set_video(&app.settings_path, true).unwrap();
+        assert_eq!(
+            Settings::load(&app.settings_path).unwrap().theme.as_str(),
+            "my-pastel"
+        );
+        assert!(!dir.path().join("state.db").exists());
+    }
+
+    #[test]
+    fn custom_theme_picker_scrolls_and_names_fit_terminal_cells() {
+        let mut app = app();
+        app.theme_catalog = ThemeCatalog::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("themes/pastel"),
+        );
+        for theme in app.theme_catalog.themes.clone() {
+            app.apply_theme(theme.clone());
+            for (width, height) in [(40, 12), (72, 12), (80, 24), (120, 36)] {
+                let mut terminal =
+                    Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                terminal.draw(|f| app.draw(f)).unwrap();
+                assert_eq!(terminal.backend().buffer()[(0, 0)].bg, theme.palette().bg);
+                app.open_theme_picker();
+                app.theme_key(KeyCode::End);
+                terminal.draw(|f| app.draw(f)).unwrap();
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect();
+                assert!(
+                    text.contains("Pastel Zoegi"),
+                    "last custom theme must be visible at {width}x{height}"
+                );
+                assert!(text.contains("Enter save"));
+                assert!(text.contains("Esc/q cancel"));
+                app.theme_key(KeyCode::Esc);
+                assert_eq!(app.theme, theme);
+            }
+        }
+        for name in [
+            "Pastel Postrboard Light",
+            "긴 테마 이름 🎧",
+            "e\u{301} repeated",
+            "",
+        ] {
+            for width in 0..30 {
+                assert_eq!(theme_name(name, width).width(), width);
+            }
+        }
     }
 
     #[test]
@@ -5147,23 +5306,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ui.json");
         assert_eq!(
-            attachment_theme(&path, None),
-            (Theme::CatppuccinMocha, None)
+            attachment_theme(&path, None, &ThemeCatalog::default()).unwrap(),
+            (Theme::CatppuccinMocha.into(), None)
         );
         Settings {
-            theme: Theme::Nord,
+            theme: Theme::Nord.into(),
             ..Settings::default()
         }
         .save(&path)
         .unwrap();
         assert_eq!(
-            attachment_theme(&path, Some(Theme::Dracula)),
-            (Theme::Dracula, None)
+            attachment_theme(&path, Some("dracula"), &ThemeCatalog::default()).unwrap(),
+            (Theme::Dracula.into(), None)
         );
-        assert_eq!(attachment_theme(&path, None), (Theme::Nord, None));
+        assert_eq!(
+            attachment_theme(&path, None, &ThemeCatalog::default()).unwrap(),
+            (Theme::Nord.into(), None)
+        );
         std::fs::write(&path, "broken").unwrap();
-        let (theme, warning) = attachment_theme(&path, None);
-        assert_eq!(theme, Theme::CatppuccinMocha);
+        let (theme, warning) = attachment_theme(&path, None, &ThemeCatalog::default()).unwrap();
+        assert_eq!(theme.id(), Theme::CatppuccinMocha.id());
         assert!(warning.unwrap().contains("Invalid UI settings"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "broken");
     }
@@ -5178,7 +5340,7 @@ mod tests {
         app.theme_key(KeyCode::Down);
         app.theme_key(KeyCode::Enter);
         assert!(app.theme_picker.as_ref().unwrap().error.is_some());
-        assert_eq!(app.theme, Theme::CatppuccinLatte);
+        assert_eq!(app.theme.id(), Theme::CatppuccinLatte.id());
         for (width, height) in [(40, 12), (72, 12), (120, 28)] {
             let mut terminal =
                 Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
@@ -5198,7 +5360,7 @@ mod tests {
             assert!(text.contains("Esc/q cancel"));
         }
         app.theme_key(KeyCode::Esc);
-        assert_eq!(app.theme, Theme::CatppuccinMocha);
+        assert_eq!(app.theme.id(), Theme::CatppuccinMocha.id());
         assert!(app.settings_path.is_dir());
     }
 
@@ -5411,7 +5573,8 @@ mod tests {
             video: video::View::default(),
             video_fullscreen: None,
             viewport: Rect::default(),
-            theme: Theme::default(),
+            theme: ResolvedTheme::default(),
+            theme_catalog: ThemeCatalog::default(),
             theme_picker: None,
             settings_path: PathBuf::new(),
             settings_warning: None,
@@ -6811,7 +6974,7 @@ mod tests {
     #[test]
     fn imports_show_only_applicable_actions_and_paint_the_light_theme_panel() {
         let mut app = app();
-        app.theme = Theme::CatppuccinLatte;
+        app.theme = Theme::CatppuccinLatte.into();
         app.import_ui.enabled = true;
         app.import_ui.modal = Some(imports::Modal::Jobs);
         let mut job = crate::imports::ImportJob::new(&Default::default());

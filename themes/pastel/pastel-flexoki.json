@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Flexoki",
+  "mode": "dark",
+  "colors": {
+    "bg": "#100f0f",
+    "panel": "#181716",
+    "selection": "#1c1b1a",
+    "text": "#cecec3",
+    "muted": "#878580",
+    "accent": "#28938a",
+    "border": "#282726",
+    "warning": "#d0a215",
+    "error": "#d55c51",
+    "spectrum": [
+      "#d0a215",
+      "#24837b",
+      "#d14d41"
+    ]
+  }
+}

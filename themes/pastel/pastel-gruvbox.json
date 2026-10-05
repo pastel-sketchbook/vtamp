@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Gruvbox",
+  "mode": "dark",
+  "colors": {
+    "bg": "#1d2021",
+    "panel": "#252424",
+    "selection": "#32302f",
+    "text": "#ebdbb2",
+    "muted": "#a4978b",
+    "accent": "#d79921",
+    "border": "#3e3936",
+    "warning": "#fabd2f",
+    "error": "#fb4934",
+    "spectrum": [
+      "#b8bb26",
+      "#fabd2f",
+      "#fb4934"
+    ]
+  }
+}

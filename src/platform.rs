@@ -47,6 +47,9 @@ impl Paths {
     pub fn ui_settings(&self) -> PathBuf {
         self.data.join("ui.json")
     }
+    pub fn themes(&self) -> PathBuf {
+        self.data.join("themes")
+    }
     pub fn log(&self) -> PathBuf {
         self.data.join("server.log")
     }

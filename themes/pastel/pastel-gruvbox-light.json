@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Gruvbox Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#fbf1c7",
+    "panel": "#f2e9b9",
+    "selection": "#ebdbb2",
+    "text": "#3c3836",
+    "muted": "#6b5f54",
+    "accent": "#876015",
+    "border": "#d5c4a1",
+    "warning": "#876015",
+    "error": "#c3221c",
+    "spectrum": [
+      "#79740e",
+      "#d79921",
+      "#cc241d"
+    ]
+  }
+}

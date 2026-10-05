@@ -20,6 +20,12 @@ A version mismatch is rejected before dispatch. There is no TCP listener and no 
 
 ## Ownership and ordering
 
+Theme commands are client-local: `theme list/current/set` and `theme install`
+never connect to or start the playback server, and never write its database.
+Custom palettes and saved UI preferences do not change the wire protocol or
+database schema. See [color themes](themes.md) for the JSON file format, CLI
+response fields, errors, and attachment behavior.
+
 The server has one state/SQLite owner and serializes received commands. Independent connections are ordered by arrival, not by wall-clock client invocation. Requests are not automatically retried. Only keyed `queue_edit` requests are deduplicated, as described below. For other non-idempotent operations, a disconnect after sending a command has an unknown result; check the state before retrying.
 
 `pause` and `resume` are idempotent. Queue entries have independent UUIDs even if their track IDs are equal. State revisions increase after mutations. Direct path imports complete asynchronously; the success reply means the imported entries have been appended. A library scan reply instead acknowledges the background job; wait for `library_changed` or `scanning: false` for its result.

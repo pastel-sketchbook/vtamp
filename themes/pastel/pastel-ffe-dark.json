@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel FFE Dark",
+  "mode": "dark",
+  "colors": {
+    "bg": "#1e232b",
+    "panel": "#1a1f27",
+    "selection": "#2e3440",
+    "text": "#d8dee9",
+    "muted": "#9ba2af",
+    "accent": "#4fd6be",
+    "border": "#3b4252",
+    "warning": "#f0a988",
+    "error": "#ff757f",
+    "spectrum": [
+      "#a1efd3",
+      "#f0a988",
+      "#ff757f"
+    ]
+  }
+}

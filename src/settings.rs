@@ -1,5 +1,5 @@
 //! Client-only preferences; never touches the playback server or its database.
-use crate::{platform, theme::Theme};
+use crate::{platform, theme::ThemeId};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path};
@@ -63,7 +63,7 @@ pub struct Settings {
     #[serde(default = "video_enabled")]
     pub video: bool,
     #[serde(default)]
-    pub theme: Theme,
+    pub theme: ThemeId,
     #[serde(default)]
     pub spectrum: bool,
     #[serde(default)]
@@ -76,7 +76,7 @@ fn video_enabled() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: Theme::default(),
+            theme: ThemeId::default(),
             spectrum: false,
             spectrum_style: SpectrumStyle::default(),
             video: true,
@@ -90,10 +90,10 @@ impl Settings {
         settings.save(path)
     }
 
-    pub fn set_theme(path: &Path, theme: Theme) -> Result<()> {
+    pub fn set_theme(path: &Path, theme: impl Into<ThemeId>) -> Result<()> {
         // Explicit theme saves retain the existing repair behavior for invalid files.
         let mut settings = Self::load(path).unwrap_or_default();
-        settings.theme = theme;
+        settings.theme = theme.into();
         settings.save(path)
     }
     pub fn set_spectrum(path: &Path, enabled: bool) -> Result<()> {
@@ -143,6 +143,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
     #[test]
     fn spectrum_and_theme_updates_preserve_each_other_and_legacy_defaults() {
         let dir = tempfile::tempdir().unwrap();
@@ -154,12 +155,15 @@ mod tests {
             SpectrumStyle::Bars
         );
         Settings::set_spectrum(&path, true).unwrap();
-        assert_eq!(Settings::load(&path).unwrap().theme, Theme::Nord);
+        assert_eq!(
+            Settings::load(&path).unwrap().theme.as_str(),
+            Theme::Nord.id()
+        );
         Settings::set_theme(&path, Theme::RosePine).unwrap();
         assert!(Settings::load(&path).unwrap().spectrum);
         Settings::set_spectrum_style(&path, SpectrumStyle::Waterfall).unwrap();
         let loaded = Settings::load(&path).unwrap();
-        assert_eq!(loaded.theme, Theme::RosePine);
+        assert_eq!(loaded.theme.as_str(), Theme::RosePine.id());
         assert!(loaded.spectrum);
         assert_eq!(loaded.spectrum_style, SpectrumStyle::Waterfall);
         Settings::set_theme(&path, Theme::Nord).unwrap();
@@ -211,20 +215,27 @@ mod tests {
     fn defaults_roundtrip_and_corruption_does_not_write() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ui.json");
-        assert_eq!(Settings::load(&path).unwrap().theme, Theme::CatppuccinMocha);
+        assert_eq!(
+            Settings::load(&path).unwrap().theme.as_str(),
+            Theme::CatppuccinMocha.id()
+        );
         assert!(!path.exists());
         Settings {
-            theme: Theme::RosePine,
+            theme: Theme::RosePine.into(),
             ..Settings::default()
         }
         .save(&path)
         .unwrap();
-        assert_eq!(Settings::load(&path).unwrap().theme, Theme::RosePine);
+        assert_eq!(
+            Settings::load(&path).unwrap().theme.as_str(),
+            Theme::RosePine.id()
+        );
         fs::write(&path, b"broken").unwrap();
         assert!(Settings::load(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"broken");
         fs::write(&path, br#"{"theme":"unknown"}"#).unwrap();
-        assert!(Settings::load(&path).is_err());
+        // A missing custom palette is a resolution error, not broken JSON.
+        assert_eq!(Settings::load(&path).unwrap().theme.as_str(), "unknown");
     }
     #[test]
     fn failed_save_preserves_destination_and_cleans_temporary_file() {

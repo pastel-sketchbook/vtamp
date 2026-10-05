@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Zoegi",
+  "mode": "dark",
+  "colors": {
+    "bg": "#141414",
+    "panel": "#1c1c1c",
+    "selection": "#222222",
+    "text": "#cccccc",
+    "muted": "#8c8c8c",
+    "accent": "#4a9479",
+    "border": "#303030",
+    "warning": "#80c8a0",
+    "error": "#ce6464",
+    "spectrum": [
+      "#5ca870",
+      "#80c8a0",
+      "#cc5c5c"
+    ]
+  }
+}

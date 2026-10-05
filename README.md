@@ -41,7 +41,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - Terminal video on macOS with installed FFmpeg/FFprobe and Kitty or Sixel graphics: `w` switches video/cover, and `F` fills the current pane with elapsed / total time below. Video defaults to 15 fps; `VTAMP_VIDEO_FPS=8` reduces terminal CPU usage.
 - Managed YouTube download deletion with confirmation; queued copies are removed together, and local originals are protected.
 - Read-only audio spectrum with ten rendering styles (bars, gradient, mono, mirror, dots, waterfall, radial, fire, ridge, sparks); press `v` to toggle and `V` to change the style.
-- Nine color themes, including Catppuccin Mocha and Latte, with live previews and saved preferences.
+- Nine built-in color themes plus custom JSON palettes, with live previews and saved preferences.
 - High-resolution album art via Sixel or Kitty graphics, automatically detected with a color halfblock fallback.
 - Play, pause, seek, volume, shuffle, repeat, and automatic track advancement.
 - macOS media keys and Now Playing metadata, including album art, after detaching.
@@ -443,7 +443,7 @@ the new binary and reattach. Client and server must use the same protocol versio
 
 ## Make it yours
 
-vtamp opens in **Catppuccin Mocha**, with a peach accent and quiet, dark panels. Press **`t`** to preview all nine themes: Catppuccin Mocha, Catppuccin Latte (light), Rosé Pine, Gruvbox, Tokyo Night, Nord, Dracula, Kanagawa, and the original green Classic.
+vtamp opens in **Catppuccin Mocha**, with a peach accent and quiet, dark panels. Press **`t`** to preview the nine built-in themes and any installed custom palettes: Catppuccin Mocha, Catppuccin Latte (light), Rosé Pine, Gruvbox, Tokyo Night, Nord, Dracula, Kanagawa, and the original green Classic.
 
 Use `↑` / `↓` or `j` / `k` to preview the whole interface. `Enter` saves; `Esc` or `q` cancels and restores the previous theme. Playback continues while you browse. The picker stays in the list area so the player and album cover remain visible. Album art keeps its original colors; the no-cover illustration follows the theme.
 
@@ -459,7 +459,20 @@ The picker applies the saved choice to its own TUI immediately. Other open TUIs 
 
 Preferences live in `ui.json` beside `state.db` (or `$VTAMP_HOME/ui.json`). No server restart is needed. Missing preferences use Mocha. Invalid or unreadable preferences show a TUI warning and fall back to Mocha (or the explicit `--theme` override); they are not overwritten until you explicitly save. `theme current` reports a settings error instead of guessing, and `theme set NAME` can repair invalid contents. All theme commands support `--json` and run without connecting to the playback server.
 
-See [theme variants and palette credits](docs/themes.md). Custom palettes and automatic OS light/dark switching are not part of this release.
+Add custom JSON palettes without rebuilding:
+
+```sh
+vtamp theme install /path/to/my-theme.json
+vtamp --theme my-theme
+# From a source checkout, install the sixteen optional Pastel examples:
+vtamp theme install themes/pastel/*.json
+```
+
+Installed files live in `themes/` beside `ui.json`. Reattach to load additions or
+edits, then use `t` to preview and save. Installation keeps your saved default;
+`--replace` explicitly replaces a changed custom file. See [custom theme format,
+Pastel examples, and palette credits](docs/themes.md). Automatic OS light/dark
+switching is not supported.
 
 ## Covers, terminals, and tmux
 
@@ -611,7 +624,8 @@ Run `vtamp --help` or `vtamp COMMAND --help` for argument details. All non-TUI c
 | `server start [--headless\|--cast\|--cast-http ADDR\|--remote SOCKET]\|status\|stop` | Explicit server lifecycle; `--headless` casts Ogg Opus instead of using an audio device, `--cast` casts what the device plays, `--cast-http` also serves the cast over HTTP, `--remote` relays another server and plays its cast here |
 | `cast listen`, `cast status` | Write a headless server's Ogg Opus stream to standard output, or describe it |
 | `doctor` | Paths, connectivity, terminal environment, and default output device |
-| `theme list\|current\|set NAME` | List themes, read the saved default, or save it for future attachments |
+| `theme list\|current\|set NAME` | List built-in/custom themes, read the saved default, or save it for future attachments |
+| `theme install FILE... [--replace]` | Validate and install custom theme JSON files without changing the default |
 
 The queue is capped at 10,000 entries. Queue entry IDs are distinct from library track IDs: adding a song twice produces two independently editable entries. Library IDs survive rescans of the same canonical path. A file moved to a different path is a new library entry.
 

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Default",
+  "mode": "dark",
+  "colors": {
+    "bg": "#121218",
+    "panel": "#18181e",
+    "selection": "#28283c",
+    "text": "#ffffff",
+    "muted": "#9a9aa5",
+    "accent": "#00d9ff",
+    "border": "#555555",
+    "warning": "#00d9ff",
+    "error": "#ff5050",
+    "spectrum": [
+      "#00c850",
+      "#00d9ff",
+      "#ff5050"
+    ]
+  }
+}

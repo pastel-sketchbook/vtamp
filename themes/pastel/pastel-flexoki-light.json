@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Flexoki Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#fffcf0",
+    "panel": "#f4f1e6",
+    "selection": "#f2f0e5",
+    "text": "#100f0f",
+    "muted": "#6a6964",
+    "accent": "#20736c",
+    "border": "#e6e4d9",
+    "warning": "#20736c",
+    "error": "#c43c2f",
+    "spectrum": [
+      "#66800b",
+      "#24837b",
+      "#d14d41"
+    ]
+  }
+}

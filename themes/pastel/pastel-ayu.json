@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Ayu",
+  "mode": "dark",
+  "colors": {
+    "bg": "#0a0e14",
+    "panel": "#12161e",
+    "selection": "#141820",
+    "text": "#bfbfbf",
+    "muted": "#798694",
+    "accent": "#ff9940",
+    "border": "#282c34",
+    "warning": "#ffb454",
+    "error": "#f07171",
+    "spectrum": [
+      "#7dd250",
+      "#ffb454",
+      "#f07171"
+    ]
+  }
+}

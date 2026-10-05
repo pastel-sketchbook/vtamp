@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Default Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#f5f5f8",
+    "panel": "#ebebf0",
+    "selection": "#dce1eb",
+    "text": "#282832",
+    "muted": "#606067",
+    "accent": "#006c8b",
+    "border": "#b4b4be",
+    "warning": "#006c8b",
+    "error": "#c82828",
+    "spectrum": [
+      "#008c32",
+      "#008cb4",
+      "#c82828"
+    ]
+  }
+}

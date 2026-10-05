@@ -58,7 +58,7 @@ remain intact. Direct tracks also survive a server restart, restored paused.
 
 ## Brand Commitments
 
-Classic Winamp inspires the compact controls and legible type. The TUI offers nine selectable palettes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.
+Classic Winamp inspires the compact controls and legible type. The TUI offers nine built-in palettes and custom JSON themes with Catppuccin Mocha as its warm default; the original green scheme remains Classic. The marketing website retains its charcoal and green identity and shows actual Mocha TUI captures from Ghostty + tmux. Name: vtamp. Voice: direct, practical, slightly nostalgic.
 
 ## Evidence on Hand
 

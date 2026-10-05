@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Zoegi Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#ffffff",
+    "panel": "#f5f5f5",
+    "selection": "#ebebeb",
+    "text": "#333333",
+    "muted": "#595959",
+    "accent": "#377961",
+    "border": "#e6e6e6",
+    "warning": "#377961",
+    "error": "#c23d3d",
+    "spectrum": [
+      "#377961",
+      "#5078a0",
+      "#cc5c5c"
+    ]
+  }
+}

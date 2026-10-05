@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel Solarized",
+  "mode": "dark",
+  "colors": {
+    "bg": "#002b36",
+    "panel": "#073642",
+    "selection": "#073642",
+    "text": "#fdf6e3",
+    "muted": "#8e9e9f",
+    "accent": "#2ca9a0",
+    "border": "#103a44",
+    "warning": "#c99800",
+    "error": "#e87775",
+    "spectrum": [
+      "#859900",
+      "#b58900",
+      "#dc322f"
+    ]
+  }
+}

@@ -4,6 +4,9 @@ use clap::ValueEnum;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
+mod custom;
+pub use custom::{ResolvedTheme, ThemeCatalog, ThemeId, install};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Theme {
@@ -146,7 +149,7 @@ impl Theme {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub spectrum: [Color; 3],
     pub bg: Color,

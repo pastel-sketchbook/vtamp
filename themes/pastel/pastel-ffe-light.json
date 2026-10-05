@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "name": "Pastel FFE Light",
+  "mode": "light",
+  "colors": {
+    "bg": "#e8ecf0",
+    "panel": "#f5f7fa",
+    "selection": "#dde1e8",
+    "text": "#1e232b",
+    "muted": "#4a5060",
+    "accent": "#1f7562",
+    "border": "#c9cdd6",
+    "warning": "#945d19",
+    "error": "#c03743",
+    "spectrum": [
+      "#1a8a6e",
+      "#c07920",
+      "#c9434e"
+    ]
+  }
+}

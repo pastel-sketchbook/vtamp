@@ -5,7 +5,7 @@ use crate::{
     model::*,
     platform::{self, Paths},
     settings::Settings,
-    theme::Theme,
+    theme::{self, ThemeCatalog},
     wire,
 };
 use anyhow::{Context, Result, bail};
@@ -30,8 +30,8 @@ pub struct Args {
     #[arg(long, global = true, value_enum, default_value = "auto")]
     pub art: Art,
     /// Theme for this attachment only; otherwise use the saved preference.
-    #[arg(long, global = true, value_enum)]
-    pub theme: Option<Theme>,
+    #[arg(long, global = true, value_name = "NAME")]
+    pub theme: Option<String>,
     #[command(subcommand)]
     pub command: Option<Action>,
 }
@@ -244,8 +244,15 @@ pub enum ThemeAction {
     Current,
     /// Save the default for future attachments; open TUIs keep their theme.
     Set {
-        #[arg(value_enum)]
-        name: Theme,
+        name: String,
+    },
+    /// Install custom theme JSON files without changing the saved default.
+    Install {
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
+        /// Replace an existing custom theme with different contents.
+        #[arg(long)]
+        replace: bool,
     },
 }
 
@@ -715,18 +722,42 @@ pub async fn run(args: Args) -> Result<()> {
         }
         Action::Theme { command } => {
             let path = paths.ui_settings();
-            let data = match command {
+            let catalog = ThemeCatalog::load(&paths.themes());
+            let mut data = match command {
                 ThemeAction::List => {
-                    json!({"themes": Theme::ALL.map(|theme| json!({"id": theme.id(), "name": theme.name(), "mode": theme.mode()}))})
+                    json!({"themes": catalog.themes.iter().map(|theme| json!({"id": theme.id(), "name": theme.name(), "mode": theme.mode()})).collect::<Vec<_>>()})
                 }
                 ThemeAction::Current => {
-                    json!({"theme": Settings::load(&path)?.theme, "path": path})
+                    let settings = Settings::load(&path)?;
+                    catalog.resolve(settings.theme.as_str())?;
+                    json!({"theme": settings.theme, "path": path})
                 }
                 ThemeAction::Set { name } => {
-                    Settings::set_theme(&path, name)?;
+                    let theme = catalog.resolve(&name)?;
+                    Settings::set_theme(&path, theme.id)?;
                     json!({"theme": name, "path": path, "applies_to": "future_attachments"})
                 }
+                ThemeAction::Install { files, replace } => {
+                    let files = files
+                        .iter()
+                        .map(|p| platform::absolute(p))
+                        .collect::<Result<Vec<_>>>()?;
+                    let report = theme::install(&paths.themes(), &files, replace)?;
+                    if !args.json {
+                        for warning in &report.warnings {
+                            eprintln!("{}: {}", warning.path.display(), warning.message);
+                        }
+                    }
+                    return output(Reply::success(serde_json::to_value(report)?), args.json);
+                }
             };
+            if !catalog.warnings.is_empty() {
+                if args.json {
+                    data["warnings"] = serde_json::to_value(&catalog.warnings)?;
+                } else if let Some(warning) = catalog.warning_text() {
+                    eprintln!("{warning}");
+                }
+            }
             return output(Reply::success(data), args.json);
         }
         Action::Attach => {
@@ -736,8 +767,22 @@ pub async fn run(args: Args) -> Result<()> {
             if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                 bail!("The TUI needs an interactive terminal. Try vtamp status --json");
             }
+            let catalog = ThemeCatalog::load(&paths.themes());
+            let (theme, warning) = crate::tui::attachment_theme(
+                &paths.ui_settings(),
+                args.theme.as_deref(),
+                &catalog,
+            )?;
             client.ensure().await?;
-            crate::tui::run(client, args.art, args.theme, paths.ui_settings()).await?;
+            crate::tui::run(
+                client,
+                args.art,
+                theme,
+                catalog,
+                paths.ui_settings(),
+                warning,
+            )
+            .await?;
             return Ok(());
         }
         Action::Server {
@@ -1542,6 +1587,20 @@ fn output(reply: Reply, json: bool) -> Result<()> {
         }
         return Ok(());
     }
+    if let Some(installed) = data.get("installed").and_then(Value::as_array) {
+        for id in installed {
+            writeln!(out, "Installed {}", id.as_str().unwrap_or(""))?;
+        }
+        for id in data["unchanged"].as_array().into_iter().flatten() {
+            writeln!(out, "Unchanged {}", id.as_str().unwrap_or(""))?;
+        }
+        writeln!(out, "Themes: {}", data["path"].as_str().unwrap_or(""))?;
+        writeln!(
+            out,
+            "Reattach to preview with t, or use --theme NAME. The saved default is unchanged."
+        )?;
+        return Ok(());
+    }
     if let Some(themes) = data.get("themes").and_then(Value::as_array) {
         for theme in themes {
             writeln!(
@@ -1870,7 +1929,35 @@ pub fn parse_args() -> std::result::Result<Args, clap::Error> {
         .ok()
         .is_some_and(|p| crate::import_config::youtube_available(&p));
     let matches = command_with_features(available).try_get_matches()?;
-    Args::from_arg_matches(&matches)
+    let args = Args::from_arg_matches(&matches)?;
+    let selected = args
+        .theme
+        .iter()
+        .map(String::as_str)
+        .chain(match &args.command {
+            Some(Action::Theme {
+                command: ThemeAction::Set { name },
+            }) => Some(name.as_str()),
+            _ => None,
+        });
+    let selected = selected.collect::<Vec<_>>();
+    let catalog = if selected.is_empty() {
+        ThemeCatalog::default()
+    } else {
+        Paths::discover()
+            .ok()
+            .map(|paths| ThemeCatalog::load(&paths.themes()))
+            .unwrap_or_default()
+    };
+    for name in selected {
+        if !catalog.knows(name) {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::InvalidValue,
+                format!("Unknown theme {name:?}; use vtamp theme list to see available themes"),
+            ));
+        }
+    }
+    Ok(args)
 }
 
 pub(crate) fn prompt(label: &str, default: &str) -> Result<String> {
