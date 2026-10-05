@@ -171,6 +171,9 @@ placements before drawing placeholders, text, and the caret. This excludes pane
 sync timeout behavior while preserving the upload ordering that reduced cursor
 flicker. Upload even when placeholder cells are unchanged, and keep their styles
 and cell widths intact. Direct Kitty and Sixel keep their existing rendering path.
+Bound individual tmux Kitty stream writes to 16 KiB without inserting bytes or
+changing protocol packet boundaries. This is a separate limit from the 256 KiB
+passthrough packet size.
 Some tmux versions reset the outer cursor after each raw graphics chunk, which
 can briefly expose it at the origin during uploads. Preserve the real input caret
 in the pane, but do not conceal that tmux limitation with an untracked outer hold.
@@ -350,10 +353,20 @@ pane synchronization (`dee2430`) removed that flicker in five user trials, but
 one trial still fell to 1 fps; any key immediately restored the frame rate.
 Removing the remaining pane synchronization (`f194eb0`) did not eliminate the
 slowdown in the user's next trial, so pane synchronization alone does not explain
-it. The next diagnostic build adds opt-in `VTAMP_TUI_TRACE` timing records for
+it. Opt-in `VTAMP_TUI_TRACE` diagnostics record timings for
 UI wakes, rendering, terminal uploads/drawing, video delivery, and visibility.
 Write logs off the UI/decoder threads through a bounded, nonblocking queue; never
 log key contents or media metadata. Use a debug client with symbols and retain
 begin/end records so an in-progress stall is observable before it recovers.
 At the user's request, validation proceeds in their own swap workflow rather than
 further isolated GUI trials. Keep live playback untouched and scope fixes to vtamp.
+
+The first debug trace captured a sustained slow interval approximately 5–23 s
+after attachment: image uploads of about 350–390 KB took 750–880 ms instead of
+roughly 7 ms. Video encoding continued near 15 fps (typically 55 ms per frame),
+while the UI accepted only about six frames per five seconds. UI waits stayed
+under 103 ms; ordinary drawing was much shorter than the uploads. No trace
+records were dropped. This localizes the delay to blocking image output, not
+frame production or a one-second UI timer. It does not identify the underlying
+PTY/tmux cause. The next candidate bounds individual writes to 16 KiB and adds
+`output.write` timings; the terminal stream remains byte-for-byte identical.

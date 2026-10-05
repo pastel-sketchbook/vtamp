@@ -89,7 +89,15 @@ trait PresentationBackend: Backend {
 
 impl<W: std::io::Write> PresentationBackend for ratatui::backend::CrosstermBackend<W> {
     fn upload_graphics(&mut self, sequence: &str) -> Result<(), Self::Error> {
-        crossterm::queue!(self, crossterm::style::Print(sequence))
+        // Bound individual PTY write requests rather than asking the kernel to
+        // drain an entire image in one blocking call. This does not split or
+        // rewrite Kitty/tmux commands; the terminal receives identical bytes.
+        for chunk in sequence.as_bytes().chunks(16 * 1024) {
+            let _span =
+                diagnostics::span("output.write", || serde_json::json!({"bytes":chunk.len()}));
+            std::io::Write::write_all(self, chunk)?;
+        }
+        Ok(())
     }
     fn begin_update(&mut self) -> Result<(), Self::Error> {
         crossterm::execute!(self, crossterm::terminal::BeginSynchronizedUpdate)
@@ -7362,6 +7370,38 @@ mod tests {
             );
         }
         assert_eq!(output.windows(6).filter(|w| *w == b"\x1b[?25l").count(), 2);
+    }
+
+    #[test]
+    fn graphics_writes_are_bounded_and_preserve_the_terminal_stream() {
+        use ratatui::backend::CrosstermBackend;
+        use std::io::{self, Write};
+        #[derive(Default)]
+        struct Output {
+            bytes: Vec<u8>,
+            sizes: Vec<usize>,
+        }
+        impl Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.sizes.push(bytes.len());
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let sequence = format!(
+            "\x1bPtmux;\x1b\x1b_Ga=T;{}\x1b\x1b\\\x1b\\",
+            "A".repeat(350_000)
+        );
+        let mut output = Output::default();
+        CrosstermBackend::new(&mut output)
+            .upload_graphics(&sequence)
+            .unwrap();
+        assert_eq!(output.bytes, sequence.as_bytes());
+        assert!(output.sizes.len() > 1);
+        assert!(output.sizes.iter().all(|size| *size <= 16 * 1024));
     }
 
     #[test]

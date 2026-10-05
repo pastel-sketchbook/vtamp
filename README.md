@@ -514,6 +514,8 @@ resets the outer cursor for every chunk. This reduces CPU spikes and frame-rate
 collapse in large multi-pane windows after `swap-pane`, without moving focus.
 Kitty uploads and virtual placements are sent before placeholders, text, and the
 input caret. Neither uploads nor subsequent text-only frames open a pane hold.
+The application writes this stream in pieces of at most 16 KiB; these write
+boundaries do not change the Kitty commands or the 256 KiB tmux packet limit.
 
 **Known unresolved issue:** video can still intermittently remain near 1 fps
 after returning with `swap-pane` in Ghostty + tmux, while audio continues.
@@ -1052,7 +1054,7 @@ VTAMP_TUI_TRACE=/tmp/vtamp-tui-trace.jsonl target/debug/vtamp
 The opt-in JSONL trace appends session headers (PID, wall-clock start, build type),
 monotonic microsecond timestamps, UI wake sources, input event kinds, frame sizes,
 upload bytes, video readiness/acceptance/drop reasons, and paired timing spans.
-`output.upload` and `output.draw` distinguish terminal-output waiting from
+`output.upload`, individual `output.write` calls, and `output.draw` distinguish terminal-output waiting from
 `ui.wait`, `ui.render`, `video.sync`, `video.visibility`, and `video.encode`.
 A span begin with no matching end yet identifies an operation still in progress.
 No key values, pasted text, terminal payloads, or media metadata are recorded.
