@@ -58,6 +58,33 @@ Close any open panel and reattach to see the updated command menu. Keep the
 example directory in place while registered: registration stores a path, not a
 copy of its files.
 
+## Use the packaged examples
+
+Release archives include an `examples/` directory alongside `vtamp`. Hello Panel
+requires Python 3 on PATH. Pastel Transcript includes a binary for the archive's
+platform and a manifest pointing to it, so no Rust build is needed.
+
+From an extracted release directory:
+
+```sh
+./vtamp plugin add examples/hello-panel/plugin.json
+./vtamp plugin add examples/pastel-transcript/plugin.json
+```
+
+For Homebrew installations:
+
+```sh
+vtamp plugin add "$(brew --prefix vtamp)/share/vtamp/examples/hello-panel/plugin.json"
+vtamp plugin add "$(brew --prefix vtamp)/share/vtamp/examples/pastel-transcript/plugin.json"
+```
+
+Use `vtamp plugin run hello-panel:show --json` for the offline check, or reattach
+and use `:`. The [Pastel guide](#pastel-transcript-example) explains supported
+tracks. Keep extracted files at a stable path; re-register if you move them.
+Homebrew users should re-register after upgrades because registration resolves
+manifest paths into the installed version's directory. To customize an example,
+copy its directory outside the Homebrew installation first.
+
 ## Write your own plugin
 
 Copy the [Hello Panel directory](../examples/hello-panel/) to your own project.

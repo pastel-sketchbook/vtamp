@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-06
+
+Client plugins let local programs extend vtamp with document panels and actions.
+This release also adds four spectrum styles and logarithmic frequency labels.
+
 ### Added
 
 - Optional client plugins: register local programs, open their document/list
@@ -12,7 +17,6 @@
 - A separately built Pastel Transcript example, adapted with credit from
   pastel-sketchbook's `d4d0be3`, keeps provider-specific fetch/parse/caption logic
   outside the default application.
-
 - Four spectrum styles: squares, smooth, trail, and stereo, following the existing
   ten in the `V` cycle. Each has its own renderer and uses the current theme.
   Trail retains the six latest frame tops while paused; stereo labels L/R and
@@ -25,6 +29,19 @@
 - Adapted from [Pastel Sketchbook's spectrum contribution](https://github.com/pastel-sketchbook/vtamp/commit/0ff7e02d114226c594e069e7c99c44fb3f4da3e8),
   preserving combined-channel analysis and correcting trail layering, fading,
   channel orientation, partial blocks, and narrow-pane band coverage.
+
+### Upgrade notes
+
+- Protocol remains **11**, database version remains **7**, and the new client
+  plugin API is **1**. Reattach with the new binary to use plugins and spectrum
+  styles; no playback-server restart is needed for plugins. Restart the server
+  when convenient to enable stereo spectrum channel data.
+- Release archives and Homebrew include the Hello Panel Python example and a
+  prebuilt Pastel Transcript plugin. Plugins remain opt-in; see the
+  [plugin guide](docs/plugins.md) for registration and authoring instructions.
+- Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux tested on
+  Ubuntu 24.04 (glibc 2.39+). Linux remains a headless server without device
+  playback, relay, media keys, radio, or terminal video.
 
 ## [0.4.3] — 2026-10-05
 
@@ -285,7 +302,8 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
-[Unreleased]: https://github.com/rath/vtamp/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rath/vtamp/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/rath/vtamp/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/rath/vtamp/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/rath/vtamp/compare/v0.4.0...v0.4.1
