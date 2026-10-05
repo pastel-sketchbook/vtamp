@@ -207,6 +207,13 @@ pub(super) struct Mailbox {
 }
 impl Mailbox {
     fn put(&self, packet: Packet) {
+        super::diagnostics::record("video.ready", || {
+            serde_json::json!({
+                "generation":packet.generation,
+                "position_ms":packet.result.as_ref().ok().and_then(|p| p.as_ref()).map(|p| p.position),
+                "ended":packet.ended,"error":packet.result.is_err(),
+            })
+        });
         *self.packet.lock().unwrap() = Some(packet);
         self.notify.notify_one();
     }
@@ -449,6 +456,10 @@ impl View {
     pub fn accept(&mut self) -> Option<String> {
         let packet = self.mailbox.packet.lock().unwrap().take()?;
         if packet.generation != self.generation || self.request.is_none() {
+            super::diagnostics::record(
+                "video.drop",
+                || serde_json::json!({"reason":"obsolete","generation":packet.generation}),
+            );
             return None;
         }
         self.ended = packet.ended;
@@ -463,8 +474,16 @@ impl View {
                     .abs_diff(picture.position)
                     > DRIFT_MS
                 {
+                    super::diagnostics::record(
+                        "video.drop",
+                        || serde_json::json!({"reason":"drift","position_ms":picture.position}),
+                    );
                     return None;
                 }
+                super::diagnostics::record(
+                    "video.accept",
+                    || serde_json::json!({"generation":packet.generation,"position_ms":picture.position}),
+                );
                 self.aspect = Some(picture.aspect);
                 self.frame = Some(picture);
             }
@@ -711,6 +730,7 @@ fn worker(
         if let Some(pane) = &pane
             && visibility_at.elapsed() >= Duration::from_secs(1)
         {
+            let _span = super::diagnostics::span("video.visibility", || serde_json::json!({}));
             // Never wait for tmux on the TUI thread; a hung query is cancellable.
             let visible = subprocess::run(
                 Command::new("tmux").args([
@@ -744,6 +764,7 @@ fn worker(
                 });
             }
             pane_visible = visible;
+            super::diagnostics::record("video.visible", || serde_json::json!({"visible":visible}));
             visibility_at = Instant::now();
         }
         if !pane_visible {
@@ -795,6 +816,10 @@ fn worker(
                 if d.index <= target {
                     continue;
                 }
+                let _span = super::diagnostics::span(
+                    "video.encode",
+                    || serde_json::json!({"generation":r.generation,"position_ms":timestamp}),
+                );
                 let protocol = PictureProtocol::encode(
                     image,
                     graphics,

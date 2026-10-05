@@ -348,9 +348,12 @@ The user also observed the cursor rapidly alternating between Ghostty's origin
 and the lower-left corner of pane 5 during a slow episode. Moving uploads outside
 pane synchronization (`dee2430`) removed that flicker in five user trials, but
 one trial still fell to 1 fps; any key immediately restored the frame rate.
-The next candidate removes the remaining pane synchronization for tmux Kitty
-attachments, including text-only frames, to exclude the pane's one-second sync
-timeout path. Its effect on the slowdown is unconfirmed. At the user's request,
-validation proceeds by testing each candidate build in their own swap workflow,
-rather than further isolated GUI trials. Keep live playback untouched and scope
-fixes to vtamp.
+Removing the remaining pane synchronization (`f194eb0`) did not eliminate the
+slowdown in the user's next trial, so pane synchronization alone does not explain
+it. The next diagnostic build adds opt-in `VTAMP_TUI_TRACE` timing records for
+UI wakes, rendering, terminal uploads/drawing, video delivery, and visibility.
+Write logs off the UI/decoder threads through a bounded, nonblocking queue; never
+log key contents or media metadata. Use a debug client with symbols and retain
+begin/end records so an in-progress stall is observable before it recovers.
+At the user's request, validation proceeds in their own swap workflow rather than
+further isolated GUI trials. Keep live playback untouched and scope fixes to vtamp.

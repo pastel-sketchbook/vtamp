@@ -520,8 +520,8 @@ after returning with `swap-pane` in Ghostty + tmux, while audio continues.
 Moving focus to another pane has restored the frame rate, but focusing the video
 pane again can bring the slowdown back. Upload ordering removed cursor flicker
 in user trials, but the slowdown recurred once in five attempts and recovered on
-any key. Disabling the remaining pane synchronization is the next mitigation
-awaiting confirmation in that workflow.
+any key. Disabling the remaining pane synchronization did not eliminate it either.
+Use the optional [TUI timing trace](#trace-a-tui-stall) to diagnose a recurrence.
 See the investigation note in [DESIGN.md](DESIGN.md#unresolved-swap-pane-slowdown).
 
 In tmux, automatic mode starts with halfblocks and probes only when a client is attached and **both the window and pane are active**. Starting in a parked/background window is supported: switching to that window and pane triggers detection and upgrades the cover and video without reattaching. Focus events request an immediate check; a background check every 500 ms also works with tmux `focus-events` disabled, without changing that setting. A timed-out probe gets one additional attempt after 500 ms; another activation allows another attempt. Successful Kitty detection stops the checks for that attachment. Terminal input remains on one reader, with Kitty replies kept out of keyboard actions. Explicit `--art` modes keep the selected protocol.
@@ -1039,6 +1039,31 @@ other apps during the check, since macOS decides where global media keys go.
 It cleans up its own server and tmux socket without editing your library.
 Inspect Control Center separately for visual cover verification; this script
 does not prove that the OS rendered artwork or expose a seek slider on every OS.
+
+### Trace a TUI stall
+
+Use a debug build with symbols when investigating an intermittent redraw stall:
+
+```sh
+cargo build --locked
+VTAMP_TUI_TRACE=/tmp/vtamp-tui-trace.jsonl target/debug/vtamp
+```
+
+The opt-in JSONL trace appends session headers (PID, wall-clock start, build type),
+monotonic microsecond timestamps, UI wake sources, input event kinds, frame sizes,
+upload bytes, video readiness/acceptance/drop reasons, and paired timing spans.
+`output.upload` and `output.draw` distinguish terminal-output waiting from
+`ui.wait`, `ui.render`, `video.sync`, `video.visibility`, and `video.encode`.
+A span begin with no matching end yet identifies an operation still in progress.
+No key values, pasted text, terminal payloads, or media metadata are recorded.
+
+A separate writer flushes about every 200 ms, including while the UI is blocked.
+The queue is bounded and drops diagnostic records instead of waiting for disk;
+the final `trace.dropped` count reports losses. Logs append across reattachments;
+use separate paths for concurrent clients and remove the file when done.
+Logging is disabled when the variable is unset. Debug performance can differ
+from release, so these timings diagnose delays rather than benchmark release FPS.
+Reattach only the TUI; the playback server does not need to restart.
 
 ### Website
 

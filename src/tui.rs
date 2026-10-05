@@ -1,3 +1,4 @@
+mod diagnostics;
 mod imports;
 mod streams;
 mod video;
@@ -140,6 +141,7 @@ impl Presentation {
     /// every draw. Ratatui's `Terminal::clear` queries the cursor to preserve it;
     /// that synchronous reply can time out while EventStream owns terminal input.
     fn clear<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<(), B::Error> {
+        let _span = diagnostics::span("ui.clear", || serde_json::json!({}));
         terminal.hide_cursor()?;
         terminal.backend_mut().clear()?;
         // Each swap resets the buffer it enters. Reset both without changing
@@ -158,9 +160,18 @@ impl Presentation {
         render: impl FnOnce(&mut Frame) -> Option<Position>,
     ) -> std::result::Result<bool, B::Error> {
         terminal.autoresize()?;
-        let caret = render(&mut terminal.get_frame());
+        let caret = {
+            let _span = diagnostics::span("ui.render", || serde_json::json!({}));
+            render(&mut terminal.get_frame())
+        };
         let next = terminal.current_buffer_mut();
         let uploads = take_tmux_graphics(next);
+        diagnostics::record("ui.frame", || {
+            serde_json::json!({
+                "width":next.area.width,"height":next.area.height,
+                "uploads":uploads.len(),"bytes":uploads.iter().map(String::len).sum::<usize>(),
+            })
+        });
         self.tmux_graphics |= !uploads.is_empty();
         let changed = !uploads.is_empty()
             || caret != self.caret
@@ -180,12 +191,21 @@ impl Presentation {
         // MODE_SYNC for this attachment, excluding tmux's one-second pane-sync
         // timeout path as a source of stalls after a swap.
         if !uploads.is_empty() {
+            let _span = diagnostics::span("output.upload", || {
+                serde_json::json!({
+                    "bytes":uploads.iter().map(String::len).sum::<usize>(),
+                })
+            });
             terminal.hide_cursor()?;
             for upload in &uploads {
                 terminal.backend_mut().upload_graphics(upload)?;
             }
         }
         let result = (|| {
+            let _span = diagnostics::span(
+                "output.draw",
+                || serde_json::json!({"pane_sync":!self.tmux_graphics}),
+            );
             if !self.tmux_graphics {
                 terminal.backend_mut().begin_update()?;
             }
@@ -202,6 +222,7 @@ impl Presentation {
         })();
         // Even a failed begin/flush may have delivered the hold to the terminal.
         // Always attempt its release, preserving the original drawing error.
+        let _span = diagnostics::span("output.end", || serde_json::json!({}));
         let end = if self.tmux_graphics {
             Ok(())
         } else {
@@ -479,6 +500,7 @@ pub async fn run(
     settings_path: PathBuf,
     settings_warning: Option<String>,
 ) -> Result<()> {
+    let _diagnostics = diagnostics::start()?;
     let mut terminal = ratatui::try_init()?;
     let mut guard = TerminalGuard {
         _passthrough: None,
@@ -699,6 +721,10 @@ pub async fn run(
             let deadline = deadline.into_iter().chain(graphics_replies.deadline()).min();
             let previous_cover_hidden = app.cover_hidden();
             let previous_fullscreen = app.video_fullscreen.clone();
+            let waiting = diagnostics::span("ui.wait", || serde_json::json!({
+                "deadline_in_us":deadline.map(|d| d.saturating_duration_since(Instant::now()).as_micros()),
+            }));
+            let mut wake = "timer";
             let terminal_event = tokio::select! {
                 _ = async {
                     if let Some(deadline) = deadline {
@@ -708,6 +734,7 @@ pub async fn run(
                     }
                 } => None,
                 changed = latest_spectrum.changed(), if spectrum_stream_alive => {
+                    diagnostics::record("ui.wake", || serde_json::json!({"source":"spectrum"}));
                     if changed.is_err() {
                         spectrum_stream_alive = false;
                         app.spectrum.clear();
@@ -724,14 +751,17 @@ pub async fn run(
                     continue;
                 },
                 _ = video_mailbox.notify.notified() => {
+                    wake = "video";
                     if let Some(notice) = app.video.accept() { app.video_fullscreen = None; app.notice(notice); }
                     None
                 },
                 Some(message) = incoming.recv() => {
+                    wake = "server";
                     app.message(message, &messages, &commands);
                     None
                 },
                 Some(update) = guard.detector.updates.recv() => {
+                    wake = "graphics";
                     match update {
                         GraphicsUpdate::Query { id, expires } if Instant::now() < expires => {
                             crossterm::execute!(std::io::stdout(), crossterm::style::Print(Detector::query(id)))?;
@@ -745,13 +775,19 @@ pub async fn run(
                     }
                     None
                 },
-                event = terminal_events.next() => match event {
-                    Some(event) => Some(event?),
-                    None => return Ok(()),
+                event = terminal_events.next() => {
+                    wake = "terminal";
+                    match event {
+                        Some(event) => Some(event?),
+                        None => return Ok(()),
+                    }
                 },
                 _ = terminate.recv() => return Ok::<_, anyhow::Error>(()),
                 _ = interrupt.recv() => return Ok::<_, anyhow::Error>(()),
             };
+            drop(waiting);
+            diagnostics::record("ui.wake", || serde_json::json!({"source":wake}));
+            let _tick = diagnostics::span("ui.tick", || serde_json::json!({}));
             while let Ok(message) = incoming.try_recv() {
                 app.message(message, &messages, &commands);
             }
@@ -765,6 +801,14 @@ pub async fn run(
                 } else { events.push(event); }
             }
             for event in events {
+                diagnostics::record("ui.input", || serde_json::json!({"kind":match &event {
+                    TerminalEvent::Key(_) => "key",
+                    TerminalEvent::Paste(_) => "paste",
+                    TerminalEvent::Resize(_, _) => "resize",
+                    TerminalEvent::FocusGained => "focus_in",
+                    TerminalEvent::FocusLost => "focus_out",
+                    _ => "other",
+                }}));
                 match event {
                     TerminalEvent::FocusGained => guard.detector.focus(true),
                     TerminalEvent::FocusLost => guard.detector.focus(false),
@@ -994,6 +1038,7 @@ impl App {
     }
 
     fn sync_video(&mut self) {
+        let _span = diagnostics::span("video.sync", || serde_json::json!({}));
         if !self.video.enabled
             || self.video.ended
             || !self.connected
