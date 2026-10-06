@@ -73,6 +73,24 @@ impl Track {
         (!album.is_empty() && !album.eq_ignore_ascii_case("Unknown album")).then_some(album)
     }
 
+    /// The performer to show for this track. Metadata never treats the uploader
+    /// as the performer, so a video import whose artist could not be determined
+    /// would otherwise read as an unknown one everywhere. Such a track is shown
+    /// against the channel it came from instead; a track with neither keeps its
+    /// stored artist.
+    pub fn artist_name(&self) -> &str {
+        let artist = self.artist.trim();
+        if !artist.is_empty() && !artist.eq_ignore_ascii_case("Unknown artist") {
+            return artist;
+        }
+        self.source
+            .as_ref()
+            .and_then(|source| source.channel_name.as_deref())
+            .map(str::trim)
+            .filter(|channel| !channel.is_empty())
+            .unwrap_or(artist)
+    }
+
     pub(crate) fn apply_source_album(&mut self) {
         if let Some(album) = self.source.as_ref().and_then(|s| s.music_album.as_ref())
             && !album.trim().is_empty()
@@ -624,5 +642,65 @@ impl State {
                 .iter()
                 .map(|i| &i.id)
                 .ne(old.queue.iter().map(|i| &i.id))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(artist: &str, channel: Option<&str>) -> Track {
+        Track {
+            id: "track".into(),
+            playback: PlaybackSource::File {
+                path: "/music/song.m4a".into(),
+            },
+            title: "Song".into(),
+            artist: artist.into(),
+            album: String::new(),
+            track_number: 0,
+            duration_ms: Some(1000),
+            cover: None,
+            source: channel.map(|channel| crate::youtube::Source {
+                video_id: "CIbmold6mAE".into(),
+                channel_name: Some(channel.into()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn a_video_with_no_credited_artist_is_shown_as_its_channel() {
+        assert_eq!(
+            track("Unknown artist", Some("Pastel Sketchbook")).artist_name(),
+            "Pastel Sketchbook"
+        );
+        // An empty stored artist reads the same way.
+        assert_eq!(
+            track("", Some("Pastel Sketchbook")).artist_name(),
+            "Pastel Sketchbook"
+        );
+        // Case and surrounding whitespace never hide a credited performer.
+        assert_eq!(
+            track(" Mira Vale ", Some("Pastel Sketchbook")).artist_name(),
+            "Mira Vale"
+        );
+        assert_eq!(
+            track("unknown artist", Some("Mira Vale")).artist_name(),
+            "Mira Vale"
+        );
+    }
+
+    #[test]
+    fn a_track_with_neither_keeps_its_stored_artist() {
+        assert_eq!(
+            track("Unknown artist", None).artist_name(),
+            "Unknown artist"
+        );
+        assert_eq!(
+            track("Unknown artist", Some("  ")).artist_name(),
+            "Unknown artist"
+        );
+        assert_eq!(track("", None).artist_name(), "");
+        assert_eq!(track("Unknown album", None).artist_name(), "Unknown album");
     }
 }

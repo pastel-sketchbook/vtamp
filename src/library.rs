@@ -76,7 +76,12 @@ pub fn normalized(text: &str) -> String {
 /// The normalized title/artist/album text used by library search. The TUI's
 /// queue filter applies the same text so both lists match the same way.
 pub fn search_blob(track: &Track) -> String {
-    normalized(&format!("{} {} {}", track.title, track.artist, track.album))
+    normalized(&format!(
+        "{} {} {}",
+        track.title,
+        track.artist_name(),
+        track.album
+    ))
 }
 
 fn clean(text: &str) -> String {
@@ -182,15 +187,17 @@ pub fn scan(paths: &[PathBuf], old: &[Record], cache: &Path) -> Scan {
             }
         }
     }
+    // Grouped by the performer shown in the list, so a channel's videos sit
+    // together under its name instead of under the unknown-artist placeholder.
     result.records.sort_by(|a, b| {
         (
-            &a.track.artist,
+            a.track.artist_name(),
             &a.track.album,
             a.track.track_number,
             a.track.playback.file(),
         )
             .cmp(&(
-                &b.track.artist,
+                b.track.artist_name(),
                 &b.track.album,
                 b.track.track_number,
                 b.track.playback.file(),

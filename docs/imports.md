@@ -168,6 +168,14 @@ recognize forms such as `Artist - Title` and `Artist 'Title'`. For example,
 Ambiguous titles stay intact; the uploader is not automatically treated as the
 performer.
 
+A video with no credited artist is *shown* against the channel it came from, so a
+channel's own videos never read as an unknown performer: Now Playing, Library,
+Queue, the macOS Now Playing panel, `status`, and the tmux status label all name
+`Pastel Sketchbook` instead of `Unknown artist`. The stored artist is untouched,
+so `m` still edits the real value, a rescan cannot overwrite the fallback, and a
+credited performer always wins over the channel. Library and Queue search match
+the same name, and Library groups such tracks under it.
+
 Single-video imports accept `--title` and `--artist`. To correct an existing
 track, press `m` in the TUI to edit Title, Artist, and Album (Tab/Shift-Tab switches
 fields, Ctrl-U clears a field, Enter saves), or run:

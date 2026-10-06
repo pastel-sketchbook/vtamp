@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- A video import with no credited artist is displayed against the channel it
+  came from (Now Playing, Library, Queue, the macOS Now Playing panel, `status`,
+  the tmux label, and both searches), without changing the stored artist.
+
 ## [0.5.0] — 2026-10-06
 
 Client plugins let local programs extend vtamp with document panels and actions.
