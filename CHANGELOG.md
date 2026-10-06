@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- A video import with no credited artist is displayed against the channel it
+  came from (Now Playing, Library, Queue, the macOS Now Playing panel, `status`,
+  the tmux label, and both searches), without changing the stored artist.
+
 ## [0.5.2] — 2026-10-11
 
 YouTube excerpts keep audio and video in sync, and the iPhone Import screen
@@ -143,6 +149,11 @@ take time ranges, and the Library filters by kind.
 - Prebuilt downloads cover Apple Silicon macOS and ARM64 Linux tested on
   Ubuntu 24.04 (glibc 2.39+). Linux remains a headless server without device
   playback, relay, media keys, radio, or terminal video.
+### Added
+
+- A video import with no credited artist is displayed against the channel it
+  came from (Now Playing, Library, Queue, the macOS Now Playing panel, `status`,
+  the tmux label, and both searches), without changing the stored artist.
 
 ## [0.5.0] — 2026-10-06
 
