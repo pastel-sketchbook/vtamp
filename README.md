@@ -29,9 +29,10 @@ No account. No streaming subscription. No permanent pane. Your music stays on yo
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
-## What ships in v0.4.2
+## What ships
 
 - Persistent playback server, with multiple TUI and CLI clients.
+- Optional [client plugins](docs/plugins.md): local programs add document panels and actions through a language-independent JSON protocol. Includes a minimal Python example and a prebuilt Pastel Transcript plugin in release archives and Homebrew.
 - Folder-based library, title/artist/album search, a filterable queue, and an editable shared queue.
 - Portable Library archives: `vtamp library export` writes one `.tar.gz` of playable media with current tags and covers, and `vtamp library import` merges it into a Library, skipping tracks it already has.
 - Live radio on macOS: register HTTP(S) URLs or import M3U/PLS channel lists; HLS, MP3, and AAC use native playback.
@@ -68,9 +69,10 @@ brew install rath/tap/vtamp
 
 The formula installs a prebuilt, self-contained binary from the
 [GitHub release](https://github.com/rath/vtamp/releases); Rust is not required.
-Upgrade with `brew update && brew upgrade vtamp`, then run `vtamp server stop`
-so the next `vtamp` starts the new build: a running playback server is never
-replaced by an install. Intel Macs build from source.
+Upgrade with `brew update && brew upgrade vtamp`, then reattach for new client
+features. Check the [upgrade notes](CHANGELOG.md) for server changes that need
+`vtamp server stop` when convenient; installation never replaces a running
+playback server. Intel Macs build from source.
 
 ### Linux (headless server)
 
