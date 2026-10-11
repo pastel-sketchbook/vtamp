@@ -436,7 +436,12 @@ Now Playing titles use `headlineSmall`, section and empty-state headings use
 `titleLarge`, import job titles use `titleMedium`, and mini-player titles use
 `titleSmall`. Supporting copy uses body roles; timing and compact status use
 label roles. Library titles allow two lines, metadata and mini-player text
-ellipsize, and the full player wraps titles in a scrollable column.
+ellipsize. The full player reserves two lines each for title and subtitle,
+ellipsizing overflow so track changes do not move the controls. Its header,
+timeline and transport/footer stay anchored; artwork sizes to the remaining
+height. Only the artwork/metadata section scrolls on very short screens or with
+large system text. Volume uses the phone's hardware buttons, with no in-app
+volume slider.
 
 Library and Import use horizontal gutters (16 dp), Settings uses inset content
 (20 dp), and Now Playing uses wider gutters (24 dp). Common gaps are 8, 12 and

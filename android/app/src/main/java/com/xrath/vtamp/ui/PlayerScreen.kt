@@ -3,9 +3,7 @@
 package com.xrath.vtamp.ui
 
 import android.app.Activity
-import android.content.Context
 import android.content.pm.ActivityInfo
-import android.media.AudioManager
 import android.view.LayoutInflater
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -14,8 +12,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.VolumeDown
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,10 +21,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -44,7 +42,6 @@ import com.xrath.vtamp.*
 import com.xrath.vtamp.R
 import com.xrath.vtamp.model.timeText
 import com.xrath.vtamp.playback.*
-import kotlinx.coroutines.delay
 
 @Composable
 fun PlayerScreen(
@@ -106,10 +103,7 @@ fun PlayerScreen(
                 }
             else
                 Column(
-                    Modifier.fillMaxSize()
-                        .safeDrawingPadding()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp),
+                    Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -133,31 +127,58 @@ fun PlayerScreen(
                             }
                         else Spacer(Modifier.width(48.dp))
                     }
-                    Spacer(Modifier.height(16.dp))
-                    Artwork(
-                        app,
-                        s,
-                        playback,
-                        Modifier.fillMaxWidth().aspectRatio(1f),
-                        fullscreen = false,
-                    ) {
-                        fullscreen = true
+                    // Keep transport controls anchored; only artwork/metadata may scroll
+                    // when accessibility text or a very short window needs extra room.
+                    BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                        val typography = MaterialTheme.typography
+                        val metadataHeight =
+                            with(LocalDensity.current) {
+                                typography.headlineSmall.lineHeight.toDp() * 2 +
+                                    typography.bodyLarge.lineHeight.toDp() * 2
+                            } + 56.dp
+                        val artworkSize =
+                            minOf(
+                                maxWidth,
+                                (maxHeight - metadataHeight).coerceAtLeast(96.dp),
+                            )
+                        Column(
+                            Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Spacer(Modifier.height(16.dp))
+                            Artwork(
+                                app,
+                                s,
+                                playback,
+                                Modifier.size(artworkSize),
+                                fullscreen = false,
+                            ) {
+                                fullscreen = true
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                s.current?.title.orEmpty(),
+                                Modifier.fillMaxWidth(),
+                                style = typography.headlineSmall,
+                                textAlign = TextAlign.Center,
+                                minLines = 2,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                s.current?.subtitle.orEmpty(),
+                                Modifier.fillMaxWidth().padding(top = 8.dp),
+                                style = typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                minLines = 2,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(16.dp))
+                        }
                     }
-                    Spacer(Modifier.height(24.dp))
-                    Text(
-                        s.current?.title.orEmpty(),
-                        style = MaterialTheme.typography.headlineSmall,
-                        textAlign = TextAlign.Center,
-                    )
-                    if (s.current?.subtitle?.isNotBlank() == true)
-                        Text(
-                            s.current?.subtitle.orEmpty(),
-                            Modifier.padding(top = 8.dp),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
-                    Spacer(Modifier.height(24.dp))
                     if (s.current?.live == true) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -205,7 +226,6 @@ fun PlayerScreen(
                             Icon(Icons.Default.SkipNext, "Next", Modifier.size(36.dp))
                         }
                     }
-                    VolumeSlider()
                     Row(
                         Modifier.fillMaxWidth().padding(bottom = 16.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -270,34 +290,6 @@ private fun Timeline(s: PlaybackState, playback: PlaybackRuntime) {
                 style = MaterialTheme.typography.labelMedium,
             )
         }
-    }
-}
-
-@Composable
-private fun VolumeSlider() {
-    val audio = LocalContext.current.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-    var volume by remember {
-        mutableFloatStateOf(audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat())
-    }
-    LaunchedEffect(audio) {
-        while (true) {
-            volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
-            delay(500)
-        }
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.AutoMirrored.Filled.VolumeDown, null)
-        Slider(
-            volume.coerceIn(0f, max.toFloat()),
-            {
-                volume = it
-                audio.setStreamVolume(AudioManager.STREAM_MUSIC, it.toInt(), 0)
-            },
-            Modifier.weight(1f).semantics { contentDescription = "Device volume" },
-            valueRange = 0f..max.toFloat(),
-        )
-        Icon(Icons.AutoMirrored.Filled.VolumeUp, null)
     }
 }
 

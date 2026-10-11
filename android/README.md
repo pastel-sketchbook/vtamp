@@ -43,7 +43,11 @@ available. Replies from an old server or search are discarded.
 - **Settings:** server connection/status and third-party licenses.
 
 The mini player opens Now Playing. It offers cover/video, seek, previous,
-play/pause, next, device volume, shuffle and repeat. Shuffle preserves the
+play/pause, next, shuffle and repeat. Use the phone's volume buttons to adjust
+volume. Playback controls stay anchored below the artwork and metadata; title
+and subtitle each reserve two lines, with longer text ellipsized. Artwork shrinks
+on shorter screens; with large system text, its section can scroll while the
+playback controls remain visible. Shuffle preserves the
 visible order and visits every queue entry once per pass. Play Next takes
 priority even during shuffle. Repeat cycles off/all/one; repeat-one affects
 natural endings only. Previous restarts a file after three seconds, otherwise
