@@ -32,8 +32,8 @@ def run(args, *, env=None, timeout=30, cwd=None):
 
 
 def wait_for(call, description, seconds=15):
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
+    end = time.clock_gettime(time.CLOCK_MONOTONIC) + seconds
+    while time.clock_gettime(time.CLOCK_MONOTONIC) < end:
         result = call()
         if result:
             return result
@@ -48,13 +48,54 @@ def cpu_seconds(pid):
     return sum(value * 60 ** power for power, value in enumerate(reversed(parts)))
 
 
+# CLOCK_MONOTONIC is shared across processes, including on macOS Python 3.9
+# where time.monotonic() uses a different origin in each process. Frame logger
+# timestamps and measurement windows must use the same clock.
 def sample_cpu(pids, seconds=5):
     before = {name: cpu_seconds(pid) for name, pid in pids.items()}
-    started = time.monotonic()
+    started = time.clock_gettime(time.CLOCK_MONOTONIC)
     time.sleep(seconds)
     after = {name: cpu_seconds(pid) for name, pid in pids.items()}
-    elapsed = time.monotonic() - started
+    elapsed = time.clock_gettime(time.CLOCK_MONOTONIC) - started
     return {name: round(100 * (after[name] - before[name]) / elapsed, 1) for name in pids}
+
+
+def process_table():
+    return [row.split(None, 2) for row in
+            run(['ps', '-axo', 'pid=,ppid=,comm=']).splitlines()]
+
+
+def tui_process(pane_pid):
+    rows = process_table()
+    descendants = {str(pane_pid)}
+    while True:
+        found = {pid for pid, parent, _ in rows if parent in descendants}
+        if found <= descendants:
+            break
+        descendants.update(found)
+    matches = [pid for pid, _, command in rows
+               if pid in descendants and Path(command).name == BINARY.name]
+    if len(matches) != 1:
+        raise RuntimeError(f'Expected one TUI in pane {pane_pid}, found {matches}')
+    return matches[0]
+
+
+def decoder_pid(tui_pid):
+    matches = [pid for pid, parent, command in process_table()
+               if parent == str(tui_pid) and Path(command).name == 'ffmpeg']
+    if len(matches) != 1:
+        raise RuntimeError(f'Expected one FFmpeg child of TUI {tui_pid}, found {matches}')
+    return matches[0]
+
+
+def sample_video_cpu(ghostty, tmux_pid, tui_pid):
+    # Never mix counters from different decoders after a seek or resize.
+    decoder = decoder_pid(tui_pid)
+    result = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid,
+                         'tui': tui_pid, 'ffmpeg': decoder})
+    if decoder_pid(tui_pid) != decoder:
+        raise RuntimeError('Video decoder changed during CPU sampling; rerun the check')
+    return result
 
 
 def cursor_trace(data, start=0, end=None):
@@ -157,7 +198,7 @@ synchronized=False
 while True:
  data=os.read(0,65536)
  if not data: break
- f.write(json.dumps({'at':time.monotonic(),'bytes':len(data)})+'\\n')
+ f.write(json.dumps({'at':time.clock_gettime(time.CLOCK_MONOTONIC),'bytes':len(data)})+'\\n')
  buf=tail+data
  for m in re.finditer(rb'\\x1b\\[(?:\\?(25|2026)([hl])|(\\d+);(\\d+)H)',buf):
   if m.end()<=len(tail): continue
@@ -165,13 +206,13 @@ while True:
   if mode==b'25': visible=enabled==b'h'
   elif mode==b'2026': synchronized=enabled==b'h'
   elif visible and not synchronized:
-   f.write(json.dumps({'at':time.monotonic(),'visible_cursor_move':[int(column)-1,int(row)-1]})+'\\n')
+   f.write(json.dumps({'at':time.clock_gettime(time.CLOCK_MONOTONIC),'visible_cursor_move':[int(column)-1,int(row)-1]})+'\\n')
  for m in re.finditer(rb'_G([^;\\x1b]*);',buf):
   if m.end()<=len(tail): continue
   h=m[1]
   if b'a=T' in h:
    i=re.search(rb'(?:^|,)i=(\\d+)',h)
-   if i: f.write(json.dumps({'at':time.monotonic(),'id':int(i[1])})+'\\n')
+   if i: f.write(json.dumps({'at':time.clock_gettime(time.CLOCK_MONOTONIC),'id':int(i[1])})+'\\n')
  tail=buf[-256:]
 ''')
         vt = lambda *args: json.loads(run([BINARY, *args, "--json"], env=env))['data']
@@ -220,12 +261,13 @@ while True:
                     return [event for event in events() if 'id' in event]
                 wait_for(lambda: len(frames()) > 20, "video frames")
                 pane_pid = run([*tmux, "display-message", "-p", "-t", "video:0.0", "#{pane_pid}"], env=env)
-                rss = lambda: int(run(["ps", "-o", "rss=", "-p", pane_pid]))
+                tui_pid = tui_process(pane_pid)
+                rss = lambda: int(run(["ps", "-o", "rss=", "-p", tui_pid]))
                 rss_before = rss()
                 tmux_pid = run([*tmux, "display-message", "-p", "#{pid}"], env=env)
                 outer_log = work / f'tmux-out-{tmux_pid}.log'
-                cpu = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid})
-                started = time.monotonic()
+                cpu = sample_video_cpu(ghostty, tmux_pid, tui_pid)
+                started = time.clock_gettime(time.CLOCK_MONOTONIC)
                 time.sleep(3)
                 for suffix in ("a", "b"):
                     before_shot = vt("status")["position_ms"]
@@ -238,11 +280,11 @@ while True:
                 for _ in range(20):
                     before = capture()
                     expected = " LIBRARY " if " QUEUE " in before else " QUEUE "
-                    at = time.monotonic()
+                    at = time.clock_gettime(time.CLOCK_MONOTONIC)
                     run([*tmux, "send-keys", "-t", "video:0.0", "Tab"], env=env)
                     wait_for(lambda: expected in capture(), "panel switch", seconds=2)
-                    latency.append((time.monotonic() - at) * 1000)
-                ended = time.monotonic()
+                    latency.append((time.clock_gettime(time.CLOCK_MONOTONIC) - at) * 1000)
+                ended = time.clock_gettime(time.CLOCK_MONOTONIC)
                 stable = [f for f in frames() if started < f['at'] < ended]
                 counts = collections.Counter(f['id'] for f in stable)
                 summaries.append({'requested_fps': fps, 'observed_upload_fps': len(stable)/(ended-started),
@@ -267,7 +309,7 @@ while True:
                     run([*tmux, 'send-keys', '-t', 'video:0.0', '-l', '사랑'], env=env)
                     wait_for(lambda: '사랑' in capture(), 'Korean field text')
                     time.sleep(.2)
-                    at = time.monotonic()
+                    at = time.clock_gettime(time.CLOCK_MONOTONIC)
                     outer_start = outer_log.stat().st_size if trace_terminal else 0
                     visible_positions = set()
                     for _ in range(60):
@@ -310,9 +352,9 @@ while True:
                 wait_for(lambda: "F/Esc back" in capture(), "fullscreen")
                 fullscreen_start = len(frames())
                 wait_for(lambda: len(frames()) > fullscreen_start + 10 and "Loading video" not in capture(), "fullscreen frames")
-                fullscreen_at = time.monotonic()
-                summaries[-1]['fullscreen_cpu_percent'] = sample_cpu({'ghostty': ghostty, 'tmux': tmux_pid})
-                fullscreen_elapsed = time.monotonic() - fullscreen_at
+                fullscreen_at = time.clock_gettime(time.CLOCK_MONOTONIC)
+                summaries[-1]['fullscreen_cpu_percent'] = sample_video_cpu(ghostty, tmux_pid, tui_pid)
+                fullscreen_elapsed = time.clock_gettime(time.CLOCK_MONOTONIC) - fullscreen_at
                 fullscreen_frames = [f for f in frames() if f['at'] > fullscreen_at]
                 summaries[-1]['fullscreen_upload_fps'] = len(fullscreen_frames) / fullscreen_elapsed
                 assert abs(summaries[-1]['fullscreen_upload_fps'] - fps) < 2
@@ -339,12 +381,12 @@ while True:
                     state = wait_for(lambda: (s if (s := vt('status'))['current_id'] != previous_id else None), 'next track')
                     current = next(item for item in state['queue'] if item['id'] == state['current_id'])
                     assert current['track']['id'] == expected_track
-                    wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'TUI after fullscreen next')
                     if expected_track == track:
                         start_frames = len(frames())
                         wait_for(lambda: len(frames()) > start_frames + 2, 'next video frames')
-                        run([*tmux, 'send-keys', '-t', 'video:0.0', 'F'], env=env)
-                        wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen on next video')
+                        wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen continues on next video')
+                    else:
+                        wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'normal layout on audio-only track')
                 vt('play', '--track', track)
                 start_frames = len(frames())
                 wait_for(lambda: len(frames()) > start_frames + 2, 'video before natural ending')
@@ -353,12 +395,11 @@ while True:
                 previous_id = vt('status')['current_id']
                 vt('seek', '179')
                 wait_for(lambda: vt('status')['current_id'] != previous_id, 'natural next track')
-                wait_for(lambda: 'NOW PLAYING' in capture() and 'F/Esc back' not in capture(), 'TUI after natural next')
+                wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen continues after natural next video')
                 summaries[-1]['fullscreen_track_transitions'] = ['video to video', 'video to audio', 'natural ending']
                 vt('repeat', 'one')
                 start_frames = len(frames())
                 wait_for(lambda: len(frames()) > start_frames + 2, 'video after natural ending')
-                run([*tmux, 'send-keys', '-t', 'video:0.0', 'F'], env=env)
                 wait_for(lambda: 'F/Esc back' in capture(), 'fullscreen after natural ending')
                 run([*tmux, "send-keys", "-t", "video:0.0", "Escape"], env=env)
                 wait_for(lambda: 'vtamp' in capture() and 'F/Esc back' not in capture(), 'return from fullscreen')
@@ -379,7 +420,7 @@ while True:
                     run([*tmux, "send-keys", "-t", "video:0.0", "a"], env=env)
                     run([*tmux, "send-keys", "-t", "video:0.0", "-l", "https://www.youtube.com/watch?v=VIDEO000001" + suffix], env=env)
                     run([*tmux, "send-keys", "-t", "video:0.0", "Enter"], env=env)
-                    wait_for(lambda: ("Download video too?" if not suffix else "Synthetic playlist") in capture(), "import choice")
+                    wait_for(lambda: ("Time range: Off" if not suffix else "Synthetic playlist") in capture(), "import choice")
                     run([*tmux, "send-keys", "-t", "video:0.0", "Tab"], env=env)
                     time.sleep(.15)
                     if fps == rates[-1]:
@@ -399,6 +440,20 @@ while True:
                 assert len(frames()) <= hidden_count + 1, "Hidden window keeps uploading video"
                 run([*tmux, "select-window", "-t", "video:0"], env=env)
                 wait_for(lambda: len(frames()) > hidden_count + 3, "video after window switch")
+                # Exercise the file lifetime when passthrough is lost in a
+                # parked window, using only this check's private tmux server.
+                video_pane = run([*tmux, 'display-message', '-p', '-t', 'video:0.0', '#{pane_id}'], env=env)
+                parking_pane = run([*tmux, 'new-window', '-d', '-P', '-F', '#{pane_id}',
+                                    '-t', 'video', '-n', 'parking', 'sleep 60'], env=env)
+                for _ in range(3):
+                    run([*tmux, 'swap-pane', '-s', video_pane, '-t', parking_pane], env=env)
+                    time.sleep(.2)
+                    run([*tmux, 'swap-pane', '-s', video_pane, '-t', parking_pane], env=env)
+                    run([*tmux, 'select-window', '-t', 'video:0'], env=env)
+                    swapped_count = len(frames())
+                    wait_for(lambda: len(frames()) > swapped_count + 3, 'video after pane swap')
+                summaries[-1]['pane_swap_round_trips'] = 3
+                run(['screencapture', '-x', '-o', '-l', window['id'], output / f'after-swaps-{fps}.png'])
                 # Pause/seek, overlays, missing video, rapid track changes, and resize.
                 vt("pause")
                 time.sleep(.5)
@@ -423,12 +478,21 @@ while True:
                 run([*tmux, "send-keys", "-t", "video:0.0", "q"], env=env)
                 wait_for(lambda: subprocess.run(["kill", "-0", pane_pid], capture_output=True).returncode != 0, "TUI exit")
                 assert vt("status")['status'] == 'playing', "Detaching stopped music"
+                reattached = run([*tmux, 'new-window', '-P', '-F', '#{pane_id}',
+                                  '-t', 'video', '-n', 'reattached', start], env=env)
+                reattached_text = lambda: run([*tmux, 'capture-pane', '-p', '-t', reattached], env=env)
+                wait_for(lambda: '\U0010eeee' in reattached_text(), 'video on reattach')
+                run(['screencapture', '-x', '-o', '-l', window['id'], output / f'reattached-{fps}.png'])
+                run([*tmux, 'send-keys', '-t', reattached, 'q'], env=env)
+                assert vt('status')['status'] == 'playing', 'Reattaching stopped music'
                 subprocess.run([*map(str, tmux), "kill-server"], env=env, capture_output=True)
                 os.kill(ghostty, signal.SIGTERM)
                 ghostty = None
             (output / "report.json").write_text(json.dumps(summaries, indent=2) + "\n")
             print(json.dumps(summaries, indent=2), flush=True)
         finally:
+            if sys.exc_info()[0] is not None and summaries:
+                (output / 'partial-report.json').write_text(json.dumps(summaries, indent=2) + '\n')
             if trace_terminal:
                 for trace in work.glob('tmux-out-*.log'):
                     shutil.copyfile(trace, output / trace.name)
