@@ -153,6 +153,11 @@ cd android
 ./gradlew connectedDebugAndroidTest  # an isolated API 29+ emulator
 ```
 
+Run the unqualified Gradle tasks above, as CI does: `:app:lintDebug` alone omits
+the bundled decoder module's lint checks. The decoder wrapper's `lint.xml` opts
+into the pinned Media3 release's `UnstableApi`; downloaded upstream
+sources are not patched, and lint remains enabled for both modules.
+
 Unit tests use the same JSON fixtures as the iPhone app, plus a deterministic
 queue and HTTP stubs. Device tests run against their own synthetic MockWebServer
 inside the emulator, with muted audio. They exercise UI imports, local queues,

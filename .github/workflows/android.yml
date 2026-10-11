@@ -52,3 +52,4 @@ jobs:
             android/app/build/outputs/apk/debug/*.apk
             android/app/build/reports/
             android/app/build/outputs/androidTest-results/
+            android/decoder/build/reports/
