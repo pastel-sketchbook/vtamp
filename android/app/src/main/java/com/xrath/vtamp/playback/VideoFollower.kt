@@ -4,7 +4,10 @@ package com.xrath.vtamp.playback
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.view.TextureView
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
+import android.view.SurfaceView
 import androidx.media3.common.*
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -43,6 +46,7 @@ class VideoFollower(
     private var generation = 0
     private var frameTimeMs = Long.MIN_VALUE
     private var currentId: String? = null
+    private var captureGeneration = 0
 
     fun show(surface: PlayerView) {
         view = surface
@@ -156,8 +160,41 @@ class VideoFollower(
     }
 
     private fun holdFrame() {
-        val image = (view?.videoSurfaceView as? TextureView)?.bitmap
-        mutable.update { it.copy(ready = false, still = image ?: it.still) }
+        val hadFrame = mutable.value.ready
+        mutable.update { it.copy(ready = false) }
+        val token = ++captureGeneration
+        val id = currentId
+        val surface = view?.videoSurfaceView as? SurfaceView ?: return
+        if (
+            !hadFrame ||
+                !surface.holder.surface.isValid ||
+                surface.width <= 0 ||
+                surface.height <= 0
+        )
+            return
+        val image = Bitmap.createBitmap(surface.width, surface.height, Bitmap.Config.ARGB_8888)
+        try {
+            // SurfaceView preserves HDR output. Copy asynchronously instead of reading a
+            // TextureView bitmap, and never let an old track/seek replace a newer frame.
+            PixelCopy.request(
+                surface,
+                image,
+                { result ->
+                    if (
+                        result == PixelCopy.SUCCESS &&
+                            token == captureGeneration &&
+                            id == currentId &&
+                            !mutable.value.ready
+                    ) {
+                        mutable.update { it.copy(still = image) }
+                    } else image.recycle()
+                },
+                Handler(Looper.getMainLooper()),
+            )
+        } catch (_: IllegalArgumentException) {
+            // The surface may be destroyed while the activity is being backgrounded.
+            image.recycle()
+        }
     }
 
     private fun failed(message: String, token: Int) {
@@ -187,6 +224,7 @@ class VideoFollower(
 
     fun reset() {
         hide()
+        captureGeneration++
         currentId = null
         mutable.value = VideoState()
     }

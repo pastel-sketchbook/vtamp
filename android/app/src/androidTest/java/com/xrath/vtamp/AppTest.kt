@@ -162,6 +162,40 @@ class AppTest {
     }
 
     @Test
+    fun videoHoldsItsSurfaceFrameAndDiscardsItOnTrackChange() {
+        compose.runOnUiThread { runtime.playNow(server.tracks()[1]) }
+        compose.waitUntil(15000) { runtime.video.state.value.ready }
+        compose.runOnUiThread { runtime.video.hide() }
+        compose.waitUntil(5000) { runtime.video.state.value.still != null }
+        compose.runOnUiThread {
+            val image = runtime.video.state.value.still!!
+            val colors = mutableSetOf<Int>()
+            for (y in 0 until image.height step 10) {
+                for (x in 0 until image.width step 10) colors += image.getPixel(x, y)
+            }
+            assertTrue("The held frame must contain the decoded test pattern", colors.size > 20)
+            assertTrue("Capturing video must leave audio playing", runtime.audio.isPlaying)
+        }
+        onView(isAssignableFrom(PlayerView::class.java)).check { view, error ->
+            if (error != null) throw error
+            runtime.video.show(view as PlayerView)
+        }
+        compose.waitUntil(15000) { runtime.video.state.value.ready }
+        compose.runOnUiThread {
+            // Queue replacement can race with an outstanding asynchronous surface copy.
+            runtime.video.hide()
+            runtime.playNow(server.tracks()[1].copy(id = "clip2", title = "Second clip"))
+        }
+        compose.waitUntil(15000) {
+            runtime.state.value.current?.id == "clip2" && runtime.video.state.value.ready
+        }
+        assertNull(
+            "An old surface copy must not enter a new track",
+            runtime.video.state.value.still,
+        )
+    }
+
+    @Test
     fun nextVideoReplacesTheDisplayedSurfaceWithoutToggling() {
         val clip = server.tracks()[1]
         compose.runOnUiThread {

@@ -79,11 +79,17 @@ pause with an error.
 Saved video reads the server's silent Matroska sidecar without transcoding or
 remuxing. H.264, HEVC, VP9 and AV1 depend on available device decoders; an
 unsupported or missing video falls back to the cover and leaves audio playing.
+Video uses a SurfaceView so Android can handle HDR color and brightness through
+its display compositor; TextureView can produce dark or corrupted colors for
+10-bit HDR files. HDR decoding and display support still depend on the device.
 A separate video ExoPlayer follows the audio clock; synchronization never seeks,
 slows or pauses audio. Cover selection, closing the player, screen locking or
 backgrounding releases video decoding and its network source. On return, the
-last picture remains until a frame catches up to current audio time. Each queue
-entry replaces both the displayed surface and its video player, including Next
+last picture remains until a frame catches up to current audio time. Surface
+snapshots are copied asynchronously with PixelCopy; if the surface has already
+gone away, the cover is shown instead. Old copies cannot replace a new track's
+picture. Each queue entry replaces both the displayed surface and its video
+player, including Next
 and consecutive copies of the same track. Startup and rebuffering catch up by
 adjusting video speed; they do not repeatedly seek and flush the decoder. Video
 that runs ahead waits for audio. Explicit seeks, a paused-frame correction and
