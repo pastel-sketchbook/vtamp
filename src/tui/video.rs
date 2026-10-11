@@ -96,7 +96,7 @@ impl FileTransfers {
             },
         );
     }
-    fn prepare(&mut self, image: &DynamicImage, id: u32) -> Result<(String, FileTransfer)> {
+    fn prepare(&mut self, image: &RgbImage, id: u32) -> Result<(String, FileTransfer)> {
         self.collect();
         super::diagnostics::record(
             "video.file_queue",
@@ -124,13 +124,13 @@ impl FileTransfers {
             }
         }
         let mut file = tempfile::Builder::new()
-            .suffix(".rgba")
+            .suffix(".rgb")
             .tempfile_in(self.directory.path())?;
-        file.write_all(image.to_rgba8().as_raw())?;
+        file.write_all(image.as_raw())?;
         let path = file.into_temp_path();
         let name = BASE64.encode(path.as_os_str().as_bytes());
         let sequence = format!(
-            "\x1b_Ga=T,U=1,t=t,f=32,s={},v={},i={id},q=2;{name}\x1b\\",
+            "\x1b_Ga=T,U=1,t=t,f=24,s={},v={},i={id},q=2;{name}\x1b\\",
             image.width(),
             image.height()
         );
@@ -201,7 +201,7 @@ enum PictureProtocol {
 }
 impl PictureProtocol {
     fn encode(
-        image: DynamicImage,
+        image: &RgbImage,
         graphics: VideoGraphics,
         background: Rgba<u8>,
         id: u32,
@@ -211,14 +211,14 @@ impl PictureProtocol {
         if graphics.kind == ProtocolType::Kitty {
             let transfer = files
                 .filter(|_| graphics.tmux)
-                .map(|files| files.prepare(&image, id))
+                .map(|files| files.prepare(image, id))
                 .transpose()?;
             // Only the placeholder state is needed from ratatui-image for file
             // transport; never encode the full image into an unused base64 string.
             let image = if transfer.is_some() {
                 DynamicImage::new_rgba8(1, 1)
             } else {
-                image
+                DynamicImage::ImageRgb8(image.clone())
             };
             let image = Protocol::Kitty(Kitty::new(
                 image,
@@ -267,7 +267,8 @@ impl PictureProtocol {
                 area,
             })
         } else {
-            let mut protocol = graphics.protocol(image, background, id);
+            let mut protocol =
+                graphics.protocol(DynamicImage::ImageRgb8(image.clone()), background, id);
             protocol.resize_encode(&ratatui_image::Resize::Scale(None), area.into());
             if let Some(Err(error)) = protocol.last_encoding_result() {
                 bail!("{error}");
@@ -428,7 +429,7 @@ impl View {
         view.aspect = Some(16.0 / 9.0);
         view.frame = Some(Picture {
             protocol: PictureProtocol::encode(
-                DynamicImage::new_rgb8(160, 90),
+                &RgbImage::new(160, 90),
                 graphics,
                 Rgba([0; 4]),
                 1,
@@ -696,12 +697,10 @@ struct Decoder {
     child: Child,
     stdout: ChildStdout,
     stderr: ChildStderr,
-    bytes: Vec<u8>,
+    frame: RgbImage,
     filled: usize,
     index: u64,
     start: u64,
-    width: u32,
-    height: u32,
     diagnostic: Vec<u8>,
     last_data: Instant,
     eof: bool,
@@ -758,12 +757,10 @@ impl Decoder {
             child,
             stdout,
             stderr,
-            bytes: vec![0; width as usize * height as usize * 3],
+            frame: RgbImage::new(width, height),
             filled: 0,
             index: 0,
             start,
-            width,
-            height,
             diagnostic: vec![],
             last_data: Instant::now(),
             eof: false,
@@ -790,10 +787,13 @@ impl Decoder {
             }
         }
     }
-    fn read_frame(&mut self) -> Result<Option<DynamicImage>> {
+    // The worker borrows a complete frame until its next read. Keep the storage
+    // even for late frames: catching up must not allocate or copy their pixels.
+    fn read_frame(&mut self) -> Result<bool> {
         self.drain_stderr();
         loop {
-            match self.stdout.read(&mut self.bytes[self.filled..]) {
+            let bytes: &mut [u8] = self.frame.as_mut();
+            match self.stdout.read(&mut bytes[self.filled..]) {
                 Ok(0) => {
                     if self.filled > 0 {
                         bail!("Incomplete video frame");
@@ -807,7 +807,7 @@ impl Decoder {
                             );
                         }
                     }
-                    return Ok(None);
+                    return Ok(false);
                 }
                 Ok(n) => {
                     self.filled += n;
@@ -817,17 +817,15 @@ impl Decoder {
                     if self.last_data.elapsed() > Duration::from_secs(10) {
                         bail!("Video decoder timed out");
                     }
-                    return Ok(None);
+                    return Ok(false);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e.into()),
             }
-            if self.filled == self.bytes.len() {
+            if self.filled == self.frame.as_raw().len() {
                 self.filled = 0;
                 self.index += 1;
-                return Ok(Some(DynamicImage::ImageRgb8(
-                    RgbImage::from_raw(self.width, self.height, self.bytes.clone()).unwrap(),
-                )));
+                return Ok(true);
             }
         }
     }
@@ -981,9 +979,9 @@ fn worker(
                 if r.cancel.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
-                let Some(image) = d.read_frame()? else {
+                if !d.read_frame()? {
                     return Ok(None);
-                };
+                }
                 let timestamp = d.start + (d.index - 1) * 1000 / u64::from(fps);
                 if d.index <= target {
                     continue;
@@ -993,7 +991,7 @@ fn worker(
                     || serde_json::json!({"generation":r.generation,"position_ms":timestamp}),
                 );
                 let protocol = PictureProtocol::encode(
-                    image,
+                    &d.frame,
                     graphics,
                     Rgba(r.key.background),
                     ids[slot],
@@ -1136,17 +1134,9 @@ mod tests {
             tmux: true,
             compress: true,
         };
-        let pixels = image::RgbaImage::from_pixel(160, 90, Rgba([12, 34, 56, 255]));
+        let pixels = RgbImage::from_pixel(160, 90, image::Rgb([12, 34, 56]));
         let encode = |files: &mut FileTransfers| {
-            PictureProtocol::encode(
-                DynamicImage::ImageRgba8(pixels.clone()),
-                graphics,
-                Rgba([0; 4]),
-                42,
-                area,
-                Some(files),
-            )
-            .unwrap()
+            PictureProtocol::encode(&pixels, graphics, Rgba([0; 4]), 42, area, Some(files)).unwrap()
         };
         let unsent = encode(&mut files);
         let unused = files.pending[0].0.to_path_buf();
@@ -1161,7 +1151,7 @@ mod tests {
         assert!(picture.render(area, &mut buffer));
         let first = buffer[(0, 0)].symbol();
         assert!(first.len() < 1024, "pixels must not travel through the PTY");
-        assert!(first.contains("t=t,f=32,s=160,v=90"));
+        assert!(first.contains("t=t,f=24,s=160,v=90"));
         assert!(first.find("t=t").unwrap() < first.find("a=p").unwrap());
         let name = first
             .split_once("q=2;")
@@ -1172,6 +1162,7 @@ mod tests {
             .unwrap();
         let path = PathBuf::from(String::from_utf8(BASE64.decode(name).unwrap()).unwrap());
         assert_eq!(std::fs::read(&path).unwrap(), pixels.as_raw().as_slice());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 160 * 90 * 3);
         drop(picture);
         files.collect();
         assert!(
@@ -1184,15 +1175,15 @@ mod tests {
         assert!(files.pending.is_empty());
         let mut held = vec![];
         for _ in 0..32 {
-            let (_, handed_off) = files.prepare(&DynamicImage::new_rgba8(1, 1), 42).unwrap();
+            let (_, handed_off) = files.prepare(&RgbImage::new(1, 1), 42).unwrap();
             handed_off.hand_off();
             held.push(handed_off);
         }
-        assert!(files.prepare(&DynamicImage::new_rgba8(1, 1), 42).is_err());
+        assert!(files.prepare(&RgbImage::new(1, 1), 42).is_err());
         drop(held);
         // A discarded hidden-pane command must not block all future uploads.
         let oldest = files.pending[0].0.to_path_buf();
-        let (_, newest) = files.prepare(&DynamicImage::new_rgba8(1, 1), 42).unwrap();
+        let (_, newest) = files.prepare(&RgbImage::new(1, 1), 42).unwrap();
         assert!(!oldest.exists());
         assert_eq!(files.pending.len(), 32);
         files.collect_at(Instant::now() + Duration::from_secs(3));
@@ -1219,7 +1210,7 @@ mod tests {
                     compress,
                 };
                 let mut picture = PictureProtocol::encode(
-                    DynamicImage::new_rgb8(160, 90),
+                    &RgbImage::new(160, 90),
                     graphics,
                     Rgba([0; 4]),
                     42,
@@ -1589,12 +1580,11 @@ mod tests {
         );
         assert!(mailbox.packet.lock().unwrap().is_none());
     }
-    #[test]
-    fn decoder_streams_beyond_eight_mib_and_drop_reaps_child() {
+    fn test_decoder(script: &str, width: u32, height: u32) -> (tempfile::TempDir, Decoder) {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let executable = dir.path().join("decoder");
-        std::fs::write(&executable, "#!/usr/bin/python3\nimport sys,time\nfor i in range(1100): sys.stdout.buffer.write(bytes([i%256])*9216)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n").unwrap();
+        std::fs::write(&executable, format!("#!/usr/bin/python3\n{script}")).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let config = Config {
             youtube: crate::import_config::YoutubeConfig {
@@ -1628,11 +1618,11 @@ mod tests {
             tmux: false,
             compress: false,
         };
-        let mut decoder = Decoder::start(
+        let decoder = Decoder::start(
             dir.path(),
             video::Info {
-                width: 64,
-                height: 48,
+                width,
+                height,
                 duration: 60.0,
                 exact_clip: false,
             },
@@ -1642,12 +1632,24 @@ mod tests {
             12,
         )
         .unwrap();
+        (dir, decoder)
+    }
+
+    #[test]
+    fn decoder_streams_beyond_eight_mib_and_drop_reaps_child() {
+        let (_dir, mut decoder) = test_decoder(
+            "import sys,time\nfor i in range(1100): sys.stdout.buffer.write(bytes([i%256])*9216)\nsys.stdout.buffer.flush()\ntime.sleep(60)\n",
+            64,
+            48,
+        );
         let pid = decoder.child.id() as i32;
+        let storage = decoder.frame.as_raw().as_ptr();
         let start = Instant::now();
         for index in 0..1024 {
             loop {
-                if let Some(frame) = decoder.read_frame().unwrap() {
-                    assert_eq!(frame.as_rgb8().unwrap().get_pixel(0, 0).0, [index as u8; 3]);
+                if decoder.read_frame().unwrap() {
+                    assert!(decoder.frame.as_raw().iter().all(|b| *b == index as u8));
+                    assert_eq!(decoder.frame.as_raw().as_ptr(), storage);
                     break;
                 }
                 assert!(start.elapsed() < Duration::from_secs(10));
@@ -1656,5 +1658,77 @@ mod tests {
         }
         drop(decoder);
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "decoder was not reaped");
+    }
+
+    #[test]
+    fn decoder_preserves_partial_reads_and_published_files_while_reusing_pixels() {
+        let (dir, mut decoder) = test_decoder(
+            "import sys,time,pathlib\nbase=pathlib.Path(sys.argv[sys.argv.index('-i')+1])\nsys.stdout.buffer.write(bytes([1,2]));sys.stdout.buffer.flush()\nwhile not (base/'resume').exists(): time.sleep(.001)\nsys.stdout.buffer.write(bytes([3,4,5,6,7,8,9,10,11,12,13]));sys.stdout.buffer.flush()\n",
+            2,
+            1,
+        );
+        let start = Instant::now();
+        while decoder.filled != 2 {
+            assert!(!decoder.read_frame().unwrap());
+            assert!(start.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!decoder.read_frame().unwrap());
+        assert_eq!(decoder.index, 0);
+        std::fs::write(dir.path().join("resume"), []).unwrap();
+        while !decoder.read_frame().unwrap() {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut files = FileTransfers::new().unwrap();
+        let (_, transfer) = files.prepare(&decoder.frame, 42).unwrap();
+        let path = files.pending[0].0.to_path_buf();
+        assert_eq!(std::fs::read(&path).unwrap(), [1, 2, 3, 4, 5, 6]);
+        while !decoder.read_frame().unwrap() {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(decoder.index, 2);
+        assert_eq!(decoder.frame.as_raw(), &[7, 8, 9, 10, 11, 12]);
+        assert_eq!(std::fs::read(&path).unwrap(), [1, 2, 3, 4, 5, 6]);
+        loop {
+            match decoder.read_frame() {
+                Err(error) => {
+                    assert_eq!(error.to_string(), "Incomplete video frame");
+                    break;
+                }
+                Ok(complete) => assert!(!complete),
+            }
+            assert!(start.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(1));
+        }
+        drop(transfer);
+    }
+
+    #[test]
+    fn decoder_reports_clean_eof_and_process_failure() {
+        for (script, failed) in [("pass\n", false), ("import sys\nsys.exit(1)\n", true)] {
+            let (_dir, mut decoder) = test_decoder(script, 2, 1);
+            let start = Instant::now();
+            loop {
+                let result = decoder.read_frame();
+                if decoder.eof {
+                    if failed {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .starts_with("Decoder failed:")
+                        );
+                    } else {
+                        assert!(!result.unwrap());
+                    }
+                    break;
+                }
+                assert!(!result.unwrap());
+                assert!(start.elapsed() < Duration::from_secs(10));
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 }

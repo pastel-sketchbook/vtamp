@@ -482,6 +482,9 @@ while True:
                                   '-t', 'video', '-n', 'reattached', start], env=env)
                 reattached_text = lambda: run([*tmux, 'capture-pane', '-p', '-t', reattached], env=env)
                 wait_for(lambda: '\U0010eeee' in reattached_text(), 'video on reattach')
+                # The first placeholder can precede the terminal's complete
+                # first draw; let a few video frames settle before pixel QA.
+                time.sleep(.5)
                 run(['screencapture', '-x', '-o', '-l', window['id'], output / f'reattached-{fps}.png'])
                 run([*tmux, 'send-keys', '-t', reattached, 'q'], env=env)
                 assert vt('status')['status'] == 'playing', 'Reattaching stopped music'

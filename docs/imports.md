@@ -311,6 +311,11 @@ and fall back to the cover; toggle video off/on to retry.
 Remote video streaming and general video-file imports are not supported.
 
 Video buffers and terminal image IDs are bounded; delayed frames are dropped.
+The decoder reuses its RGB buffer, including when skipping late frames. Local
+tmux Kitty file transport writes those RGB pixels directly, without an extra
+frame copy or alpha-channel conversion; this reduces frame file bytes by 25%
+without changing image quality. Direct Kitty and Sixel retain their existing
+encoding paths.
 The default frame rate is 15 fps. `VTAMP_VIDEO_FPS=8`, `12`, or `15` allows local
 comparisons (accepted range 1–30; invalid values use the default). This changes
 rendering only, not the downloaded file or music playback.

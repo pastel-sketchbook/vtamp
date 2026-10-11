@@ -17,7 +17,13 @@ throughput problem has not been identified conclusively.
 - Other protocols and Kitty outside tmux retain their existing transport. A
   failed temporary-directory setup falls back to direct transmission.
 
-The video worker writes original RGBA pixels to a private temporary directory.
+The video worker writes original RGB pixels to a private temporary directory.
+FFmpeg fills a reusable RGB buffer; the worker borrows it to write each frame
+without a full-frame copy or RGB-to-RGBA conversion. Kitty `f=24` preserves the
+same opaque pixels with 25% fewer file bytes than RGBA. Every submitted frame
+still has its own file, so decoding the next frame cannot overwrite an image
+the terminal has yet to consume. Late frames reuse the buffer without copying;
+direct Kitty and Sixel output take an owned copy only for frames being encoded.
 Kitty `t=t` commands carry only the base64-encoded file path and image dimensions;
 the usual virtual placement and Unicode placeholders position the picture. No
 resolution reduction is involved. Ghostty 1.3.1 supports this transfer method.

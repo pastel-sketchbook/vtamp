@@ -566,7 +566,8 @@ input caret. Neither uploads nor subsequent text-only frames open a pane hold.
 The application writes this stream in pieces of at most 16 KiB; these write
 boundaries do not change the Kitty commands or the 256 KiB tmux packet limit.
 Video in local tmux Kitty sessions uses temporary-file transmission by default.
-The video worker writes the original pixels to a private temporary directory;
+The video worker writes original RGB pixels from a reusable decoder buffer to a
+private temporary directory, without an extra frame copy or expansion to RGBA;
 only short file-path and placement commands travel through the PTY. The terminal
 removes consumed files, and the worker cleans skipped or retired frames and
 removes the directory on shutdown. Current frames are protected; at most 32 files
@@ -1237,9 +1238,10 @@ macOS with Ghostty and installed FFmpeg/FFprobe/tmux/Swift. It generates synthet
 media, uses a fake downloader with real FFmpeg, and runs muted isolated servers
 and private tmux sockets. No network, browser cookies, LLM, or personal library is
 used. It compares 8/12/15 fps, records Kitty uploads, output bandwidth,
-Ghostty/tmux CPU time, input response times and RSS, checks fullscreen controls,
-and captures real pixels for manual inspection under `/tmp`. Use `--fps 12` for a
-single rate or `--output /tmp/vtamp-video-check` to choose the evidence directory.
+Ghostty/tmux/TUI/FFmpeg CPU time, input response times and TUI RSS, checks
+fullscreen controls and pane swaps, and captures real pixels under `/tmp` for
+manual inspection. Use `--fps 12` for a single rate or
+`--output /tmp/vtamp-video-check` to choose the evidence directory.
 Add `--trace-terminal` to check input cursor motion in tmux's actual output to
 Ghostty and retain the raw trace. Pane captures alone cannot detect cursor resets
 caused by graphics passthrough.
