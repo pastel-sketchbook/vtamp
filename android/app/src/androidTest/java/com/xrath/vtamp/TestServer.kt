@@ -17,6 +17,8 @@ class TestServer : AutoCloseable {
     val requests = CopyOnWriteArrayList<String>()
     val videoRequests = AtomicInteger()
     @Volatile var videoDelayMs = 0L
+    @Volatile var radioDelayMs = 0L
+    val radioResolutions = AtomicInteger()
     var submitted: JsonObject? = null
     private var imported = false
     private val assets = InstrumentationRegistry.getInstrumentation().context.assets
@@ -99,6 +101,33 @@ class TestServer : AutoCloseable {
                             )
                         path.endsWith("/audio") || path == "/radio" ->
                             file(request, audio, "audio/wav")
+                        path == "/station" ->
+                            MockResponse()
+                                .setResponseCode(302)
+                                .setHeader(
+                                    "Location",
+                                    "/broadcast/live?session=${radioResolutions.incrementAndGet()}",
+                                )
+                                .setHeadersDelay(
+                                    radioDelayMs,
+                                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                                )
+                        path == "/broadcast/live" ->
+                            MockResponse()
+                                .setHeader("Content-Type", "application/x-mpegURL; charset=UTF-8")
+                                .setBody(
+                                    "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n" +
+                                        "#EXT-X-MEDIA-SEQUENCE:0\n" +
+                                        (0..9).joinToString("") {
+                                            "#EXTINF:4.032,\nsegment$it.aac\n"
+                                        }
+                                )
+                        path.startsWith("/broadcast/segment") ->
+                            file(
+                                request,
+                                assets.open("radio-tone.aac").use { it.readBytes() },
+                                "audio/aac",
+                            )
                         path.endsWith("/video") -> {
                             videoRequests.incrementAndGet()
                             file(

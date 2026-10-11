@@ -16,6 +16,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.xrath.vtamp.*
 import com.xrath.vtamp.model.Track
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -41,6 +42,11 @@ data class PlaybackState(
 
 class PlaybackRuntime(private val context: Context, private val store: AppStore) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val http =
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build()
     val queue = QueueMachine()
     val audio: ExoPlayer =
         ExoPlayer.Builder(
@@ -48,16 +54,7 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
                 DefaultRenderersFactory(context)
                     .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON),
             )
-            .setMediaSourceFactory(
-                DefaultMediaSourceFactory(
-                    OkHttpDataSource.Factory(
-                        OkHttpClient.Builder()
-                            .connectTimeout(10, TimeUnit.SECONDS)
-                            .readTimeout(20, TimeUnit.SECONDS)
-                            .build()
-                    )
-                )
-            )
+            .setMediaSourceFactory(DefaultMediaSourceFactory(OkHttpDataSource.Factory(http)))
             .setLoadControl(
                 DefaultLoadControl.Builder().setBufferDurationsMs(15000, 50000, 1500, 3000).build()
             )
@@ -78,6 +75,8 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
     val sessionPlayer = SessionPlayer()
     val video = VideoFollower(context, this, store)
     private var retry: Job? = null
+    private var resolution: Job? = null
+    private var resolving = false
     private var retries = 0
     private var reconnecting = false
     private var failures = 0
@@ -115,8 +114,7 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
                                     Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS,
                                 )
                     ) {
-                        audio.stop()
-                        loaded = null
+                        pause()
                     }
                     publish()
                 }
@@ -309,10 +307,51 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
         }
         if (loaded != entry.id) video.reset()
         loaded = entry.id
+        if (entry.track.live) {
+            error = null
+            audio.stop()
+            audio.clearMediaItems()
+            resolving = true
+            audio.playWhenReady = autoplay
+            resolution = scope.launch {
+                try {
+                    val source = resolveRadio(http, uri)
+                    resolving = false
+                    prepare(entry, source.uri, autoplay, source.mimeType)
+                } catch (failure: IOException) {
+                    resolving = false
+                    if (
+                        autoplay &&
+                            (failure !is RadioHttpException ||
+                                failure.status >= 500 ||
+                                failure.status == 408 ||
+                                failure.status == 429)
+                    ) {
+                        reconnect()
+                    } else {
+                        error = "Unsupported or unavailable stream. Check its URL."
+                        pause()
+                    }
+                }
+                publish()
+            }
+        } else {
+            prepare(entry, uri, autoplay)
+        }
+        publish()
+    }
+
+    private fun prepare(
+        entry: QueueEntry,
+        uri: String,
+        autoplay: Boolean,
+        mimeType: String? = null,
+    ) {
         audio.setMediaItem(
             MediaItem.Builder()
                 .setMediaId(entry.id)
                 .setUri(uri)
+                .setMimeType(mimeType)
                 .setMediaMetadata(metadata(entry.track))
                 .build()
         )
@@ -339,6 +378,9 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
     }
 
     private fun cancelRetry() {
+        resolution?.cancel()
+        resolution = null
+        resolving = false
         retry?.cancel()
         retry = null
         reconnecting = false
@@ -366,7 +408,7 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
 
     private fun publish(notifySession: Boolean = true) {
         val playing = reconnecting || audio.playWhenReady
-        val buffering = reconnecting || audio.playbackState == Player.STATE_BUFFERING
+        val buffering = resolving || reconnecting || audio.playbackState == Player.STATE_BUFFERING
         val live = queue.current?.track?.live == true
         mutable.value =
             PlaybackState(
@@ -458,7 +500,7 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
                 }
             val playbackState =
                 if (playlist.isEmpty()) Player.STATE_IDLE
-                else if (reconnecting) Player.STATE_BUFFERING else audio.playbackState
+                else if (resolving || reconnecting) Player.STATE_BUFFERING else audio.playbackState
             return State.Builder()
                 .setAvailableCommands(commands.build())
                 .setPlaylist(playlist)

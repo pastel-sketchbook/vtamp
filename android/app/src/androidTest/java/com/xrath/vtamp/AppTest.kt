@@ -333,6 +333,65 @@ class AppTest {
     }
 
     @Test
+    fun redirectedHlsRadioPlaysAndResolvesAgainOnResume() {
+        val station = server.tracks()[2].copy(url = server.base.removeSuffix("/api") + "/station")
+        compose.runOnUiThread { runtime.playNow(station) }
+        waitForRadioAudio()
+        compose.runOnUiThread {
+            assertTrue(runtime.audio.isPlaying)
+            assertNull(runtime.state.value.error)
+            assertNull(runtime.state.value.duration)
+            assertEquals(station.url, runtime.queue.current!!.track.url)
+            runtime.pause()
+        }
+        val resolutions = server.radioResolutions.get()
+        compose.runOnUiThread { runtime.play() }
+        waitForRadioAudio()
+        assertTrue(server.radioResolutions.get() > resolutions)
+        assertTrue(server.requests.any { it.startsWith("GET /broadcast/segment") })
+    }
+
+    private fun waitForRadioAudio() {
+        // HLS starts at a nonzero live offset before audio is ready. Wait for real playback and
+        // clock advancement, not just a position greater than zero.
+        compose.waitUntil(15000) {
+            var playing = false
+            compose.runOnUiThread { playing = runtime.audio.isPlaying }
+            playing
+        }
+        val position = runtime.state.value.position
+        compose.waitUntil(5000) { runtime.state.value.position > position + 500 }
+    }
+
+    @Test
+    fun pendingRadioResolutionCannotRestartPausedOrReplacedPlayback() {
+        server.radioDelayMs = 1500
+        val station = server.tracks()[2].copy(url = server.base.removeSuffix("/api") + "/station")
+        compose.runOnUiThread { runtime.playNow(station) }
+        compose.waitUntil(5000) { server.radioResolutions.get() == 1 }
+        compose.runOnUiThread { runtime.pause() }
+        val pausedAt = android.os.SystemClock.elapsedRealtime()
+        compose.waitUntil(5000) { android.os.SystemClock.elapsedRealtime() - pausedAt > 2000 }
+        compose.runOnUiThread {
+            assertFalse(runtime.state.value.playing)
+            assertEquals(Player.STATE_IDLE, runtime.audio.playbackState)
+            assertNull(runtime.audio.currentMediaItem)
+            runtime.play()
+        }
+        compose.waitUntil(5000) { server.radioResolutions.get() == 2 }
+        compose.runOnUiThread { runtime.playNow(server.tracks().first()) }
+        compose.waitUntil(10000) { runtime.state.value.position > 2500 }
+        compose.runOnUiThread {
+            assertEquals("tone", runtime.state.value.current!!.id)
+            assertTrue(runtime.audio.isPlaying)
+            assertTrue(
+                runtime.audio.currentMediaItem!!.localConfiguration!!.uri.path!!.endsWith("/audio")
+            )
+        }
+        assertFalse(server.requests.any { it.startsWith("GET /broadcast/") })
+    }
+
+    @Test
     fun radioPauseDisconnectsAndResumeRejoins() {
         compose.runOnUiThread { runtime.playNow(server.tracks()[2]) }
         compose.waitUntil(10000) { runtime.state.value.position > 500 }

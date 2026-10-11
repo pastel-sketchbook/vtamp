@@ -75,7 +75,12 @@ Files are streamed from track-ID URLs with HTTP Range support. AAC, MP3,
 FLAC, WAV, Ogg Vorbis/Opus use Media3 and platform decoders. ALAC uses the bundled
 FFmpeg decoder. There is no offline download or server loudness correction.
 Radio connects directly to its registered URL (including HLS), not through the
-server. It has no seek slider or natural queue advancement. Pause disconnects;
+server. Each connection resolves redirects and checks the response type and
+final URL before selecting HLS or ordinary audio playback, so station gateway
+URLs without a `.m3u8` suffix also work. Resolved URLs, including temporary
+tokens, are never saved; resume and reconnect resolve the registered URL again.
+Pause or a track change cancels any pending connection. Radio has no seek slider
+or natural queue advancement. Pause disconnects;
 resume joins the live broadcast. Network disconnects retry after 1, 2, 4, 8, 16,
 then 30 seconds, cancelled by pause/clear/track changes. Unsupported streams
 pause with an error.
@@ -151,7 +156,8 @@ cd android
 Unit tests use the same JSON fixtures as the iPhone app, plus a deterministic
 queue and HTTP stubs. Device tests run against their own synthetic MockWebServer
 inside the emulator, with muted audio. They exercise UI imports, local queues,
-background playback, radio disconnect/resume, video suspension/catch-up,
+background playback, radio redirects and disconnect/resume, cancellation during
+station resolution, video suspension/catch-up,
 fullscreen continuity, and actual AAC/ALAC/WAV/H.264/VP9 decoding. They never
 submit imports or commands to a personal server. CI configures API 29 and API 36
 emulator runs; an unexecuted CI
@@ -163,6 +169,14 @@ not personal footage. It is 60 seconds, 160×90 at 10 fps, with eight-second GOP
 ```sh
 ffmpeg -f lavfi -i testsrc2=size=160x90:rate=10 -t 60 -c:v libx264 \
   -preset veryfast -crf 35 -g 80 -bf 0 -pix_fmt yuv420p -an resume-h264.mkv
+```
+
+`src/androidTest/assets/radio-tone.aac` is a synthetic four-second 440 Hz tone
+used as the segment of a local HLS radio fixture:
+
+```sh
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=4' \
+  -c:a aac -b:a 32k -f adts radio-tone.aac
 ```
 
 For an explicitly authorized read-only live check, a **debug** build accepts:
