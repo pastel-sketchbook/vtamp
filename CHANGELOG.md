@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-10-11
+
+YouTube excerpts keep audio and video in sync, and the iPhone Import screen
+adds a video choice and paginated history. Terminal video uses less copying,
+and live radio gains a spectrum on macOS 27.
+
 ### Added
 
 - The TUI spectrum works for live radio when the server runs macOS 27 or newer.
@@ -11,10 +17,45 @@
   panel names the requirement instead of an unexplained empty graph.
 - Spectrum frames may carry an `unavailable` reason. The field is additive
   within protocol 14.
+- `imports_page` provides cursor-based import history with a separate snapshot
+  of all active jobs. The HTTP server advertises `imports_pagination`; the
+  iPhone app loads 20 entries at a time and supports older protocol-14 servers.
+- The iPhone Import screen offers **Save video (up to 480p)** for individual
+  videos, excerpts, and playlists. The choice defaults to off and resets after
+  a successful submission; failed submissions preserve the draft.
+
+### Changed
+
+- The Import URL field uses a neutral placeholder and the standard iOS paste
+  menu, with no separate Paste button.
+- Kitty file transport reuses RGB frame buffers and writes RGB files directly,
+  avoiding an RGBA conversion and reducing temporary frame-file size.
+
+### Fixed
+
+- Video excerpts now encode the requested interval to H.264 with a zero-based
+  clock, keeping the picture aligned with the audio instead of retaining
+  keyframe preroll. Full-video imports still preserve the source codec.
+- Explicitly re-importing an older excerpt with video repairs its timing and
+  stale audio chapters while preserving track IDs, metadata overrides, and Queue
+  entries. Failed repairs leave the existing media available.
+- Returning to iPhone video playback holds the last picture while decoding
+  catches up to the audio, preventing a burst of old frames and preserving
+  full-screen orientation.
 
 ### Upgrade notes
 
-- Restart the server with the new binary and reattach for the radio spectrum.
+- Protocol remains **14**, database version **9**, and archive format **2**.
+  The API additions are backward compatible; no database migration is needed
+  when upgrading from v0.5.1.
+- Restart the server with the new binary when convenient to enable cursor
+  paging, corrected excerpt imports, and the radio spectrum, then reattach TUIs.
+  Installing a new binary does not replace a running server.
+- Accurate video excerpts require FFmpeg with libx264. Existing excerpts are
+  repaired only by an explicit re-import with video, never at startup.
+- Radio spectrum requires macOS 27 or newer. Linux remains headless-only, with
+  ARM64 release builds tested on Ubuntu 24.04 (glibc 2.39+).
+- The iPhone app is built separately from `ios/` and is not a release asset.
 
 ## [0.5.1] — 2026-10-09
 
@@ -403,7 +444,8 @@ easier and fixes live-radio media keys and slow LLM CLI startup.
   playback, relay, media keys, or radio. Intel Macs and other Linux architectures
   build from source.
 
-[Unreleased]: https://github.com/rath/vtamp/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/rath/vtamp/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/rath/vtamp/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/rath/vtamp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/rath/vtamp/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/rath/vtamp/compare/v0.4.2...v0.4.3
