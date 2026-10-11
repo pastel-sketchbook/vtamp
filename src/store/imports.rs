@@ -54,6 +54,45 @@ impl Store {
             .map(|r| Ok(serde_json::from_str(&r?)?))
             .collect()
     }
+    pub fn imports_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::imports::ImportsPage> {
+        let before = cursor
+            .map(|cursor| {
+                cursor
+                    .strip_prefix("v1:")
+                    .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| ApiError::new("invalid_cursor", "Invalid imports page cursor"))
+            })
+            .transpose()?;
+        let limit = limit.clamp(1, 100);
+        let rows = self.db.prepare(
+            "SELECT rowid,json FROM import_jobs WHERE (?1 IS NULL OR rowid < ?1) ORDER BY rowid DESC LIMIT ?2",
+        )?.query_map(params![before, (limit + 1) as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?.collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = (rows.len() > limit).then(|| format!("v1:{}", rows[limit - 1].0));
+        let jobs = rows
+            .into_iter()
+            .take(limit)
+            .map(|(_, json)| serde_json::from_str(&json))
+            .collect::<Result<Vec<_>, _>>()?;
+        let active_jobs = self
+            .db
+            .prepare("SELECT json FROM import_jobs WHERE finished_ms IS NULL ORDER BY rowid DESC")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .map(|json| Ok(serde_json::from_str(&json?)?))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(crate::imports::ImportsPage {
+            jobs,
+            next_cursor,
+            active_jobs,
+        })
+    }
     pub fn import_items(&self, id: &str, offset: usize, limit: usize) -> Result<Vec<ImportItem>> {
         self.db.prepare("SELECT json FROM import_items WHERE job_id=?1 ORDER BY position LIMIT ?2 OFFSET ?3")?.query_map(params![id,limit.clamp(1,1000) as i64,offset.min(i64::MAX as usize) as i64],|r|r.get::<_,String>(0))?.map(|r|Ok(serde_json::from_str(&r?)?)).collect()
     }
@@ -480,6 +519,107 @@ pub(super) fn migrate_albums(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_pages_keep_their_boundary_across_inserts_and_deletes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("state.db")).unwrap();
+        let request = ImportRequest::default();
+        let empty = store.imports_page(None, 20).unwrap();
+        assert!(empty.jobs.is_empty());
+        assert!(empty.next_cursor.is_none());
+        let active = ImportJob::new(&request);
+        store.create_import(&active, &request).unwrap();
+        let mut ids = vec![active.job_id.clone()];
+        for _ in 0..44 {
+            let mut job = ImportJob::new(&request);
+            store.create_import(&job, &request).unwrap();
+            job.finish("completed");
+            store.save_import(&job, None).unwrap();
+            ids.push(job.job_id);
+        }
+        ids.reverse();
+        let first = store.imports_page(None, 20).unwrap();
+        assert_eq!(
+            first.jobs.iter().map(|j| &j.job_id).collect::<Vec<_>>(),
+            ids[..20].iter().collect::<Vec<_>>()
+        );
+        assert_eq!(first.active_jobs.len(), 1);
+        assert_eq!(first.active_jobs[0].job_id, active.job_id);
+        // The cursor is a boundary, not a lookup of the previous page's last job.
+        store
+            .db
+            .execute("DELETE FROM import_jobs WHERE id=?1", [&ids[19]])
+            .unwrap();
+        store
+            .create_import(&ImportJob::new(&request), &request)
+            .unwrap();
+        let second = store
+            .imports_page(first.next_cursor.as_deref(), 20)
+            .unwrap();
+        assert_eq!(
+            second.jobs.iter().map(|j| &j.job_id).collect::<Vec<_>>(),
+            ids[20..40].iter().collect::<Vec<_>>()
+        );
+        let last = store
+            .imports_page(second.next_cursor.as_deref(), 20)
+            .unwrap();
+        assert_eq!(
+            last.jobs.iter().map(|j| &j.job_id).collect::<Vec<_>>(),
+            ids[40..].iter().collect::<Vec<_>>()
+        );
+        assert!(last.next_cursor.is_none());
+        assert_eq!(store.imports_page(None, 0).unwrap().jobs.len(), 1);
+        assert_eq!(store.import_jobs().unwrap().len(), 45);
+        for cursor in [
+            "",
+            "garbage",
+            "v2:3",
+            "v1:0",
+            "v1:-1",
+            "v1:+1",
+            "v1:9223372036854775808",
+        ] {
+            let error = store.imports_page(Some(cursor), 20).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<ApiError>().unwrap().code,
+                "invalid_cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn import_pages_respect_retention_and_page_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&directory.path().join("state.db")).unwrap();
+        let request = ImportRequest::default();
+        for _ in 0..105 {
+            let mut job = ImportJob::new(&request);
+            store.create_import(&job, &request).unwrap();
+            job.finish("completed");
+            store.save_import(&job, None).unwrap();
+        }
+        for _ in 0..32 {
+            store
+                .create_import(&ImportJob::new(&request), &request)
+                .unwrap();
+        }
+        let first = store.imports_page(None, usize::MAX).unwrap();
+        assert_eq!(first.jobs.len(), 100);
+        assert_eq!(first.active_jobs.len(), 32);
+        let last = store
+            .imports_page(first.next_cursor.as_deref(), 100)
+            .unwrap();
+        assert_eq!(last.jobs.len(), 32);
+        assert!(last.next_cursor.is_none());
+        assert!(
+            store
+                .imports_page(Some("v1:1"), 20)
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
+    }
 
     #[test]
     fn legacy_import_titles_recover_locally_without_changing_outcomes() {

@@ -187,6 +187,20 @@ restores the files and keeps Queue and playback unchanged; server startup
 recovers an interrupted deletion. If final cleanup fails, the command returns a
 warning and startup retries that cleanup. This uses the existing database schema.
 
+## iPhone imports
+
+The Import tab accepts a YouTube URL through the normal iOS paste menu.
+**Save video (up to 480p)** is off by default and applies to a single video,
+an excerpt, or every entry of a whole playlist. Successful submission clears the
+form and resets video saving; errors keep the draft. Retrying a historical job
+uses that job's original video choice.
+
+Recent imports reveal 20 jobs at a time while scrolling. New servers provide
+cursor pages and independent progress for all active jobs; older servers use
+local paging of their existing bounded history. A page error offers Retry without
+losing the visible list. See [the iPhone app](../ios/README.md) for its connection
+and validation workflow.
+
 ## TUI imports
 
 In the TUI, press `a` and paste a URL into the existing add prompt. YouTube URLs

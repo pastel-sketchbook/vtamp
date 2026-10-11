@@ -73,6 +73,18 @@ impl Runtime {
                         .collect::<Vec<_>>(),
                 )
             })),
+            Command::ImportsPage { cursor, limit } => Some(
+                store
+                    .imports_page(cursor.as_deref(), *limit)
+                    .map(|mut page| {
+                        for job in page.jobs.iter_mut().chain(&mut page.active_jobs) {
+                            if let Some(live) = self.live.get(&job.job_id) {
+                                *job = live.clone();
+                            }
+                        }
+                        Reply::success(page)
+                    }),
+            ),
             Command::ImportStatus { id, offset, limit } => {
                 Some(store.import_status(id, *offset, *limit).map(|mut value| {
                     if let Some(j) = self.live.get(id) {
@@ -367,4 +379,56 @@ pub(super) fn update_queue_metadata(
     }
     let _ = events.send(Event::LibraryChanged);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_pages_overlay_live_progress_without_changing_legacy_replies() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            data: directory.path().into(),
+            runtime: directory.path().join("run"),
+            cache: directory.path().join("cache"),
+        };
+        let mut store = Store::open(&paths.database()).unwrap();
+        let request = ImportRequest::default();
+        let mut job = ImportJob::new(&request);
+        store.create_import(&job, &request).unwrap();
+        let mut runtime = Runtime::new(&store).unwrap();
+        job.revision += 1;
+        job.progress.bytes = Some(1234);
+        runtime.live.insert(job.job_id.clone(), job.clone());
+        let (events, _) = broadcast::channel(4);
+        let page = runtime
+            .command(
+                &Command::ImportsPage {
+                    cursor: None,
+                    limit: 20,
+                },
+                &paths,
+                &mut store,
+                &events,
+            )
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert_eq!(page["jobs"], json!([job]));
+        assert_eq!(page["active_jobs"], json!([job]));
+        let legacy = runtime
+            .command(&Command::Imports, &paths, &mut store, &events)
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert_eq!(legacy, json!([job]));
+        assert_ne!(
+            store.import_job(&job.job_id).unwrap().revision,
+            job.revision,
+            "paging never writes progress or starts work"
+        );
+    }
 }

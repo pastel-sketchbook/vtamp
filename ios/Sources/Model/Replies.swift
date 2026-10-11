@@ -20,6 +20,7 @@ struct ServerDescriptor: Decodable, Equatable, Sendable {
     let apiUrl: String?
     let protocolVersion: Int
     let importAvailable: Bool
+    let importsPagination: Bool?
 }
 
 /// A `library_list` page.

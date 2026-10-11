@@ -38,15 +38,19 @@ final class VtampClient: Sendable {
     let baseURL: URL
     private let session: URLSession
 
-    init(baseURL: URL) {
+    init(baseURL: URL, session: URLSession? = nil) {
         self.baseURL = baseURL
+        if let session {
+            self.session = session
+            return
+        }
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 20
         configuration.httpMaximumConnectionsPerHost = 4
         // Covers revalidate with ETag; a 304 costs a round trip, not the image.
         configuration.urlCache = URLCache(memoryCapacity: 8 << 20, diskCapacity: 64 << 20)
         configuration.requestCachePolicy = .useProtocolCachePolicy
-        session = URLSession(configuration: configuration)
+        self.session = URLSession(configuration: configuration)
     }
 
     static let decoder: JSONDecoder = {

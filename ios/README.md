@@ -34,8 +34,23 @@ such as `music-box.tailnet.ts.net:8700` work too.
 | --- | --- |
 | Library | Search by title, artist, or album and filter by kind, 200 tracks per page. Tapping a track plays it now, after the current track, keeping the rest of the queue, and opens the player; swipe or long-press for **Play Next** and **Add to Queue**. |
 | Queue | **This iPhone**: the phone's queue, with reordering, deletion, and Clear. **Server**: the server's Queue and what it is playing, read-only; tapping an entry plays the server's Queue from there on the phone. |
-| Import | A YouTube URL, an optional Start and End (seconds, `M:SS`, or `H:MM:SS`), and the whole playlist when the URL names one. The server runs yt-dlp; progress, Cancel, Retry, and Play for finished jobs follow. Shown only when the server has yt-dlp. |
+| Import | A YouTube URL with native paste, optional **Save video (up to 480p)**, Start and End (seconds, `M:SS`, or `H:MM:SS`), and the whole playlist when the URL names one. Recent imports load 20 at a time as you scroll, with progress, Cancel, Retry, and Play for finished jobs. Shown only when the server has yt-dlp. |
 | Settings | The server address and what the server reports about itself. Besides the address, the app saves only the Cover / Video choice and the shuffle and repeat settings. |
+
+Video saving defaults to off for each new import. It applies to single videos,
+excerpts, and whole playlists; a successful submission resets it, while a failed
+submission keeps the draft. Retry of an existing job preserves that job's original
+video choice. Use the URL field's standard iOS paste menu; there is no separate
+Paste button.
+
+Recent imports use the server's cursor API when `imports_pagination` is advertised.
+Older protocol-14 servers still work: the app fetches their bounded history and
+reveals it 20 at a time locally. Progress polling continues from every tab (once
+a second while a job is live, otherwise every ten seconds), including jobs outside
+the visible page. Completion or new tracks refresh the Library. Loading an older
+page never collapses the revealed history; a failed page keeps its cursor and
+shows Retry. Server changes discard the old history and pending replies. The
+server retains 100 terminal reports and at most 32 queued/running jobs.
 
 Choosing a track to play, or tapping the bar above the tabs, opens the
 player: the cover (or the saved video) over the cover's blurred colors, the
@@ -184,6 +199,15 @@ seconds in both portrait and full-screen video, checks continued audio and
 stable layout, and attaches before/return/playing screenshots. Without that
 fixture this case is skipped. Timestamp admission and cancellation are covered
 separately by renderer unit tests; screenshots alone do not prove smooth motion.
+
+`ImportUITests` uses a separate `TEST_RUNNER_VTAMP_UITEST_IMPORT_SERVER` URL and
+skips without it. Seed that isolated server with 65 synthetic completed jobs
+named `Import history 001` through `Import history 065`, oldest first, and fake
+download tools that never access the network. The test submits one video-enabled
+job, checks native paste and draft reset, scrolls through all history pages, and
+attaches light and dark/large-text screenshots. It does not prove a real YouTube
+download or audible playback. Never seed or run this test against a personal
+listening server.
 
 To point a manual simulator run at a server, launch with
 `SIMCTL_CHILD_VTAMP_SERVER=http://127.0.0.1:8711/api`; `SIMCTL_CHILD_VTAMP_MUTED=1`

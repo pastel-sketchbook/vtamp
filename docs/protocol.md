@@ -377,7 +377,7 @@ address as usual. For other ports, supply an explicit `IP:PORT`;
 
 | Route | Answer |
 | --- | --- |
-| `GET /api/server` | Envelope whose `data` is `server_info` plus `protocol_version`, `import_available`, and `cast` (`CastInfo`). |
+| `GET /api/server` | Envelope whose `data` is `server_info` plus `protocol_version`, `import_available`, `imports_pagination`, and `cast` (`CastInfo`). |
 | `POST /api/rpc` | The body is a socket `Request` (`{"version":14,"request":{...}}`, at most 1 MiB); the answer is the socket `Reply`. |
 | `GET`/`HEAD /api/library/ID/audio` | The audio file of Library track `ID`. |
 | `GET`/`HEAD /api/library/ID/cover` | The cover image of Library track `ID`. |
@@ -394,7 +394,7 @@ commands that name server paths (`library_add`, `library_remove`,
 `archive_import`, `stream_preview`, `play_direct` with `path`, and `play` or
 `queue_add` with non-empty `paths`) fail with `not_available_over_http`: over
 HTTP, files are chosen by track ID. There is no event stream yet; poll `now`,
-`queue_page`, or `imports`.
+`queue_page`, or `imports_page` (`imports` on older servers).
 
 File routes look the track up with `library_track` and serve only the catalog's
 own path, never a path from the URL. `ID` must be a track ID; a missing track is
@@ -663,6 +663,7 @@ automatically. See [configuration and workflows](imports.md).
 | `import_lookup` | `video_ids` (up to 10,000), optional `range` | IDs whose exact resource has an existing file; omitted range means full source |
 | `import_start` | `request` | `job_id`, `status: queued` |
 | `imports` | none | Recent jobs, newest first |
+| `imports_page` | optional `cursor`, `limit` (default 20, clamped to 1–100) | `jobs`, nullable `next_cursor`, and `active_jobs` |
 | `import_status` | `id`, `offset`, `limit` (1–1000) | `job`, paginated `items`, `offset` |
 | `import_cancel` | `id` | Updated job; running jobs enter `cancelling` |
 | `import_retry` | `id` | New job for unfinished retryable entries |
@@ -670,6 +671,18 @@ automatically. See [configuration and workflows](imports.md).
 | `cover_status` | `id` | Job counters and capped failure reports |
 | `library_edit` | `id`, nullable `title`, `artist`, `album` | Updated Track |
 | `library_retag` | `id` | Updated Track; manual overrides remain authoritative |
+
+`imports_page` is an additive protocol-14 command. `/api/server` advertises
+`imports_pagination: true`; older servers omit it. The existing `imports` array
+and watch events are unchanged. `jobs` follows the same newest-insertion-first
+order, with live progress overlaid. `active_jobs` independently includes every
+queued/running job (at most 32), even outside the requested history page.
+Pass the opaque `next_cursor` unchanged to get older jobs; null means the end.
+New insertions do not shift the boundary, and retention deleting the boundary
+job does not invalidate it. Malformed cursors return `invalid_cursor`.
+Cursors belong to that server's database; discard them when switching servers.
+Queries are read-only and do not start work or change retention. No database
+migration or protocol version bump is required.
 
 For `library_edit`, an omitted/null field is unchanged. An empty `album` string
 explicitly clears it and remains authoritative across scans and retagging.

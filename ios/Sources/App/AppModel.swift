@@ -25,13 +25,16 @@ final class AppModel {
     private(set) var libraryRevision = 0
 
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let makeClient: @Sendable (URL) -> VtampClient
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         makeClient: @escaping @Sendable (URL) -> VtampClient = { VtampClient(baseURL: $0) }) {
         self.defaults = defaults
+        self.makeClient = makeClient
         // UI tests and live checks can point the app at a server directly.
         let launched = ProcessInfo.processInfo.environment["VTAMP_SERVER"]
         address = launched ?? defaults.string(forKey: Self.addressKey) ?? ""
-        client = ServerAddress.baseURL(from: address).map(VtampClient.init)
+        client = ServerAddress.baseURL(from: address).map(makeClient)
     }
 
     var importAvailable: Bool { server?.importAvailable ?? false }
@@ -45,7 +48,7 @@ final class AppModel {
             connection = .failed("Enter host:port, for example 100.64.0.1:8700")
             return false
         }
-        let candidate = VtampClient(baseURL: url)
+        let candidate = makeClient(url)
         connection = .checking
         do {
             let server = try await candidate.server()

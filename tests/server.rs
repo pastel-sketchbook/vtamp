@@ -1090,6 +1090,7 @@ fn http_api_serves_rpc_and_library_files() {
     );
     // Depends on whether this machine has yt-dlp on PATH.
     assert!(info["data"]["import_available"].is_boolean());
+    assert_eq!(info["data"]["imports_pagination"], true);
 
     let rpc = |request: Value| -> (u16, Value) {
         let reply = http(
@@ -1102,6 +1103,16 @@ fn http_api_serves_rpc_and_library_files() {
         (reply.status, serde_json::from_slice(&reply.body).unwrap())
     };
     let version = vtamp::model::PROTOCOL_VERSION;
+    let (status, page) = rpc(json!({"version": version, "request": {"command":"imports_page"}}));
+    assert_eq!(status, 200);
+    assert_eq!(page["ok"], true, "{page}");
+    assert_eq!(
+        page["data"],
+        json!({"jobs":[], "next_cursor":null, "active_jobs":[]})
+    );
+    let (_, invalid) =
+        rpc(json!({"version": version, "request": {"command":"imports_page", "cursor":"bad"}}));
+    assert_eq!(invalid["error"]["code"], "invalid_cursor");
     let (status, listed) = rpc(json!({"version": version, "request":
         {"command":"library_list","query":"","offset":0,"limit":10}}));
     assert_eq!(status, 200);

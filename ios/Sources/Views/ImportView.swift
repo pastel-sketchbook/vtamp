@@ -1,80 +1,12 @@
 import SwiftUI
 
-/// Recent YouTube imports on the server, polled while any job is live.
-@MainActor
-@Observable
-final class ImportsModel {
-    private(set) var jobs: [ImportJob] = []
-    private(set) var error: String?
-    private var seen: [String: ImportJob] = [:]
-
-    /// Poll until the task is cancelled: every second while a job is live,
-    /// otherwise every ten seconds. Finished or growing jobs refresh the Library.
-    /// A job started here is live, so the next one-second tick picks it up.
-    func poll(client: VtampClient, app: AppModel) async {
-        var last = ContinuousClock.now - .seconds(60)
-        while !Task.isCancelled {
-            let live = jobs.contains { !$0.isTerminal }
-            if live || ContinuousClock.now - last >= .seconds(10) {
-                await refresh(client: client, app: app)
-                last = .now
-            }
-            try? await Task.sleep(for: .seconds(1))
-        }
-    }
-
-    func refresh(client: VtampClient, app: AppModel) async {
-        do {
-            let jobs = try await client.rpc(.imports, as: [ImportJob].self)
-            var changed = false
-            for job in jobs {
-                if let before = seen[job.jobId] {
-                    if job.added + job.updated > before.added + before.updated || (job.isTerminal && !before.isTerminal) {
-                        changed = true
-                    }
-                }
-                seen[job.jobId] = job
-            }
-            self.jobs = jobs
-            error = nil
-            app.reachable()
-            if changed { app.libraryChanged() }
-        } catch {
-            self.error = error.localizedDescription
-            app.report(error)
-        }
-    }
-
-    func start(_ request: ImportRequest, client: VtampClient, app: AppModel) async throws(VtampError) {
-        _ = try await client.rpc(.importStart(request), as: ImportStarted.self)
-        await refresh(client: client, app: app)
-    }
-
-    func cancel(_ job: ImportJob, client: VtampClient, app: AppModel) async {
-        do {
-            _ = try await client.rpc(.importCancel(id: job.jobId), as: ImportJob.self)
-        } catch {
-            self.error = error.localizedDescription
-        }
-        await refresh(client: client, app: app)
-    }
-
-    func retry(_ job: ImportJob, client: VtampClient, app: AppModel) async {
-        do {
-            _ = try await client.rpc(.importRetry(id: job.jobId), as: ImportStarted.self)
-        } catch {
-            self.error = error.localizedDescription
-        }
-        await refresh(client: client, app: app)
-    }
-}
-
 struct ImportView: View {
     @Environment(AppModel.self) private var app
     @Environment(ImportsModel.self) private var imports
     @Environment(Player.self) private var player
     @State private var url = ""
     @State private var wholePlaylist = false
+    @State private var saveVideo = false
     @State private var start = ""
     @State private var end = ""
     @State private var submitting = false
@@ -94,22 +26,25 @@ struct ImportView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("https://www.youtube.com/watch?v=…", text: $url)
+                    TextField("YouTube URL", text: $url, prompt:
+                        Text(verbatim: "https://www.youtube.com/watch?v=…")
+                            .foregroundStyle(Color(uiColor: .placeholderText)))
+                        .foregroundStyle(.primary)
+                        .accessibilityIdentifier("importURL")
                         .focused($editing)
                         .keyboardType(.URL)
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    PasteButton(payloadType: String.self) { strings in
-                        if let first = strings.first { url = first.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    }
                     if namesPlaylist {
                         Toggle("Import the whole playlist", isOn: $wholePlaylist)
                     }
+                    Toggle("Save video (up to 480p)", isOn: $saveVideo)
+                        .accessibilityIdentifier("importVideo")
                 } header: {
                     Text("YouTube URL")
                 } footer: {
-                    Text("The server downloads the audio with yt-dlp and adds it to the Library.")
+                    Text("Audio is always added to your Library. Enable video to save a copy up to 480p.")
                 }
                 if !(namesPlaylist && wholePlaylist) {
                     Section {
@@ -147,12 +82,28 @@ struct ImportView: View {
                     Section("Recent imports") {
                         ForEach(imports.jobs) { job in
                             ImportJobRow(job: job, play: play, cancel: cancel, retry: retry)
+                                .accessibilityIdentifier("importJob-\(job.id)")
+                        }
+                        if imports.canLoadMore {
+                            if let error = imports.moreError {
+                                VStack(alignment: .leading) {
+                                    Text(error).font(.footnote).foregroundStyle(.red)
+                                    Button("Retry") { Task { await loadMore() } }
+                                }
+                            } else {
+                                ProgressView()
+                                    .frame(maxWidth: .infinity)
+                                    .task(id: imports.loadTrigger) { await loadMore() }
+                            }
                         }
                     }
                 }
                 if let error = imports.error {
                     Section { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
+            }
+            .refreshable {
+                if let client = app.client { await imports.refresh(client: client, app: app) }
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Import")
@@ -170,7 +121,7 @@ struct ImportView: View {
         guard let client = app.client else { return }
         editing = false
         let playlist = namesPlaylist && wholePlaylist
-        var request = ImportRequest(url: url.trimmingCharacters(in: .whitespacesAndNewlines), playlist: playlist)
+        var request = ImportRequest(url: url.trimmingCharacters(in: .whitespacesAndNewlines), playlist: playlist, video: saveVideo)
         if !playlist, case let .success(range) = range {
             request.range = range
         }
@@ -179,14 +130,21 @@ struct ImportView: View {
         do {
             // The new job appears under Recent imports with its progress.
             try await imports.start(request, client: client, app: app)
+            guard app.client?.baseURL == client.baseURL else { return }
             message = nil
             url = ""
             start = ""
             end = ""
             wholePlaylist = false
+            saveVideo = false
         } catch {
             message = error.localizedDescription
         }
+    }
+
+    private func loadMore() async {
+        guard let client = app.client else { return }
+        await imports.loadMore(client: client, app: app)
     }
 
     private func play(_ job: ImportJob) {

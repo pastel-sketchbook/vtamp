@@ -248,6 +248,12 @@ pub enum Command {
         request: crate::imports::ImportRequest,
     },
     Imports,
+    ImportsPage {
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default = "crate::imports::page_size")]
+        limit: usize,
+    },
     ImportStatus {
         id: String,
         offset: usize,

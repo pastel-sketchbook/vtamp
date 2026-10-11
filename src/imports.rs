@@ -16,6 +16,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub fn page_size() -> usize {
+    20
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportsPage {
+    pub jobs: Vec<ImportJob>,
+    pub next_cursor: Option<String>,
+    pub active_jobs: Vec<ImportJob>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImportRequest {

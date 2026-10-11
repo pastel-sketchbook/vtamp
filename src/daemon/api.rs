@@ -145,6 +145,7 @@ async fn server(context: &Context) -> Response {
         serde_json::to_value(context.served.server_info()).expect("server information serializes");
     data["protocol_version"] = PROTOCOL_VERSION.into();
     data["import_available"] = import_available.into();
+    data["imports_pagination"] = true.into();
     data["cast"] = serde_json::to_value(context.served.cast_info()).expect("cast info serializes");
     json(StatusCode::OK, &Reply::success(data))
 }

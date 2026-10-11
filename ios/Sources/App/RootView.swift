@@ -54,7 +54,9 @@ struct RootView: View {
             }
         }
         // Import progress drives Library refreshes from any tab.
-        .task(id: PollKey(active: scenePhase == .active, available: app.importAvailable, base: app.client?.baseURL)) {
+        .task(id: PollKey(active: scenePhase == .active, available: app.importAvailable,
+                          base: app.client?.baseURL, pagination: app.server?.importsPagination == true)) {
+            imports.configure(client: app.client, app: app)
             guard scenePhase == .active, app.importAvailable, let client = app.client else { return }
             await imports.poll(client: client, app: app)
         }
@@ -64,6 +66,7 @@ struct RootView: View {
         let active: Bool
         let available: Bool
         let base: URL?
+        let pagination: Bool
     }
 }
 

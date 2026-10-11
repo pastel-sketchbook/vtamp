@@ -29,6 +29,9 @@ struct CommandEncodingTests {
         #expect(try json(.queuePage(offset: 0, limit: 1000)) as NSDictionary == ["command": "queue_page", "offset": 0, "limit": 1000])
         #expect(try json(.now) as NSDictionary == ["command": "now"])
         #expect(try json(.imports) as NSDictionary == ["command": "imports"])
+        #expect(try json(.importsPage(cursor: nil, limit: 20)) as NSDictionary == ["command": "imports_page", "limit": 20])
+        #expect(try json(.importsPage(cursor: "v1:42", limit: 20)) as NSDictionary == ["command": "imports_page", "cursor": "v1:42", "limit": 20])
+        #expect(try json(.importStatus(id: "J")) as NSDictionary == ["command": "import_status", "id": "J", "offset": 0, "limit": 1])
     }
 
     @Test func importStartOmitsAMissingRange() throws {
@@ -40,5 +43,21 @@ struct CommandEncodingTests {
             url: "https://youtu.be/lO3lG-qXU14", range: TimeRange(startMs: 83000, endMs: nil))))
         let range = try #require((excerpt["request"] as? [String: Any])?["range"] as? [String: Any])
         #expect(range as NSDictionary == ["start_ms": 83000], "An open end is omitted, not null")
+    }
+
+    @Test func videoConsentIsEncodedForWholeVideosExcerptsAndPlaylists() throws {
+        for playlist in [false, true] {
+            for video in [false, true] {
+                let command = try json(.importStart(ImportRequest(url: "https://youtu.be/lO3lG-qXU14", playlist: playlist, video: video)))
+                let request = try #require(command["request"] as? [String: Any])
+                #expect(request["video"] as? Bool == video)
+                #expect(request["playlist"] as? Bool == playlist)
+            }
+        }
+        let command = try json(.importStart(ImportRequest(url: "https://youtu.be/lO3lG-qXU14", video: true,
+                                                        range: TimeRange(startMs: 1000, endMs: 2000))))
+        let request = try #require(command["request"] as? [String: Any])
+        #expect(request["video"] as? Bool == true)
+        #expect(request["range"] as? NSDictionary == ["start_ms": 1000, "end_ms": 2000])
     }
 }

@@ -10,6 +10,8 @@ enum Command: Encodable, Equatable, Sendable {
     case importAvailable
     case importStart(ImportRequest)
     case imports
+    case importsPage(cursor: String?, limit: Int)
+    case importStatus(id: String)
     case importCancel(id: String)
     case importRetry(id: String)
 
@@ -30,6 +32,8 @@ enum Command: Encodable, Equatable, Sendable {
         case .importAvailable: "import_available"
         case .importStart: "import_start"
         case .imports: "imports"
+        case .importsPage: "imports_page"
+        case .importStatus: "import_status"
         case .importCancel: "import_cancel"
         case .importRetry: "import_retry"
         }
@@ -51,6 +55,13 @@ enum Command: Encodable, Equatable, Sendable {
             try container.encode(limit, forKey: Key("limit"))
         case let .importStart(request):
             try container.encode(request, forKey: Key("request"))
+        case let .importsPage(cursor, limit):
+            try container.encodeIfPresent(cursor, forKey: Key("cursor"))
+            try container.encode(limit, forKey: Key("limit"))
+        case let .importStatus(id):
+            try container.encode(id, forKey: Key("id"))
+            try container.encode(0, forKey: Key("offset"))
+            try container.encode(1, forKey: Key("limit"))
         case .now, .importAvailable, .imports:
             break
         }

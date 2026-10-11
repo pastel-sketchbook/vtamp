@@ -50,6 +50,16 @@ struct ImportStarted: Decodable, Sendable {
     let status: String
 }
 
+struct ImportsPage: Decodable, Sendable {
+    let jobs: [ImportJob]
+    let nextCursor: String?
+    let activeJobs: [ImportJob]
+}
+
+struct ImportStatus: Decodable, Sendable {
+    let job: ImportJob
+}
+
 struct ImportAvailability: Decodable, Sendable {
     let available: Bool
 }
