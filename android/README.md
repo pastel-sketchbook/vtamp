@@ -160,8 +160,9 @@ background playback, radio redirects and disconnect/resume, cancellation during
 station resolution, video suspension/catch-up,
 fullscreen continuity, and actual AAC/ALAC/WAV/H.264/VP9 decoding. They never
 submit imports or commands to a personal server. CI configures API 29 and API 36
-emulator runs; an unexecuted CI
-job is not local validation.
+emulator runs. SDK setup explicitly selects `platform-tools` to avoid the retired
+`tools` package; the pinned platform, build tools, NDK and CMake are installed
+in the following step. An unexecuted CI job is not local validation.
 
 `src/androidTest/assets/resume-h264.mkv` is a synthetic MIT-licensed test pattern,
 not personal footage. It is 60 seconds, 160×90 at 10 fps, with eight-second GOPs:
