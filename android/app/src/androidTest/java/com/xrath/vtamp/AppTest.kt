@@ -3,7 +3,12 @@
 package com.xrath.vtamp
 
 import android.content.*
+import android.graphics.Bitmap
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.view.PixelCopy
+import android.view.SurfaceView
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
@@ -152,20 +157,14 @@ class AppTest {
         compose.waitUntil(10000) { runtime.state.value.position > before + 3000 }
         assertEquals(count, server.videoRequests.get())
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        compose.waitUntil(15000) { runtime.video.state.value.ready }
-        compose.runOnUiThread {
-            assertTrue(
-                kotlin.math.abs(
-                    runtime.video.player!!.currentPosition - runtime.audio.currentPosition
-                ) < 250
-            )
-        }
+        waitForVideoSync()
     }
 
     @Test
     fun videoHoldsItsSurfaceFrameAndDiscardsItOnTrackChange() {
         compose.runOnUiThread { runtime.playNow(server.tracks()[1]) }
         compose.waitUntil(15000) { runtime.video.state.value.ready }
+        waitForSurfaceFrame()
         compose.runOnUiThread { runtime.video.hide() }
         compose.waitUntil(5000) { runtime.video.state.value.still != null }
         compose.runOnUiThread {
@@ -291,16 +290,9 @@ class AppTest {
                 }
             )
         }
-        compose.waitUntil(15000) {
-            runtime.video.state.value.ready && runtime.state.value.position > 5000
-        }
+        waitForVideoSync(minPosition = 5000)
         compose.runOnUiThread {
             assertEquals("Startup catch-up must not repeatedly flush the decoder", 0, seeks)
-            assertTrue(
-                kotlin.math.abs(
-                    runtime.video.player!!.currentPosition - runtime.audio.currentPosition
-                ) < 250
-            )
         }
     }
 
@@ -323,12 +315,78 @@ class AppTest {
         compose.waitUntil(15000) {
             runtime.state.value.position in 500..5000 && runtime.video.state.value.ready
         }
-        compose.runOnUiThread {
-            assertTrue(
-                kotlin.math.abs(
-                    runtime.video.player!!.currentPosition - runtime.audio.currentPosition
-                ) < 250
+        waitForVideoSync()
+    }
+
+    private fun waitForVideoSync(minPosition: Long = 0) {
+        // ready records that video caught up once. Sample both live clocks together, rather than
+        // assuming they are still aligned when a later main-thread assertion gets scheduled.
+        var delta = Long.MAX_VALUE
+        try {
+            compose.waitUntil(15000) {
+                var aligned = false
+                compose.runOnUiThread {
+                    val video = runtime.video.player
+                    if (video != null) {
+                        delta = video.currentPosition - runtime.audio.currentPosition
+                        aligned =
+                            runtime.video.state.value.ready &&
+                                runtime.audio.currentPosition >= minPosition &&
+                                kotlin.math.abs(delta) < 250
+                    }
+                }
+                aligned
+            }
+        } catch (failure: ComposeTimeoutException) {
+            throw AssertionError(
+                "Video did not synchronize within 250 ms; last delta=$delta ms",
+                failure,
             )
+        }
+    }
+
+    private fun waitForSurfaceFrame() {
+        // Frame metadata arrives before the compositor presents pixels. Software-rendered CI
+        // devices may not have a readable SurfaceView buffer immediately when ready turns true.
+        var surface: SurfaceView? = null
+        onView(isAssignableFrom(PlayerView::class.java)).inRoot(isDialog()).check { view, error ->
+            if (error != null) throw error
+            surface = (view as PlayerView).videoSurfaceView as SurfaceView
+        }
+        var pending = false
+        var readable = false
+        compose.waitUntil(15000) {
+            compose.runOnUiThread {
+                val source = surface!!
+                if (
+                    !pending &&
+                        !readable &&
+                        source.holder.surface.isValid &&
+                        source.width > 0 &&
+                        source.height > 0
+                ) {
+                    pending = true
+                    val image = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
+                    PixelCopy.request(
+                        source,
+                        image,
+                        { result ->
+                            if (result == PixelCopy.SUCCESS) {
+                                val colors = mutableSetOf<Int>()
+                                for (y in 0 until image.height step 5) {
+                                    for (x in 0 until image.width step 5) colors +=
+                                        image.getPixel(x, y)
+                                }
+                                readable = colors.size > 20
+                            }
+                            pending = false
+                            image.recycle()
+                        },
+                        Handler(Looper.getMainLooper()),
+                    )
+                }
+            }
+            readable
         }
     }
 
