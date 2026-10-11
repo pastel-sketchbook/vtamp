@@ -19,6 +19,10 @@ colors:
   web-muted: "#b0bdab"
   web-line: "#46513f"
   web-warning: "#efbc72"
+  android-light-primary: "#386a20"
+  android-light-secondary: "#526348"
+  android-dark-primary: "#b4f676"
+  android-dark-secondary: "#c5dab4"
 ---
 
 # vtamp visual system
@@ -410,3 +414,48 @@ selected-track commands do not follow selection changes. Process and JSON I/O
 run away from the input loop, with bounded queues and latest-view delivery.
 Loading, unavailable content, and errors remain closable. Detach or close stops
 only the associated plugin process group. See `docs/plugins.md` for API 1.
+
+## Android client
+
+The phone app is an Operate surface built with Kotlin and Material 3. Preserve
+the iPhone client's Library, Queue, conditional Import, Settings and mini-player
+flow while using Android navigation, system Back and native text selection.
+Compact screens have a bottom navigation bar; Now Playing opens above it and
+video can expand to landscape. Tablet-specific composition is out of scope.
+
+Use the Material type scale and semantic colors, system light/dark appearance,
+and wallpaper-derived colors on Android 12+ with vtamp green as the older-OS
+fallback; the four `android-*` tokens above override the default Material
+primary and secondary roles on those older versions. Surfaces and text resolve
+through Material roles: selected queue rows use `secondaryContainer`, metadata
+uses `onSurfaceVariant`, and error banners use `errorContainer`. Reuse the five
+V-meter bars as an adaptive launcher icon. Original album art is never recolored.
+
+The app inherits Material 3 typography without a custom font or size ramp.
+Now Playing titles use `headlineSmall`, section and empty-state headings use
+`titleLarge`, import job titles use `titleMedium`, and mini-player titles use
+`titleSmall`. Supporting copy uses body roles; timing and compact status use
+label roles. Library titles allow two lines, metadata and mini-player text
+ellipsize, and the full player wraps titles in a scrollable column.
+
+Library and Import use horizontal gutters (16 dp), Settings uses inset content
+(20 dp), and Now Playing uses wider gutters (24 dp). Common gaps are 8, 12 and
+16 dp. Native outlined fields, filter chips, segmented queue selection,
+buttons, menus and dialogs retain their Material shapes and interaction states.
+Artwork placeholders have softly rounded backgrounds (8 dp); loaded artwork
+keeps its own image shape. The mini player uses tonal elevation (3 dp) above the
+bottom navigation; list rows use surface color without custom shadows. The full
+player emphasizes its filled play/pause control (72 dp), flanked by previous
+and next controls (56 dp). Fullscreen video uses a black canvas with white
+controls on a translucent black backing.
+
+Keep interactive targets at least 48 dp, respect system/IME insets and allow
+larger system text to wrap or scroll. State is communicated in text as well as
+icons: connection errors with Retry, missing art, empty lists, buffering, live
+radio and video fallback all remain useful.
+
+Queue entry menus offer Move Up, Move Down and Remove; Clear confirms that
+phone playback stops. Saved video has its own lifecycle: leaving the player or
+backgrounding releases video work while audio continues. On return its last
+picture is held until video catches up, preserving the presentation. See
+[android/README.md](android/README.md) for the complete behavior and checks.

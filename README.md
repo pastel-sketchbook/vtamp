@@ -27,7 +27,7 @@ $ vtamp                   # Same server. Same queue. Pick up where it is now.
 
 No account. No streaming subscription. No permanent pane. Your music stays on your machine.
 
-Away from the desk, the [iPhone app](#iphone-app) connects to the same server over a private network such as Tailscale, browses its Library, and plays the tracks and their saved videos on the phone.
+Away from the desk, the [iPhone app](#iphone-app) and [Android app](#android-app) connect to the same server over a private network such as Tailscale, browse its Library, and play the tracks and their saved videos on the phone.
 
 On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Install](#install) for the source build.
 
@@ -52,7 +52,7 @@ On an Apple Silicon Mac, `brew install rath/tap/vtamp` is all it takes; see [Ins
 - JSON commands and an event stream for scripts and AI agents.
 - An optional tmux status-bar plugin for the current track and playback time.
 - Headless servers that cast Ogg Opus to remote listeners, a relay mode that plays a remote server through the local device, and optional casting from device servers, including a plain HTTP endpoint for players.
-- An optional HTTP API for apps, and a SwiftUI [iPhone app](#iphone-app) that browses the Library, shows the server's Queue, starts imports, and plays tracks and their saved videos on the phone, built and installed with your own Apple ID.
+- An optional HTTP API for apps, a Kotlin [Android app](#android-app), and a SwiftUI [iPhone app](#iphone-app) that browses the Library, shows the server's Queue, starts imports, and plays tracks and their saved videos on the phone, built and installed with your own Apple ID.
 - Saved queue, playback position, volume, shuffle, and repeat settings.
 - A small, dependency-free [landing page](https://vtamp.told.me/) in English and [Korean](https://vtamp.told.me/ko/), with [source in `site/`](site/).
 
@@ -297,6 +297,17 @@ vtamp server start --api 100.64.0.1:8800     # explicit address and port
 </p>
 
 [`ios/`](ios/README.md) holds a SwiftUI app for this API. It browses the Library, shows the server's Queue, starts YouTube imports on the server, and plays the files on the phone with its own queue, in the background and from the lock screen; the server's playback and Queue stay as they are. A track's saved video shows in the player in step with the audio, read from the server's Matroska sidecar without re-encoding (AV1 needs an iPhone 15 Pro or later; VP9 needs the optional libvpx build). Radio channels play from their registered URLs with the server's reconnect rules; Ogg Vorbis files do not play on the iPhone. Build it with Xcode and XcodeGen and install it with your own Apple ID; [ios/README.md](ios/README.md) has the steps.
+
+#### Android app
+
+[`android/`](android/README.md) provides a Kotlin / Jetpack Compose client for
+Android 10 and later phones. It connects to the same HTTP API, browses the
+Library, keeps a separate phone queue, starts imports and plays files, live
+radio and saved video. Background playback, media notifications, lock-screen
+controls, shuffle and repeat work independently of the server's playback.
+ALAC decoding is included; saved video uses the device's available decoders
+without server transcoding. Build and directly install the APK with the
+[instructions and codec details](android/README.md).
 
 ### Linux builds are headless servers
 

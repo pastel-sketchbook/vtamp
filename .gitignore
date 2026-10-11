@@ -1,5 +1,6 @@
 /target/
 /.impeccable/mocks/
+/.impeccable/review/
 /.impeccable/*.local.json
 .DS_Store
 *.log

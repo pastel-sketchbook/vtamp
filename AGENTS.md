@@ -54,6 +54,7 @@ Put new feature details in those documents, not here.
 | Artwork, themes, client settings | `src/artwork.rs`, `src/cover.rs`, `src/theme.rs`, `src/settings.rs` |
 | tmux status | `src/tmux.rs`, `vtamp.tmux`, `scripts/tmux-status.sh` |
 | iPhone client of the HTTP API | `ios/` (`ios/README.md`) |
+| Android client of the HTTP API | `android/` (`android/README.md`) |
 | Paths and instance isolation | `src/platform.rs` |
 | Icons, screenshots, live checks | `scripts/` |
 
@@ -105,6 +106,15 @@ ignored `ios/Vendor/`; report that as a skip too, and never commit anything
 from `ios/Vendor/`. Signing stays in
 the untracked `ios/Local.xcconfig`; never commit a team ID. A protocol version
 bump also changes `VtampClient.protocolVersion` and the app's fixtures.
+
+For `android/` changes, build the pinned ALAC decoder with
+`android/scripts/build-decoder.sh`, then run `./gradlew testDebugUnitTest
+lintDebug assembleDebug` from `android/`. Run `connectedDebugAndroidTest` on an
+isolated emulator. The device tests own a synthetic server and stay muted; use
+`adb -s SERIAL` to avoid touching another device. Native outputs and downloads
+stay in ignored `android/Vendor/`. A protocol bump must also update
+`VtampClient.PROTOCOL_VERSION` and Android fixtures. See `android/README.md` for
+SDK prerequisites and verification limits.
 
 ## Protect the active listening session
 

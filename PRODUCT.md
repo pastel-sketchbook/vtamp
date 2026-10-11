@@ -88,3 +88,12 @@ Live radio shares Library and Queue navigation. Pause disconnects and resume tun
 to the current broadcast; transient disconnects retry the same channel. Radio has
 no timeline in this release; its spectrum needs macOS 27 or newer on the server. Registration requires no installed import
 tools, and folder scans do not remove stations.
+
+## Android companion
+
+Android 10+ phones can browse the private-network HTTP API and play Library
+files locally with a separate queue, background media controls, radio, imports
+and saved video. The Material 3 app follows the iPhone workflows and is built
+as a directly installable APK. ALAC decoding is bundled; video codec support
+depends on the device. No offline download, server playback control, Android
+Auto, Chromecast or tablet-specific layout is included.

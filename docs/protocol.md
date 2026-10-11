@@ -358,7 +358,7 @@ instead of rewinding it.
 
 `vtamp server start --api ADDR` binds a plain HTTP/1.1 listener for apps on
 another machine of a private network, such as the [iOS
-client](../ios/README.md). It works on device and headless servers, with or
+client](../ios/README.md) and [Android client](../android/README.md). It works on device and headless servers, with or
 without a cast, and conflicts with `--remote`. `server_info` reports `api_url`,
 `http://ADDR/api`, built from the bound address: binding `0.0.0.0` reports
 `0.0.0.0`, so bind the address clients use, for example a Tailscale address.
@@ -416,6 +416,11 @@ several ranges or an invalid header answer the whole file. A matching
 `404 not_found`, other methods `405` with `Allow`. Up to 64 connections are
 served with keep-alive; a connection that sends no request headers for 30
 seconds is closed.
+
+The Android and iOS apps use this same version-14 contract. Both keep a local
+playback queue, read the server queue without changing it, and fetch files by
+Library track ID. Android ships its own ALAC decoder; this requires no server
+codec, protocol change, or database migration.
 
 ## File loudness normalization (version 11)
 
