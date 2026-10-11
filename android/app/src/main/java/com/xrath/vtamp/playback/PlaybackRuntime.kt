@@ -318,6 +318,8 @@ class PlaybackRuntime(private val context: Context, private val store: AppStore)
         )
         audio.prepare()
         audio.playWhenReady = autoplay
+        // Repeat-one reloads the same queue entry without replacing its video surface.
+        video.seek()
         publish()
     }
 

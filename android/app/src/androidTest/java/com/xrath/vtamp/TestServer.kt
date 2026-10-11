@@ -16,6 +16,7 @@ class TestServer : AutoCloseable {
     val server = MockWebServer()
     val requests = CopyOnWriteArrayList<String>()
     val videoRequests = AtomicInteger()
+    @Volatile var videoDelayMs = 0L
     var submitted: JsonObject? = null
     private var imported = false
     private val assets = InstrumentationRegistry.getInstrumentation().context.assets
@@ -101,10 +102,14 @@ class TestServer : AutoCloseable {
                         path.endsWith("/video") -> {
                             videoRequests.incrementAndGet()
                             file(
-                                request,
-                                assets.open("resume-h264.mkv").use { it.readBytes() },
-                                "video/x-matroska",
-                            )
+                                    request,
+                                    assets.open("resume-h264.mkv").use { it.readBytes() },
+                                    "video/x-matroska",
+                                )
+                                .setHeadersDelay(
+                                    videoDelayMs,
+                                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                                )
                         }
                         else -> MockResponse().setResponseCode(404)
                     }
@@ -119,10 +124,10 @@ class TestServer : AutoCloseable {
             .setHeader("Content-Type", "application/json")
             .setBody(
                 buildJsonObject {
-                        put("version", 14)
-                        put("ok", true)
-                        put("data", data)
-                    }
+                    put("version", 14)
+                    put("ok", true)
+                    put("data", data)
+                }
                     .toString()
             )
 

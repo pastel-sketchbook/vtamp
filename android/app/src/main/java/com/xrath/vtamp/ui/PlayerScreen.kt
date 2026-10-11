@@ -316,34 +316,42 @@ private fun Artwork(
     Box(modifier, contentAlignment = Alignment.Center) {
         if (!show || video.error != null) Cover(track, app, Modifier.fillMaxSize())
         else {
-            val lifecycle = LocalLifecycleOwner.current.lifecycle
-            val context = LocalContext.current
-            val surface =
-                remember(playback, s.currentId, fullscreen) {
+            // AndroidView's factory is not rerun when a remembered value changes.
+            // Replace the composition as well as its surface on each queue entry.
+            key(playback, s.currentId, fullscreen) {
+                val lifecycle = LocalLifecycleOwner.current.lifecycle
+                val context = LocalContext.current
+                val surface = remember {
                     LayoutInflater.from(context)
                         .inflate(R.layout.video_surface, android.widget.FrameLayout(context), false)
                         as PlayerView
                 }
-            AndroidView(
-                factory = { surface },
-                modifier = Modifier.fillMaxSize().semantics { contentDescription = "Saved video" },
-            )
-            if (!video.ready) {
-                video.still?.let {
-                    Image(it.asImageBitmap(), null, Modifier.fillMaxSize().background(Color.Black))
-                } ?: Cover(track, app, Modifier.fillMaxSize())
-            }
-            DisposableEffect(surface, lifecycle, show) {
-                val observer = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME) playback.video.show(surface)
-                    else if (event == Lifecycle.Event.ON_PAUSE) playback.video.hide()
+                AndroidView(
+                    factory = { surface },
+                    modifier =
+                        Modifier.fillMaxSize().semantics { contentDescription = "Saved video" },
+                )
+                if (!video.ready) {
+                    video.still?.let {
+                        Image(
+                            it.asImageBitmap(),
+                            null,
+                            Modifier.fillMaxSize().background(Color.Black),
+                        )
+                    } ?: Cover(track, app, Modifier.fillMaxSize())
                 }
-                lifecycle.addObserver(observer)
-                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
-                    playback.video.show(surface)
-                onDispose {
-                    lifecycle.removeObserver(observer)
-                    playback.video.hide()
+                DisposableEffect(surface, lifecycle, show) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) playback.video.show(surface)
+                        else if (event == Lifecycle.Event.ON_PAUSE) playback.video.hide()
+                    }
+                    lifecycle.addObserver(observer)
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                        playback.video.show(surface)
+                    onDispose {
+                        lifecycle.removeObserver(observer)
+                        playback.video.hide()
+                    }
                 }
             }
         }

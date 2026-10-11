@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.view.TextureView
 import androidx.media3.common.*
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -42,7 +43,6 @@ class VideoFollower(
     private var generation = 0
     private var frameTimeMs = Long.MIN_VALUE
     private var currentId: String? = null
-    private var lastSeekAt = 0L
 
     fun show(surface: PlayerView) {
         view = surface
@@ -71,6 +71,11 @@ class VideoFollower(
                                 .build()
                         )
                     )
+                )
+                .setLoadControl(
+                    DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(15000, 50000, 250, 500)
+                        .build()
                 )
                 .build()
         player = video
@@ -122,18 +127,27 @@ class VideoFollower(
             while (isActive && generation == token) {
                 val audio = playback.audio
                 val target = audio.currentPosition
-                video.playWhenReady = audio.isPlaying
                 val delta = video.currentPosition - target
-                val now = android.os.SystemClock.elapsedRealtime()
-                if (abs(delta) > 250 && now - lastSeekAt > 1000) {
-                    holdFrame()
-                    video.seekTo(target)
-                    frameTimeMs = Long.MIN_VALUE
-                    lastSeekAt = now
-                } else
-                    video.setPlaybackSpeed(
-                        if (delta > 70) 0.97f else if (delta < -70) 1.03f else 1f
-                    )
+                if (
+                    !audio.isPlaying &&
+                        audio.playbackState == Player.STATE_READY &&
+                        video.playbackState == Player.STATE_READY &&
+                        abs(delta) > 150
+                ) {
+                    // Audio is stationary, so a single seek can settle its paused frame.
+                    seek()
+                }
+                // Startup/rebuffering can leave video behind. Repeated exact seeks
+                // flush the decoder before it can catch up, especially on phones.
+                // Let preparation finish, then catch up without interrupting decode.
+                // If video is ahead, wait for audio instead of seeking backwards.
+                video.playWhenReady = audio.isPlaying && delta <= 150
+                val speed =
+                    if (video.playbackState != Player.STATE_READY || !audio.isPlaying) 1f
+                    else if (delta < -1000) 1.5f
+                    else if (delta < -250) 1.25f
+                    else if (delta < -70) 1.05f else if (delta > 70) 0.97f else 1f
+                if (video.playbackParameters.speed != speed) video.setPlaybackSpeed(speed)
                 if (frameTimeMs != Long.MIN_VALUE && abs(frameTimeMs - target) <= 150)
                     mutable.update { it.copy(ready = true) }
                 delay(100)
@@ -157,7 +171,7 @@ class VideoFollower(
         holdFrame()
         frameTimeMs = Long.MIN_VALUE
         p.seekTo(playback.audio.currentPosition)
-        lastSeekAt = android.os.SystemClock.elapsedRealtime()
+        p.setPlaybackSpeed(1f)
     }
 
     fun hide() {

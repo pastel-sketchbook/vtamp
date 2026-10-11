@@ -82,7 +82,12 @@ unsupported or missing video falls back to the cover and leaves audio playing.
 A separate video ExoPlayer follows the audio clock; synchronization never seeks,
 slows or pauses audio. Cover selection, closing the player, screen locking or
 backgrounding releases video decoding and its network source. On return, the
-last picture remains until a frame catches up to current audio time. The full
+last picture remains until a frame catches up to current audio time. Each queue
+entry replaces both the displayed surface and its video player, including Next
+and consecutive copies of the same track. Startup and rebuffering catch up by
+adjusting video speed; they do not repeatedly seek and flush the decoder. Video
+that runs ahead waits for audio. Explicit seeks, a paused-frame correction and
+repeat-one align video directly to the audio position. The full
 player can expand video to landscape. Tablet-specific layouts, Android Auto
 and Picture-in-Picture are not part of this release.
 

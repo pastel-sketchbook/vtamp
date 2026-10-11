@@ -7,6 +7,10 @@ import android.os.IBinder
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
+import androidx.media3.common.Player
+import androidx.media3.ui.PlayerView
+import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xrath.vtamp.playback.*
 import java.util.concurrent.CountDownLatch
@@ -148,6 +152,91 @@ class AppTest {
         assertEquals(count, server.videoRequests.get())
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
         compose.waitUntil(15000) { runtime.video.state.value.ready }
+        compose.runOnUiThread {
+            assertTrue(
+                kotlin.math.abs(
+                    runtime.video.player!!.currentPosition - runtime.audio.currentPosition
+                ) < 250
+            )
+        }
+    }
+
+    @Test
+    fun nextVideoReplacesTheDisplayedSurfaceWithoutToggling() {
+        val clip = server.tracks()[1]
+        compose.runOnUiThread {
+            runtime.replace(listOf(clip, clip.copy(id = "clip2", title = "Second clip"), clip), 0)
+        }
+        compose.waitUntil(15000) { runtime.video.state.value.ready }
+        repeat(2) {
+            val previous = runtime.state.value.currentId
+            compose.onAllNodesWithContentDescription("Next").onLast().performClick()
+            compose.waitUntil(15000) {
+                runtime.state.value.currentId != previous && runtime.video.state.value.ready
+            }
+            onView(isAssignableFrom(PlayerView::class.java)).check { view, error ->
+                if (error != null) throw error
+                assertTrue("Video view must be on screen", view.isAttachedToWindow)
+                assertSame(
+                    "The visible surface must own the new player",
+                    runtime.video.player,
+                    (view as PlayerView).player,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun delayedVideoCatchesUpWithoutRepeatedSeeks() {
+        server.videoDelayMs = 1200
+        compose.runOnUiThread { runtime.playNow(server.tracks()[1]) }
+        compose.waitUntil(5000) { runtime.video.player != null }
+        var seeks = 0
+        compose.runOnUiThread {
+            runtime.video.player!!.addListener(
+                object : Player.Listener {
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int,
+                    ) {
+                        if (reason == Player.DISCONTINUITY_REASON_SEEK) seeks++
+                    }
+                }
+            )
+        }
+        compose.waitUntil(15000) {
+            runtime.video.state.value.ready && runtime.state.value.position > 5000
+        }
+        compose.runOnUiThread {
+            assertEquals("Startup catch-up must not repeatedly flush the decoder", 0, seeks)
+            assertTrue(
+                kotlin.math.abs(
+                    runtime.video.player!!.currentPosition - runtime.audio.currentPosition
+                ) < 250
+            )
+        }
+    }
+
+    @Test
+    fun videoSeeksWhilePausedAndRestartsWithRepeatOne() {
+        compose.runOnUiThread { runtime.playNow(server.tracks()[1]) }
+        compose.waitUntil(15000) { runtime.video.state.value.ready }
+        compose.runOnUiThread {
+            runtime.pause()
+            runtime.seek(10000)
+        }
+        compose.waitUntil(10000) { runtime.video.state.value.ready }
+        compose.runOnUiThread {
+            assertFalse(runtime.audio.isPlaying)
+            assertTrue(kotlin.math.abs(runtime.video.player!!.currentPosition - 10000) < 150)
+            runtime.queue.repeat = Repeat.ONE
+            runtime.seek(59000)
+            runtime.play()
+        }
+        compose.waitUntil(15000) {
+            runtime.state.value.position in 500..5000 && runtime.video.state.value.ready
+        }
         compose.runOnUiThread {
             assertTrue(
                 kotlin.math.abs(
