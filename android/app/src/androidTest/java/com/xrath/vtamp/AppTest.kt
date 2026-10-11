@@ -10,6 +10,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import androidx.test.espresso.Espresso.onView
+import androidx.test.espresso.matcher.RootMatchers.isDialog
 import androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.xrath.vtamp.playback.*
@@ -193,6 +194,57 @@ class AppTest {
             "An old surface copy must not enter a new track",
             runtime.video.state.value.still,
         )
+    }
+
+    @Test
+    fun fullscreenKeepsVideoPlayerAndRenderedFrames() {
+        compose.runOnUiThread { runtime.playNow(server.tracks()[1]) }
+        compose.waitUntil(15000) { runtime.video.state.value.ready }
+        val player = runtime.video.player!!
+        val counters = compose.runOnIdle { player.videoDecoderCounters!! }
+        var surface: PlayerView? = null
+        onView(isAssignableFrom(PlayerView::class.java)).inRoot(isDialog()).check { view, error ->
+            if (error != null) throw error
+            surface = view as PlayerView
+        }
+        val requests = server.videoRequests.get()
+        repeat(2) {
+            for (button in listOf("Fullscreen video", "Exit fullscreen")) {
+                var frames = 0
+                var position = 0L
+                compose.runOnUiThread {
+                    frames = counters.renderedOutputBufferCount
+                    position = runtime.audio.currentPosition
+                }
+                compose.onNodeWithContentDescription(button).performClick()
+                compose.runOnUiThread {
+                    assertSame(
+                        "Fullscreen must retain the prepared decoder",
+                        player,
+                        runtime.video.player,
+                    )
+                }
+                onView(isAssignableFrom(PlayerView::class.java)).inRoot(isDialog()).check {
+                    view,
+                    error ->
+                    if (error != null) throw error
+                    assertSame("Fullscreen must move the existing video view", surface, view)
+                    assertSame(player, (view as PlayerView).player)
+                    assertTrue(view.isAttachedToWindow)
+                }
+                compose.waitUntil(2500) {
+                    counters.ensureUpdated()
+                    counters.renderedOutputBufferCount > frames + 2 &&
+                        runtime.state.value.position > position + 200
+                }
+                compose.runOnUiThread { assertSame(player, runtime.video.player) }
+                assertEquals(
+                    "Fullscreen must not reopen the media source",
+                    requests,
+                    server.videoRequests.get(),
+                )
+            }
+        }
     }
 
     @Test

@@ -52,6 +52,18 @@ fun PlayerScreen(
     dismiss: () -> Unit,
 ) {
     var fullscreen by rememberSaveable { mutableStateOf(false) }
+    val currentApp by rememberUpdatedState(app)
+    val currentPlayback by rememberUpdatedState(s)
+    // Move the same composition between layouts: disposing Artwork closes its
+    // decoder and source, forcing a fresh seek/catch-up on every expansion.
+    val artwork =
+        remember(playback) {
+            movableContentOf<Modifier, Boolean> { modifier, expanded ->
+                Artwork(currentApp, currentPlayback, playback, modifier, expanded) {
+                    fullscreen = true
+                }
+            }
+        }
     val context = LocalContext.current
     DisposableEffect(fullscreen) {
         val activity = context as? Activity
@@ -81,7 +93,7 @@ fun PlayerScreen(
         ) {
             if (fullscreen)
                 Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-                    Artwork(app, s, playback, Modifier.fillMaxSize(), fullscreen = true) {}
+                    artwork(Modifier.fillMaxSize(), true)
                     Row(
                         Modifier.align(Alignment.TopEnd).background(Color.Black.copy(alpha = 0.65f))
                     ) {
@@ -147,15 +159,7 @@ fun PlayerScreen(
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Spacer(Modifier.height(16.dp))
-                            Artwork(
-                                app,
-                                s,
-                                playback,
-                                Modifier.size(artworkSize),
-                                fullscreen = false,
-                            ) {
-                                fullscreen = true
-                            }
+                            artwork(Modifier.size(artworkSize), false)
                             Spacer(Modifier.height(16.dp))
                             Text(
                                 s.current?.title.orEmpty(),
@@ -310,7 +314,7 @@ private fun Artwork(
         else {
             // AndroidView's factory is not rerun when a remembered value changes.
             // Replace the composition as well as its surface on each queue entry.
-            key(playback, s.currentId, fullscreen) {
+            key(playback, s.currentId) {
                 val lifecycle = LocalLifecycleOwner.current.lifecycle
                 val context = LocalContext.current
                 val surface = remember {

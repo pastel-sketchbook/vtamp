@@ -452,7 +452,8 @@ keeps its own image shape. The mini player uses tonal elevation (3 dp) above the
 bottom navigation; list rows use surface color without custom shadows. The full
 player emphasizes its filled play/pause control (72 dp), flanked by previous
 and next controls (56 dp). Fullscreen video uses a black canvas with white
-controls on a translucent black backing.
+controls on a translucent black backing. Entering and leaving fullscreen keeps
+the same video view and prepared player so playback continues across rotation.
 
 Keep interactive targets at least 48 dp, respect system/IME insets and allow
 larger system text to wrap or scroll. State is communicated in text as well as

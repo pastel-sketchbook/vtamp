@@ -98,8 +98,10 @@ and consecutive copies of the same track. Startup and rebuffering catch up by
 adjusting video speed; they do not repeatedly seek and flush the decoder. Video
 that runs ahead waits for audio. Explicit seeks, a paused-frame correction and
 repeat-one align video directly to the audio position. The full
-player can expand video to landscape. Tablet-specific layouts, Android Auto
-and Picture-in-Picture are not part of this release.
+player can expand video to landscape. Entering and leaving fullscreen moves
+the existing video view and retains its prepared player and buffered media;
+it does not reopen the source or seek to catch up again. Tablet-specific layouts,
+Android Auto and Picture-in-Picture are not part of this release.
 
 ## Build and install
 
@@ -149,9 +151,10 @@ cd android
 Unit tests use the same JSON fixtures as the iPhone app, plus a deterministic
 queue and HTTP stubs. Device tests run against their own synthetic MockWebServer
 inside the emulator, with muted audio. They exercise UI imports, local queues,
-background playback, radio disconnect/resume, video suspension/catch-up, and
-actual AAC/ALAC/WAV/H.264/VP9 decoding. They never submit imports or commands to a
-personal server. CI configures API 29 and API 36 emulator runs; an unexecuted CI
+background playback, radio disconnect/resume, video suspension/catch-up,
+fullscreen continuity, and actual AAC/ALAC/WAV/H.264/VP9 decoding. They never
+submit imports or commands to a personal server. CI configures API 29 and API 36
+emulator runs; an unexecuted CI
 job is not local validation.
 
 `src/androidTest/assets/resume-h264.mkv` is a synthetic MIT-licensed test pattern,
